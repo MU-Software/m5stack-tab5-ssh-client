@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+services:
+  idf:
+    image: m5stack-tab5-ssh-client/idf:6.1
+    build:
+      # esp-clang brings clang-tidy for the firmware sources
+      dockerfile_inline: |
+        FROM espressif/idf:v6.1
+        RUN /opt/esp/python_env/idf6.1_py3.12_env/bin/python /opt/esp/idf/tools/idf_tools.py install esp-clang
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - idf-component-cache:/root/.espressif/component_manager
+      - idf-ccache:/root/.ccache
+    environment:
+      IDF_GIT_SAFE_DIR: /workspace
+      IDF_TARGET: esp32p4
+
+  # Test server for tests/run.sh: ed25519 host key only, so the pinned fingerprint is the one negotiated
+  sshd:
+    build:
+      dockerfile_inline: |
+        FROM alpine:3.22
+        RUN apk add --no-cache bash openssh-server && adduser -D -s /bin/bash tester && echo tester:tab5-test-password | chpasswd \
+            && ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key \
+            && printf 'HostKey /etc/ssh/ssh_host_ed25519_key\nPasswordAuthentication yes\nRekeyLimit 32K\n' >> /etc/ssh/sshd_config
+        CMD ["sh", "-c", "install -d -o tester -m 700 /home/tester/.ssh && echo \"$$AUTHORIZED_KEY\" > /home/tester/.ssh/authorized_keys && chown tester /home/tester/.ssh/authorized_keys && exec /usr/sbin/sshd -D -e"]
+    environment:
+      AUTHORIZED_KEY: ${AUTHORIZED_KEY:-}
+    ports:
+      - "127.0.0.1::22"
+    profiles: [test]
+
+  sanitize:
+    build:
+      dockerfile_inline: |
+        FROM debian:trixie
+        RUN apt-get update && apt-get install -y --no-install-recommends clang libclang-rt-19-dev llvm-19 cmake make libc6-dev patch && rm -rf /var/lib/apt/lists/*
+    environment:
+      CC: clang
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    profiles: [test]
+
+volumes:
+  idf-component-cache:
+  idf-ccache:

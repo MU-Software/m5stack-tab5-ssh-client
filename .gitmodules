@@ -1,0 +1,12 @@
+[submodule "third_party/wolfssl"]
+	path = third_party/wolfssl
+	url = https://github.com/wolfSSL/wolfssl.git
+	shallow = true
+[submodule "third_party/wolfssh"]
+	path = third_party/wolfssh
+	url = https://github.com/wolfSSL/wolfssh.git
+	shallow = true
+[submodule "third_party/cjson"]
+	path = third_party/cjson
+	url = https://github.com/DaveGamble/cJSON.git
+	shallow = true

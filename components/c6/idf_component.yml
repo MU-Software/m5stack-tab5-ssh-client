@@ -1,0 +1,3 @@
+dependencies:
+  espressif/esp_hosted: "==3.0.9"
+  espressif/esp_io_expander_pi4ioe5v6408: "==1.0.1"

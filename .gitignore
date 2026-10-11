@@ -1,0 +1,9 @@
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
+.venv/
+__pycache__/
+.mypy_cache/
+.ruff_cache/
+.DS_Store

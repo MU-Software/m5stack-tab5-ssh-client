@@ -1,0 +1,116 @@
+diff --git a/src/internal.c b/src/internal.c
+index f6ff532..f085143 100644
+--- a/src/internal.c
++++ b/src/internal.c
+@@ -23934,11 +23934,17 @@ static int CreateMode(WOLFSSH* ssh, byte* mode)
+     int termRet = WS_FATAL_ERROR;
+     int ret = WS_FATAL_ERROR;
+ 
++    if (ssh->termModes != NULL) {
++        WMEMCPY(mode, ssh->termModes, ssh->termModesSz);
++        termRet = (int)ssh->termModesSz;
++    }
+     #if !defined(USE_WINDOWS_API) && !defined(MICROCHIP_PIC32) && \
+         !defined(NO_TERMIOS)
++    else {
+         termRet = CreateModeTermios(mode);
+         if (termRet < 0)
+             WLOG(WS_LOG_INFO, "No terminal settings, using default modes");
++    }
+     #endif
+ 
+     if (termRet < 0) {
+@@ -23955,7 +23961,6 @@ static int CreateMode(WOLFSSH* ssh, byte* mode)
+         ret = (int)idx;
+     }
+ 
+-    WOLFSSH_UNUSED(ssh);
+     return ret;
+ }
+ 
+@@ -24083,7 +24088,16 @@ int SendChannelTerminalRequest(WOLFSSH* ssh)
+         ret = WS_BAD_ARGUMENT;
+ 
+     if (ret == WS_SUCCESS) {
+-        GetTerminalInfo(&w, &h, &pxW, &pxH, &term);
++        if (ssh->termType != NULL) {
++            term = ssh->termType;
++            w = ssh->termColumns;
++            h = ssh->termRows;
++            pxW = ssh->termWidthPixels;
++            pxH = ssh->termHeightPixels;
++        }
++        else {
++            GetTerminalInfo(&w, &h, &pxW, &pxH, &term);
++        }
+         if (term == NULL) {
+             term = "xterm";
+         }
+diff --git a/src/ssh.c b/src/ssh.c
+index c009764..230e25d 100644
+--- a/src/ssh.c
++++ b/src/ssh.c
+@@ -1975,6 +1975,29 @@ int wolfSSH_ChangeTerminalSize(WOLFSSH* ssh, word32 columns, word32 rows,
+ }
+ 
+ 
++/* Sets what the pty-req sends instead of the local terminal's settings.
++ * modes is an encoded mode list without the TTY_OP_END terminator; NULL
++ * keeps the default modes. The strings and modes must outlive the connect.
++ * returns WS_SUCCESS on success */
++int wolfSSH_SetTerminal(WOLFSSH* ssh, const char* term, word32 columns,
++    word32 rows, word32 widthPixels, word32 heightPixels,
++    const byte* modes, word32 modesSz)
++{
++    if (ssh == NULL || term == NULL ||
++            (modes != NULL && modesSz + 1 > TERMINAL_MODES_MAX_SZ))
++        return WS_BAD_ARGUMENT;
++
++    ssh->termType = term;
++    ssh->termColumns = columns;
++    ssh->termRows = rows;
++    ssh->termWidthPixels = widthPixels;
++    ssh->termHeightPixels = heightPixels;
++    ssh->termModes = modes;
++    ssh->termModesSz = modes != NULL ? modesSz : 0;
++    return WS_SUCCESS;
++}
++
++
+ void wolfSSH_SetTerminalResizeCb(WOLFSSH* ssh, WS_CallbackTerminalSize cb)
+ {
+     ssh->termResizeCb = cb;
+diff --git a/wolfssh/internal.h b/wolfssh/internal.h
+index 463a8fa..77dcdf7 100644
+--- a/wolfssh/internal.h
++++ b/wolfssh/internal.h
+@@ -1437,6 +1437,15 @@ struct WOLFSSH {
+     word32 heightPixels; /* pixel height */
+     byte* modes;
+     word32 modesSz;
++    /* client side, set by wolfSSH_SetTerminal(); the application owns
++     * the memory */
++    const char* termType;
++    word32 termColumns;
++    word32 termRows;
++    word32 termWidthPixels;
++    word32 termHeightPixels;
++    const byte* termModes;
++    word32 termModesSz;
+ #endif
+ #if defined(WOLFSSH_TERM) || defined(WOLFSSH_SHELL)
+     word32 exitStatus;
+diff --git a/wolfssh/ssh.h b/wolfssh/ssh.h
+index 58e0807..58ec793 100644
+--- a/wolfssh/ssh.h
++++ b/wolfssh/ssh.h
+@@ -1033,6 +1033,9 @@ WOLFSSH_API int wolfSSH_SetChannelType(WOLFSSH* ssh, byte type, byte* name,
+         word32 nameSz);
+ WOLFSSH_API int wolfSSH_ChangeTerminalSize(WOLFSSH* ssh, word32 columns,
+     word32 rows, word32 widthPixels, word32 heightPixels);
++WOLFSSH_API int wolfSSH_SetTerminal(WOLFSSH* ssh, const char* term,
++    word32 columns, word32 rows, word32 widthPixels, word32 heightPixels,
++    const byte* modes, word32 modesSz);
+ typedef int (*WS_CallbackTerminalSize)(WOLFSSH* ssh, word32 columns,
+     word32 rows, word32 widthPixels, word32 heightPixels, void* ctx);
+ WOLFSSH_API void wolfSSH_SetTerminalResizeCb(WOLFSSH* ssh,

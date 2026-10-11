@@ -1,0 +1,40 @@
+[project]
+name = "m5stack-tab5-ssh-client"
+version = "0.1.0"
+description = "SSH client for M5Stack Tab5"
+requires-python = ">=3.13"
+license = "GPL-3.0-or-later"
+dependencies = [
+    "esp-idf-monitor==1.9.0",
+    "esp-idf-nvs-partition-gen==0.2.0",
+    "esptool==5.3.1",
+    "jsonschema==4.26.0",
+    "pyserial==3.5",
+    "typer==0.27.3",
+]
+
+[dependency-groups]
+dev = ["pre-commit==4.3.0"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# runs docker with an argument list
+"tools/ide.py" = ["S603", "S607"]
+
+[tool.mypy]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["esp_idf_nvs_partition_gen.*"]
+ignore_missing_imports = true
+
+[tool.bandit]
+exclude_dirs = ["third_party", ".venv", "build"]
+# subprocess without a shell; B602 (shell=True) stays on
+skips = ["B404", "B603", "B607"]

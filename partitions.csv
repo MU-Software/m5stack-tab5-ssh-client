@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Name,  Type, SubType, Offset,   Size
+nvs,     data, nvs,     0x11000,  0xD000
+otadata, data, ota,     0x1E000,  0x2000
+ota_0,   app,  ota_0,   0x20000,  0x3E0000
+ota_1,   app,  ota_1,   0x400000, 0x3E0000

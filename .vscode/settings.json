@@ -1,0 +1,15 @@
+{
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}/build/ide"
+  ],
+  "clangd.path": "/opt/homebrew/opt/llvm/bin/clangd",
+  "json.schemas": [
+    {
+      "fileMatch": [
+        "**/.config/tab5-ssh/config.json"
+      ],
+      "url": "./tools/config.schema.json"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "In NVS (tools/config.py write) or on the SD card as .config/tab5-ssh/config.json, which wins. Where to connect comes from the SD card's .ssh/config.",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "wifi": {
+      "description": "Tried in this order; only networks a scan sees",
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "password": {
+            "description": "Absent for an open network",
+            "maxLength": 64,
+            "type": "string"
+          },
+          "ssid": {
+            "maxLength": 32,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "ssid"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    }
+  },
+  "title": "Tab5 SSH client Wi-Fi configuration",
+  "type": "object"
+}

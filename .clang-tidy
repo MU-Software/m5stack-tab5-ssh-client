@@ -1,0 +1,25 @@
+---
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-assignment-in-if-condition,
+  -bugprone-not-null-terminated-result,
+  -bugprone-implicit-widening-of-multiplication-result,
+  clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
+  portability-*,
+  -portability-avoid-pragma-once,
+  misc-redundant-expression,
+  misc-unused-parameters,
+  readability-duplicate-include,
+  readability-misleading-indentation,
+  bugprone-branch-clone
+
+WarningsAsErrors: '*'
+
+HeaderFilterRegex: '/workspace/(main|components)/'
+
+FormatStyle: file
+...

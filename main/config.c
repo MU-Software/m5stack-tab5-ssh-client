@@ -1,0 +1,259 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "config.h"
+
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+
+#include <wolfssl/wolfcrypt/coding.h>
+#include <wolfssl/wolfcrypt/hash.h>
+#include <wolfssl/wolfcrypt/hmac.h>
+#include <wolfssl/wolfcrypt/sha256.h>
+
+static int copy(char* out, size_t size, const cJSON* item) {
+    if (item == NULL) return 0;
+    if (!cJSON_IsString(item) || strlen(item->valuestring) >= size) return -1;
+    memcpy(out, item->valuestring, strlen(item->valuestring) + 1);
+    return 0;
+}
+
+int config_wifi_networks(const cJSON* config, wifi_network** wifi) {
+    const cJSON* list = cJSON_GetObjectItemCaseSensitive(config, "wifi");
+    int n = cJSON_GetArraySize(list), err = -1;
+    wifi_network* w = NULL;
+    if (!cJSON_IsObject(config) || (list != NULL && !cJSON_IsArray(list))) goto done;
+    if (n > 0 && (w = calloc((size_t)n, sizeof *w)) == NULL) goto done;
+    for (int i = 0; i < n; i++) {
+        const cJSON* net = cJSON_GetArrayItem(list, i);
+        const cJSON* ssid = cJSON_GetObjectItemCaseSensitive(net, "ssid");
+        if (ssid == NULL || copy(w[i].ssid, sizeof w[i].ssid, ssid) != 0 ||
+            copy(w[i].password, sizeof w[i].password, cJSON_GetObjectItemCaseSensitive(net, "password")) != 0)
+            goto done;
+        w[i].next = i + 1 < n ? &w[i + 1] : NULL;
+    }
+    err = 0;
+done:
+    if (err) free(w);
+    *wifi = err ? NULL : w;
+    return err;
+}
+
+static uint32_t be32(const uint8_t* p) {
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+static int glob(const char* p, size_t n, const char* s) {
+    if (n == 0) return *s == 0;
+    if (*p == '*') return glob(p + 1, n - 1, s) || (*s != 0 && glob(p, n, s + 1));
+    return *s != 0 && (*p == '?' || tolower((unsigned char)*p) == tolower((unsigned char)*s)) && glob(p + 1, n - 1, s + 1);
+}
+
+static int match_list(const char* list, const char* end, const char* seps, const char* name) {
+    int hit = 0;
+    while (list < end) {
+        while (list < end && strchr(seps, *list))
+            list++;
+        const char* p = list;
+        while (list < end && !strchr(seps, *list))
+            list++;
+        int negated = p < list && *p == '!';
+        if (p < list && glob(p + negated, (size_t)(list - p - negated), name)) {
+            if (negated) return 0;
+            hit = 1;
+        }
+    }
+    return hit;
+}
+
+static const char* next_line(const char** text, const char** end) {
+    if (**text == 0) return NULL;
+    const char* line = *text;
+    size_t len = strcspn(line, "\r\n");
+    *text = line + len + (line[len] != 0);
+    *end = line + len;
+    while (line < *end && isspace((unsigned char)*line))
+        line++;
+    while (*end > line && isspace((unsigned char)(*end)[-1]))
+        (*end)--;
+    return line;
+}
+
+static const char* word(const char** p, const char* end, size_t* n) {
+    while (*p < end && isspace((unsigned char)**p))
+        (*p)++;
+    const char* w = *p;
+    while (*p < end && !isspace((unsigned char)**p))
+        (*p)++;
+    *n = (size_t)(*p - w);
+    return w;
+}
+
+static void set_once(char* dst, size_t size, const char* value, size_t n) {
+    if (dst[0] == 0 && n < size) {
+        memcpy(dst, value, n);
+        dst[n] = 0;
+    }
+}
+
+static int keyword_is(const char* kw, size_t n, const char* name) {
+    return n == strlen(name) && strncasecmp(kw, name, n) == 0;
+}
+
+static const char* next_option(const char** text, size_t* kw_len, const char** value, const char** end) {
+    const char* p;
+    while ((p = next_line(text, end)) != NULL && (p == *end || *p == '#')) {}
+    if (p == NULL) return NULL;
+    const char *kw = p, *e = *end;
+    while (p < e && !isspace((unsigned char)*p) && *p != '=')
+        p++;
+    *kw_len = (size_t)(p - kw);
+    while (p < e && (isspace((unsigned char)*p) || *p == '='))
+        p++;
+    // cppcheck-suppress knownConditionTrueFalse
+    if (e - p >= 2 && *p == '"' && e[-1] == '"') {
+        p++;
+        e--;
+    }
+    *value = p;
+    *end = e;
+    return kw;
+}
+
+static void lookup(ssh_host* h, const char* text) {
+    int active = 1;
+    size_t kw_len;
+    const char *kw, *p, *end;
+    while ((kw = next_option(&text, &kw_len, &p, &end)) != NULL) {
+        size_t n = (size_t)(end - p);
+        if (keyword_is(kw, kw_len, "Host"))
+            active = match_list(p, end, " \t", h->alias);
+        else if (keyword_is(kw, kw_len, "Match"))
+            active = 0;
+        else if (!active)
+            continue;
+        else if (keyword_is(kw, kw_len, "HostName"))
+            set_once(h->hostname, sizeof h->hostname, p, n);
+        else if (keyword_is(kw, kw_len, "User"))
+            set_once(h->user, sizeof h->user, p, n);
+        else if (keyword_is(kw, kw_len, "IdentityFile"))
+            set_once(h->identity_file, sizeof h->identity_file, p, n);
+        else if (keyword_is(kw, kw_len, "Port") && h->port == 0) {
+            long port = strtol(p, NULL, 10);
+            if (port > 0 && port < 65536) h->port = (uint16_t)port;
+        }
+    }
+}
+
+static size_t host_aliases(const char* text, ssh_host* hosts, size_t capacity) {
+    size_t count = 0, kw_len, n;
+    const char *kw, *p, *end;
+    while ((kw = next_option(&text, &kw_len, &p, &end)) != NULL) {
+        if (!keyword_is(kw, kw_len, "Host")) continue;
+        for (const char* w = word(&p, end, &n); n > 0; w = word(&p, end, &n)) {
+            if (n >= sizeof hosts->alias || memchr(w, '*', n) || memchr(w, '?', n) || *w == '!') continue;
+            if (hosts != NULL) {
+                size_t i = 0;
+                while (i < count && (strlen(hosts[i].alias) != n || memcmp(hosts[i].alias, w, n) != 0))
+                    i++;
+                if (i < count || count == capacity) continue;
+                memcpy(hosts[count].alias, w, n);
+            }
+            count++;
+        }
+    }
+    return count;
+}
+
+ssh_host* config_ssh_hosts(const char* text) {
+    size_t n = host_aliases(text, NULL, 0);
+    ssh_host* hosts = n > 0 ? calloc(n, sizeof *hosts) : NULL;
+    if (hosts == NULL) return NULL;
+    host_aliases(text, hosts, n);
+    for (size_t i = 0; i < n && hosts[i].alias[0]; i++) {
+        ssh_host* h = &hosts[i];
+        lookup(h, text);
+        if (!h->hostname[0]) memcpy(h->hostname, h->alias, sizeof h->hostname);
+        if (h->port == 0) h->port = 22;
+        h->next = i + 1 < n && h[1].alias[0] ? h + 1 : NULL;
+    }
+    return hosts;
+}
+
+// |1|salt|hash with hash = HMAC-SHA1(salt, name)
+static int hashed_match(const char* entry, size_t n, const char* name) {
+    const char* bar = memchr(entry + 3, '|', n - 3);
+    if (bar == NULL) return 0;
+    byte salt[64], hash[WC_SHA_DIGEST_SIZE], mac[WC_SHA_DIGEST_SIZE];
+    word32 salt_len = sizeof salt, hash_len = sizeof hash;
+    Hmac hmac;
+    if (wc_HmacInit(&hmac, NULL, INVALID_DEVID) != 0) return 0;
+    int ok = Base64_Decode((const byte*)entry + 3, (word32)(bar - entry - 3), salt, &salt_len) == 0 &&
+             Base64_Decode((const byte*)bar + 1, (word32)(entry + n - bar - 1), hash, &hash_len) == 0 && hash_len == sizeof hash &&
+             wc_HmacSetKey(&hmac, WC_SHA, salt, salt_len) == 0 && wc_HmacUpdate(&hmac, (const byte*)name, (word32)strlen(name)) == 0 &&
+             wc_HmacFinal(&hmac, mac) == 0 && memcmp(mac, hash, sizeof hash) == 0;
+    wc_HmacFree(&hmac);
+    return ok;
+}
+
+host_state known_hosts_check(const char* text, const char* name, const uint8_t* key, size_t key_length) {
+    if (key_length < 4 || be32(key) > key_length - 4) return HOST_UNKNOWN;
+    size_t type_len = be32(key);
+    host_state found = HOST_UNKNOWN;
+    const char *p, *end;
+    while ((p = next_line(&text, &end)) != NULL) {
+        if (p == end || *p == '#' || *p == '@') continue;
+        size_t hosts_len, t_len, b64_len;
+        const char* hosts = word(&p, end, &hosts_len);
+        const char* t = word(&p, end, &t_len);
+        const char* b64 = word(&p, end, &b64_len);
+        int listed =
+            hosts_len > 3 && strncmp(hosts, "|1|", 3) == 0 ? hashed_match(hosts, hosts_len, name) : match_list(hosts, hosts + hosts_len, ",", name);
+        if (!listed || t_len != type_len || memcmp(t, key + 4, type_len) != 0) continue;
+        byte known[2048];
+        word32 known_len = sizeof known;
+        if (Base64_Decode((const byte*)b64, (word32)b64_len, known, &known_len) == 0 && known_len == key_length &&
+            memcmp(known, key, key_length) == 0)
+            return HOST_KNOWN;
+        found = HOST_CHANGED;
+    }
+    return found;
+}
+
+int known_hosts_line(char* out, size_t size, const char* name, const uint8_t* key, size_t key_length) {
+    if (key_length < 4 || be32(key) > key_length - 4) return -1;
+    int n = snprintf(out, size, "%s %.*s ", name, (int)be32(key), (const char*)key + 4);
+    if (n < 0 || (size_t)n + 2 >= size) return -1;
+    word32 len = (word32)(size - (size_t)n - 1);
+    if (Base64_Encode_NoNl(key, (word32)key_length, (byte*)out + n, &len) != 0 || (size_t)n + len + 2 > size) return -1;
+    memcpy(out + n + len, "\n", 2);
+    return 0;
+}
+
+int ssh_fingerprint(char* out, size_t size, const uint8_t* key, size_t key_length) {
+    byte hash[WC_SHA256_DIGEST_SIZE];
+    word32 len = size > 8 ? (word32)(size - 8) : 0;
+    if (len == 0 || wc_Sha256Hash(key, (word32)key_length, hash) != 0 || Base64_Encode_NoNl(hash, sizeof hash, (byte*)out + 7, &len) != 0) return -1;
+    memcpy(out, "SHA256:", 7);
+    while (len > 0 && out[7 + len - 1] == '=')
+        len--;
+    out[7 + len] = 0;
+    return 0;
+}
+
+int openssh_public_key(const uint8_t* container, size_t size, const uint8_t** key, size_t* key_length) {
+    static const char magic[] = "openssh-key-v1";
+    if (size < sizeof magic || memcmp(container, magic, sizeof magic) != 0) return -1;
+    // magic, cipher, KDF, KDF options, key count, then the public key
+    const uint8_t* p = container + sizeof magic;
+    const uint8_t* stop = container + size;
+    for (int i = 0; i < 3; i++) {
+        if (stop - p < 4 || be32(p) > (uint32_t)(stop - p - 4)) return -1;
+        p += 4 + be32(p);
+    }
+    if (stop - p < 8 || be32(p + 4) > (uint32_t)(stop - p - 8)) return -1;
+    *key_length = be32(p + 4);
+    *key = p + 8;
+    return 0;
+}
