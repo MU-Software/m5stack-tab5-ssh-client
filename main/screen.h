@@ -4,4 +4,7 @@
 
 #include "state.h"
 
+// Shiroko's calls stay on the task that calls these
 esp_err_t screen_start(const global_state* state);
+// Draws what the terminal changed
+void screen_draw(void);

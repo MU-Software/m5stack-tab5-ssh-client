@@ -56,12 +56,12 @@ static void put(tinyusb_cdcacm_itf_t port, const void* buffer, size_t size) {
     }
 }
 
-size_t usb_read(void* buffer, size_t size) {
+size_t usb_terminal_read(void* buffer, size_t size) {
     size_t n = 0;
     return tinyusb_cdcacm_read(TINYUSB_CDC_ACM_0, buffer, size, &n) == ESP_OK ? n : 0;
 }
 
-void usb_write(const void* buffer, size_t size) {
+void usb_terminal_write(const void* buffer, size_t size) {
     put(TINYUSB_CDC_ACM_0, buffer, size);
 }
 
@@ -101,7 +101,10 @@ static void command(char* line) {
         char reply[48];
         int n = snprintf(reply, sizeof reply, "update %s\n", esp_err_to_name(err));
         put(control_port, reply, (size_t)n);
-        if (err == ESP_OK) esp_restart();
+        if (err == ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(200)); // for the host to read the reply
+            esp_restart();
+        }
     } else if (line[0]) {
         ESP_LOGW(TAG, "commands: sd on, sd off, restart, update SIZE CRC32");
     }

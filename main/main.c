@@ -12,6 +12,7 @@
 #include "screen.h"
 #include "ssh.h"
 #include "storage.h"
+#include "terminal.h"
 #include "usb.h"
 #include "wifi.h"
 
@@ -23,11 +24,11 @@ static global_state state = {
 };
 
 static void read_line(const char* prompt, char* buf, size_t size, int echo) {
-    usb_write(prompt, strlen(prompt));
+    usb_terminal_write(prompt, strlen(prompt));
     size_t n = 0;
     for (;;) {
         uint8_t c;
-        if (usb_read(&c, 1) != 1) {
+        if (usb_terminal_read(&c, 1) != 1) {
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -35,14 +36,14 @@ static void read_line(const char* prompt, char* buf, size_t size, int echo) {
         if (c == 0x7f || c == '\b') {
             if (n == 0) continue;
             n--;
-            if (echo) usb_write("\b \b", 3);
+            if (echo) usb_terminal_write("\b \b", 3);
         } else if (n + 1 < size) {
             buf[n++] = (char)c;
-            if (echo) usb_write(&c, 1);
+            if (echo) usb_terminal_write(&c, 1);
         }
     }
     buf[n] = 0;
-    usb_write("\r\n", 2);
+    usb_terminal_write("\r\n", 2);
 }
 
 int accept_new_host(const global_state* state, const char* name, const char* fingerprint, const char* line) {
@@ -63,7 +64,7 @@ static void bridge(void) {
     int pending = 0, off = 0;
     for (;;) {
         if (pending == 0) {
-            pending = (int)usb_read(in, sizeof in);
+            if ((pending = (int)terminal_reply(in, sizeof in)) == 0) pending = (int)usb_terminal_read(in, sizeof in);
             off = 0;
         }
         int sent = pending > 0 ? ssh_write(&state, in + off, (size_t)pending) : WS_WANT_WRITE;
@@ -73,21 +74,16 @@ static void bridge(void) {
             off += sent;
             pending -= sent;
         }
-        if (got > 0)
-            usb_write(out, (size_t)got);
-        else if (sent < 0)
+        if (got > 0) {
+            terminal_write(out, (size_t)got);
+            usb_terminal_write(out, (size_t)got);
+        } else if (sent < 0)
             ssh_wait(&state, 10);
     }
 }
 
-void app_main(void) {
+static void connect(void) {
     static const char* const sources[] = {"nothing", "the SD card", "NVS"};
-    ESP_ERROR_CHECK(usb_start());
-    ESP_ERROR_CHECK(nvs_flash_init());
-    if (storage_mount(usb_storage_boot()) != 0) ESP_LOGI(TAG, "no FAT SD card");
-    if (usb_storage_boot()) return;
-    if (screen_start(&state) != ESP_OK) ESP_LOGE(TAG, "no screen");
-    usb_keep_image();
     config_source source;
     cJSON* config = storage_get_device_config(&source);
     if (config_wifi_networks(config, &state.wifi) != 0)
@@ -136,4 +132,30 @@ void app_main(void) {
         ESP_LOGE(TAG, "ssh %s@%s:%u: %s", h->user, h->hostname, h->port, wolfSSH_ErrorToName(rc));
     }
     state.session = NULL;
+}
+
+static void run_session(void* arg) {
+    (void)arg;
+    connect();
+    vTaskDelete(NULL);
+}
+
+void app_main(void) {
+    ESP_ERROR_CHECK(usb_start());
+    ESP_ERROR_CHECK(nvs_flash_init());
+    if (storage_mount(usb_storage_boot()) != 0) ESP_LOGI(TAG, "no FAT SD card");
+    if (usb_storage_boot()) return;
+    ESP_ERROR_CHECK(terminal_start(&state.terminal_size));
+    esp_err_t screen = screen_start(&state);
+    usb_keep_image();
+    // Ghostty's measured stack is 27-33 KiB
+    xTaskCreatePinnedToCore(run_session, "session", 48 * 1024, NULL, 5, NULL, 1);
+    if (screen != ESP_OK) {
+        ESP_LOGE(TAG, "no screen");
+        return;
+    }
+    for (;;) {
+        screen_draw();
+        vTaskDelay(pdMS_TO_TICKS(30));
+    }
 }

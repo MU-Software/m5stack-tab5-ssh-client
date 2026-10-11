@@ -7,13 +7,14 @@ APP     = build/app
 IDF     = docker compose run --rm $(2) idf idf.py -C $(1) -B /workspace/build/$(3) -D SDKCONFIG=/workspace/build/$(3)/sdkconfig
 DEVICE  = uv run python $(CURDIR)/tools/device.py
 SHIROKO = build/shiroko-host
+GHOSTTY = build/ghostty
 
-.PHONY: help build reconfigure menuconfig size clean ide check test test-linux flash monitor erase-flash erase-config c6-update sd-on sd-off shiroko-host
+.PHONY: help build reconfigure menuconfig size clean ide check test test-linux flash monitor erase-flash erase-config c6-update sd-on sd-off shiroko-host ghostty
 
 help:                ## List the targets
 	@grep -hE '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-14s %s\n", $$1, $$2}'
 
-build: $(SHIROKO)/generated  ## Build the firmware (re-applies sdkconfig.defaults when it changed)
+build: $(SHIROKO)/generated $(GHOSTTY)/out  ## Build the firmware (re-applies sdkconfig.defaults when it changed)
 	@if [ sdkconfig.defaults -nt $(APP)/sdkconfig ]; then rm -f $(APP)/sdkconfig; fi
 	$(call IDF,.,,app) build
 
@@ -22,6 +23,17 @@ shiroko-host:        ## Shiroko's generated sources and the 12x24 font packages 
 
 $(SHIROKO)/generated:
 	$(MAKE) shiroko-host
+
+ghostty:             ## libghostty-vt for the ESP32-P4, from a copy of third_party/ghostty with patches/ghostty applied
+	@test "$$(zig version)" = 0.16.0 || { echo "needs zig 0.16.0 (brew install zig)"; exit 1; }
+	mkdir -p $(GHOSTTY)
+	rsync -a --delete --exclude .git --exclude .zig-cache third_party/ghostty/ $(GHOSTTY)/src/
+	for p in patches/ghostty/*.patch; do patch -s -p1 -d $(GHOSTTY)/src < $$p || exit 1; done
+	cd $(GHOSTTY)/src && zig build -Demit-lib-vt -Dtarget=riscv32-freestanding-none -Dcpu=baseline-d -Doptimize=ReleaseSmall \
+	    -Dsimd=false -Dvt-features=-all,+render-state,+grid_introspection,+kitty-graphics,+png --prefix ../out
+
+$(GHOSTTY)/out:
+	$(MAKE) ghostty
 
 reconfigure:         ## Discard sdkconfig and re-apply sdkconfig.defaults
 	rm -f $(APP)/sdkconfig

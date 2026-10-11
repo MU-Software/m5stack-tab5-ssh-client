@@ -3,13 +3,11 @@
 
 #include <errno.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
 #include <bsp/m5stack_tab5.h>
 #include <esp_check.h>
-#include <esp_heap_caps.h>
 #include <esp_lcd_mipi_dsi.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_log.h>
@@ -19,25 +17,17 @@
 #include <shiroko/shiroko.h>
 
 #include "storage.h"
+#include "terminal.h"
 
 static const char* TAG = "screen";
 static esp_lcd_panel_handle_t panel;
 static shr_surface framebuffer;
 static shr_framebuffer_driver driver;
 static shr_context* context;
-
-// malloc() aligns to 4 bytes, and Shiroko's zstd context needs 8
-static void* allocate(void* user, size_t size, size_t align, shr_alloc_kind kind) {
-    (void)user, (void)kind;
-    return heap_caps_aligned_alloc(align < 8 ? 8 : align, size, MALLOC_CAP_SPIRAM);
-}
-
-static void release(void* user, void* pointer, size_t size, size_t align, shr_alloc_kind kind) {
-    (void)user, (void)size, (void)align, (void)kind;
-    free(pointer);
-}
-
-static const shr_allocator allocator = {.alloc = allocate, .free = release};
+static shr_lyr *grid, *cursor;
+static GhosttyRenderStateRowIterator rows;
+static GhosttyRenderStateRowCells cells;
+static GhosttyRenderStateCursor shown;
 
 static shr_status acquire(void* user, shr_surface* out) {
     (void)user;
@@ -87,19 +77,6 @@ static shr_status open_package(void* user, const char* package, shr_asset_source
     return SHR_OK;
 }
 
-static void draw(void) {
-    shr_deadline next;
-    shr_event event;
-    for (shr_submit(context);;) {
-        shr_pump(context);
-        while (shr_poll_event(context, &event) == SHR_OK)
-            if (event.kind == SHR_EVENT_PRESENT_FAILED || event.kind == SHR_EVENT_RESOURCE_FAILED)
-                ESP_LOGW(TAG, "event %d: %s", event.kind, shr_status_name(event.status));
-        if (shr_next_deadline(context, &next) != SHR_OK || next.kind == SHR_DEADLINE_NONE) return;
-        if (next.kind == SHR_DEADLINE_AT) vTaskDelay(1);
-    }
-}
-
 static shr_status check(shr_status status, const char* what) {
     if (status != SHR_OK) ESP_LOGE(TAG, "%s: %s", what, shr_status_name(status));
     return status;
@@ -127,7 +104,7 @@ esp_err_t screen_start(const global_state* state) {
     output.flags = SHR_OUTPUT_RELEASE_ON_PRESENT | SHR_OUTPUT_PRESERVES_CONTENT;
     shr_context_desc cd;
     shr_context_desc_init(&cd);
-    cd.allocator = &allocator, cd.driver = &driver, cd.output = &output, cd.now_ns = now_ns;
+    cd.driver = &driver, cd.output = &output, cd.now_ns = now_ns;
     shr_screen_desc sd;
     shr_screen_desc_init(&sd);
     sd.width = BSP_LCD_V_RES, sd.height = BSP_LCD_H_RES, sd.rotation = SHR_ROTATE_90_CCW, sd.clear = SHR_RGB(0, 0, 0);
@@ -135,21 +112,88 @@ esp_err_t screen_start(const global_state* state) {
     shr_pl_res_bitmap_font_desc_init(&fd);
     fd.open = open_package, fd.locale = "ko";
     shr_pl_res_bitmap_font* font;
-    shr_lyr* layer;
     const terminal_size* size = &state->terminal_size;
+    shr_rect area = {0, 0, (int32_t)size->width_pixels, (int32_t)size->height_pixels};
     shr_color background = SHR_RGB(0, 0, 0);
-    static const char text[] = "Tab5 SSH client\n"
-                               " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\n"
-                               "다람쥐 헌 쳇바퀴에 타고파";
-    if (check(shr_software_driver_create(&allocator, 0, 0, 256, &driver), "driver") != SHR_OK ||
-        check(shr_create(&cd, &context), "context") != SHR_OK || check(shr_screen_configure(context, &sd), "screen") != SHR_OK ||
+    if (check(shr_software_driver_create(NULL, 0, 0, 256, &driver), "driver") != SHR_OK || check(shr_create(&cd, &context), "context") != SHR_OK ||
+        check(shr_screen_configure(context, &sd), "screen") != SHR_OK ||
         check(shr_pl_res_bitmap_font_create(context, &fd, &font), "font") != SHR_OK ||
-        check(shr_lyr_create(context, 0, (shr_rect){0, 0, (int32_t)size->width_pixels, (int32_t)size->height_pixels}, &layer), "layer") != SHR_OK ||
-        check(shr_pl_lyr_tilemap_resize(layer, font, (int32_t)size->rows, (int32_t)size->columns, &background), "tilemap") != SHR_OK ||
-        check(shr_pl_lyr_tilemap_set_text(layer, 0, 0, text, sizeof text - 1, (shr_text_style){.fg = SHR_RGB(0xff, 0xff, 0xff)}, NULL, 0,
-                                          SHR_TEXT_WRAP, NULL),
-              "text") != SHR_OK)
+        check(shr_lyr_create(context, 0, area, &grid), "grid") != SHR_OK || check(shr_lyr_create(context, 1, area, &cursor), "cursor") != SHR_OK ||
+        check(shr_pl_lyr_tilemap_resize(grid, font, (int32_t)size->rows, (int32_t)size->columns, &background), "tilemap") != SHR_OK ||
+        ghostty_render_state_row_iterator_new(&terminal_allocator, &rows) != GHOSTTY_SUCCESS ||
+        ghostty_render_state_row_cells_new(&terminal_allocator, &cells) != GHOSTTY_SUCCESS)
         return ESP_FAIL;
-    draw();
     return ESP_OK;
+}
+
+static shr_color rgb(GhosttyColorRgb c) {
+    return SHR_RGB(c.r, c.g, c.b);
+}
+
+static void draw_cell(int32_t y, int32_t x, const GhosttyRenderStateColors* colors) {
+    GhosttyCell raw;
+    GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
+    GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
+    GhosttyColorRgb fg = colors->foreground, bg = colors->background;
+    char text[64];
+    GhosttyBuffer utf8 = {(uint8_t*)text, sizeof text, 0};
+    ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw);
+    ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide);
+    if (wide == GHOSTTY_CELL_WIDE_SPACER_TAIL) return;
+    ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style);
+    ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR, &fg);
+    bool painted = ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &bg) == GHOSTTY_SUCCESS;
+    if (ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8, &utf8) != GHOSTTY_SUCCESS) utf8.len = 0;
+    if (style.inverse) {
+        GhosttyColorRgb swap = fg;
+        fg = bg, bg = swap, painted = true;
+    }
+    // fg alpha: 255 full, 128 dim, 0 none; bg alpha 0 leaves the tilemap's background
+    shr_text_style cell = {.fg = (rgb(fg) & 0xffffffu) | (style.invisible ? 0
+                                                          : style.faint   ? 0x80000000u
+                                                                          : 0xff000000u),
+                           .bg = painted ? rgb(bg) : 0,
+                           .flags = (style.bold ? SHR_STYLE_BOLD : 0) | (style.italic ? SHR_STYLE_ITALIC : 0)};
+    shr_pl_lyr_tilemap_set_cell(grid, y, x, text, utf8.len, wide == GHOSTTY_CELL_WIDE_WIDE ? 2 : 1, cell);
+}
+
+static void draw_cursor(const GhosttyRenderStateCursor* c, const GhosttyRenderStateColors* colors) {
+    shr_lyr_cmd_begin(cursor);
+    if (c->visible && c->viewport_has_value) {
+        int32_t x = (c->viewport_x - c->wide_tail) * SHR_CELL_WIDTH, y = c->viewport_y * SHR_CELL_HEIGHT;
+        shr_rect r = {x, y, x + SHR_CELL_WIDTH, y + SHR_CELL_HEIGHT};
+        if (c->visual_style == GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR) r.x1 = x + 2;
+        if (c->visual_style == GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE) r.y0 = r.y1 - 2;
+        shr_lyr_cmd_fill(cursor, r, rgb(colors->cursor_has_value ? colors->cursor : colors->foreground));
+    }
+    shr_lyr_cmd_commit(cursor);
+}
+
+void screen_draw(void) {
+    GhosttyRenderState render = terminal_update();
+    GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
+    GhosttyRenderStateCursor now = GHOSTTY_INIT_SIZED(GhosttyRenderStateCursor);
+    ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors);
+    ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_CURSOR, &now);
+    ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, (void*)&rows);
+    for (uint16_t y; ghostty_render_state_row_iterator_next_dirty(rows, &y);) {
+        ghostty_render_state_row_get(rows, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, (void*)&cells);
+        for (int32_t x = 0; ghostty_render_state_row_cells_next(cells); x++)
+            draw_cell(y, x, &colors);
+    }
+    ghostty_render_state_clean(render);
+    if (now.visible != shown.visible || now.viewport_has_value != shown.viewport_has_value || now.viewport_x != shown.viewport_x ||
+        now.viewport_y != shown.viewport_y || now.wide_tail != shown.wide_tail || now.visual_style != shown.visual_style)
+        draw_cursor(&now, &colors);
+    shown = now;
+
+    shr_deadline next;
+    shr_event event;
+    for (shr_submit(context);;) {
+        shr_pump(context);
+        while (shr_poll_event(context, &event) == SHR_OK)
+            if (event.kind == SHR_EVENT_PRESENT_FAILED || event.kind == SHR_EVENT_RESOURCE_FAILED)
+                ESP_LOGW(TAG, "event %d: %s", event.kind, shr_status_name(event.status));
+        if (shr_next_deadline(context, &next) != SHR_OK || next.kind != SHR_DEADLINE_NOW) return;
+    }
 }

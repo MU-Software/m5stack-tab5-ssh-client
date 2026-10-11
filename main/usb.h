@@ -9,5 +9,6 @@ esp_err_t usb_start(void);
 int usb_storage_boot(void);
 // A new OTA image is kept once USB is also up; otherwise it rolls back after 30 s, as after a crash before this
 void usb_keep_image(void);
-size_t usb_read(void* buffer, size_t size);
-void usb_write(const void* buffer, size_t size);
+// Not usb_read/usb_write: the P4's ROM linker script defines those and silently wins
+size_t usb_terminal_read(void* buffer, size_t size);
+void usb_terminal_write(const void* buffer, size_t size);

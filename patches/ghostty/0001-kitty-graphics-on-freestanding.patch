@@ -1,0 +1,141 @@
+diff --git a/src/build/Config.zig b/src/build/Config.zig
+index 71fa4d2..026642a 100644
+--- a/src/build/Config.zig
++++ b/src/build/Config.zig
+@@ -431,7 +431,7 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
+             []const u8,
+             "vt-features",
+             "Comma-separated libghostty-vt feature modifications applied " ++
+-                "to the default all-enabled set, -Dcpu style: `+feature` " ++
++                "to the default set (all but `png`), -Dcpu style: `+feature` " ++
+                 "or `feature` enables, `-feature` disables, and `all` " ++
+                 "means every feature (e.g. `-all,+render-state` for a " ++
+                 "render-only build). Only applies to lib artifacts.",
+diff --git a/src/terminal/build_options.zig b/src/terminal/build_options.zig
+index f16cbf4..e0c57dc 100644
+--- a/src/terminal/build_options.zig
++++ b/src/terminal/build_options.zig
+@@ -36,7 +36,8 @@ pub const Options = struct {
+     /// Options.
+     c_abi: bool,
+ 
+-    /// Optional feature gates, all enabled by default. See Features.
++    /// Optional feature gates, all but `png` enabled by default. See
++    /// Features.
+     features: Features = .{},
+ 
+     /// The version of the application.
+@@ -50,11 +51,12 @@ pub const Options = struct {
+     ///
+     /// Field names are the accepted tokens for `-Dvt-features`, which
+     /// acts like `-Dcpu`: comma-separated modifications applied on top
+-    /// of the default (all enabled) set. `+feature` and `feature`
+-    /// enable, `-feature` disables. The special name `all` refers to
+-    /// every feature, so `-Dvt-features=-all,+render-state` builds only
+-    /// the render state API. Hyphens in names are interchangeable with
+-    /// underscores. Fields are emitted verbatim as bool options on the
++    /// of the default set, which enables every feature except `png`.
++    /// `+feature` and `feature` enable, `-feature` disables. The special
++    /// name `all` refers to every feature, so
++    /// `-Dvt-features=-all,+render-state` builds only the render state
++    /// API. Hyphens in names are interchangeable with underscores.
++    /// Fields are emitted verbatim as bool options on the
+     /// `terminal_options` module.
+     pub const Features = packed struct {
+         /// Terminal state serialization: encode a full terminal (screen
+@@ -157,13 +159,20 @@ pub const Options = struct {
+         /// renderer uses to draw placed images. Disabled sequences are
+         /// still consumed and safely ignored.
+         ///
+-        /// This requires the ability to get timestamps from the OS, so
+-        /// it is always disabled on freestanding targets (e.g.
+-        /// wasm32-freestanding) regardless of this setting.
++        /// On freestanding targets only the direct transmission medium
++        /// is available.
+         ///
+         /// C API: `ghostty_kitty_graphics_*`.
+         kitty_graphics: bool = true,
+ 
++        /// Decode PNG images with the bundled wuffs decoder by default.
++        /// Library builds otherwise decode PNG only through a decoder
++        /// installed with `ghostty_sys_set`, which can also replace or
++        /// clear this one. Off by default so embedders choose their
++        /// decoder. Only Kitty graphics decodes PNG, so this is ignored
++        /// without `kitty_graphics`.
++        png: bool = false,
++
+         pub fn parse(list: []const u8) error{UnknownFeature}!Features {
+             // Modifications apply on top of the default set.
+             var result: Features = .{};
+@@ -238,9 +247,14 @@ pub const Options = struct {
+                 try Features.parse("-snapshot,+render_state,-formatter,color"),
+             );
+ 
+-            // The special "all" name refers to every feature.
++            // The special "all" name refers to every feature, including
++            // the opt-in `png` that the defaults leave off.
++            const every: Features = @bitCast(
++                ~@as(@typeInfo(Features).@"struct".backing_integer.?, 0),
++            );
+             try testing.expectEqual(none, try Features.parse("-all"));
+-            try testing.expectEqual(Features{}, try Features.parse("-all,+all"));
++            try testing.expectEqual(every, try Features.parse("-all,+all"));
++            try testing.expectEqual(Features{ .png = true }, try Features.parse("+all"));
+             var render_only = none;
+             render_only.render_state = true;
+             try testing.expectEqual(
+@@ -267,12 +281,9 @@ pub const Options = struct {
+     };
+ 
+     /// Whether the Kitty graphics feature is effectively enabled for
+-    /// the given target. Kitty graphics requires the ability to get
+-    /// timestamps and there is no way to do that on freestanding
+-    /// targets, so it is always disabled there regardless of the
+-    /// feature setting.
++    /// the given target.
+     pub fn kittyGraphics(self: Options, target: std.Target) bool {
+-        if (target.os.tag == .freestanding) return false;
++        _ = target;
+         return self.features.kitty_graphics;
+     }
+ 
+@@ -306,6 +317,12 @@ pub const Options = struct {
+                 value = self.kittyGraphics(target);
+             }
+ 
++            // The PNG decoder is only used, and wuffs only built, with
++            // Kitty graphics.
++            if (comptime std.mem.eql(u8, field.name, "png")) {
++                value = value and self.kittyGraphics(target);
++            }
++
+             opts.addOption(bool, field.name, value);
+         }
+ 
+diff --git a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_image.zig
+index 76abb9a..ef2ab07 100644
+--- a/src/terminal/kitty/graphics_image.zig
++++ b/src/terminal/kitty/graphics_image.zig
+@@ -182,6 +182,9 @@ pub const LoadingImage = struct {
+             }
+         }
+ 
++        // Freestanding targets have no filesystem or shared memory.
++        if (comptime builtin.os.tag == .freestanding) return error.UnsupportedMedium;
++
+         // Depending on the medium, load the data from the path.
+         switch (t.medium) {
+             .direct => unreachable, // handled above
+diff --git a/src/terminal/sys.zig b/src/terminal/sys.zig
+index 3f6b501..38ec91f 100644
+--- a/src/terminal/sys.zig
++++ b/src/terminal/sys.zig
+@@ -16,7 +16,7 @@ const build_options = @import("terminal_options");
+ /// and the exact semantics are up to callers. For example, the Kitty Graphics
+ /// Protocol will work but cannot accept PNG images.
+ pub var decode_png: ?DecodePngFn = png: {
+-    if (build_options.artifact == .lib) break :png null;
++    if (build_options.artifact == .lib and !build_options.png) break :png null;
+     break :png &decodePngWuffs;
+ };
+ 
