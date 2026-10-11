@@ -435,6 +435,30 @@ dependencies:
     - esp32h4
     - linux
     version: 1.6.0
+  espressif/usb_host_hid:
+    component_hash: 74b9c84cd2921a5e987f504c1713ca7819f7e8be80565e5253e9e9c7e07ab881
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    - name: espressif/usb
+      registry_url: https://components.espressif.com
+      require: public
+      rules:
+      - if: idf_version >=6.0
+      - if: target not in ["linux"]
+      version: ^1.0.0
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32s2
+    - esp32s3
+    - esp32p4
+    - esp32h4
+    - esp32s31
+    - linux
+    version: 1.2.1
   espressif/usb_host_uvc:
     component_hash: f20c4e4dea50536e2e29daaf589b5f5984402284c155867daef27d6b64869f78
     dependencies:
@@ -481,6 +505,7 @@ direct_dependencies:
 - espressif/esp_tinyusb
 - espressif/esp_wifi_remote
 - espressif/m5stack_tab5_noglib
-manifest_hash: d7453f249cec5ed3046e7be086d79a21576eb9d0010ef6ac2936efd973ad3f12
+- espressif/usb_host_hid
+manifest_hash: fb65de3d02f2af89ff914929dbfc323a44aadda35b720d81bee4b6470c4bfed4
 target: esp32p4
 version: 3.0.0

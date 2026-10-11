@@ -30,7 +30,7 @@ ghostty:             ## libghostty-vt for the ESP32-P4, from a copy of third_par
 	rsync -a --delete --exclude .git --exclude .zig-cache third_party/ghostty/ $(GHOSTTY)/src/
 	for p in patches/ghostty/*.patch; do patch -s -p1 -d $(GHOSTTY)/src < $$p || exit 1; done
 	cd $(GHOSTTY)/src && zig build -Demit-lib-vt -Dtarget=riscv32-freestanding-none -Dcpu=baseline-d -Doptimize=ReleaseSmall \
-	    -Dsimd=false -Dvt-features=-all,+render-state,+grid_introspection,+kitty-graphics,+png --prefix ../out
+	    -Dsimd=false -Dvt-features=-all,+render-state,+grid_introspection,+kitty-graphics,+png,+input-encode --prefix ../out
 
 $(GHOSTTY)/out/lib/libghostty-vt.a: $(wildcard patches/ghostty/*.patch)
 	$(MAKE) ghostty

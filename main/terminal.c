@@ -30,6 +30,7 @@ static void release(void* context, void* memory, size_t size, uint8_t alignment,
 const GhosttyAllocator terminal_allocator = {.vtable = &(const GhosttyAllocatorVtable){allocate, resize, remap, release}};
 static GhosttyTerminal terminal;
 static GhosttyRenderState render;
+static GhosttyKeyEncoder encoder;
 static SemaphoreHandle_t lock;
 static uint8_t replies[256];
 static size_t reply_size;
@@ -44,7 +45,8 @@ static void reply(GhosttyTerminal t, void* user, const uint8_t* data, size_t siz
 esp_err_t terminal_start(const terminal_size* size) {
     lock = xSemaphoreCreateMutex();
     if (lock == NULL || ghostty_terminal_new(&terminal_allocator, &terminal, (uint16_t)size->columns, (uint16_t)size->rows) != GHOSTTY_SUCCESS ||
-        ghostty_render_state_new(&terminal_allocator, &render) != GHOSTTY_SUCCESS)
+        ghostty_render_state_new(&terminal_allocator, &render) != GHOSTTY_SUCCESS ||
+        ghostty_key_encoder_new(&terminal_allocator, &encoder) != GHOSTTY_SUCCESS)
         return ESP_ERR_NO_MEM;
     GhosttyTerminalModeConfig graphemes = {GHOSTTY_MODE_GRAPHEME_CLUSTER, true};
     uint64_t image_bytes = 4 << 20;
@@ -66,6 +68,15 @@ void terminal_write(const void* data, size_t size) {
     xSemaphoreTake(lock, portMAX_DELAY);
     ghostty_terminal_vt_write(terminal, data, size);
     xSemaphoreGive(lock);
+}
+
+size_t terminal_encode_key(GhosttyKeyEvent event, char* out, size_t size) {
+    size_t n = 0;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    ghostty_key_encoder_setopt_from_terminal(encoder, terminal);
+    if (ghostty_key_encoder_encode(encoder, event, out, size, &n) != GHOSTTY_SUCCESS) n = 0;
+    xSemaphoreGive(lock);
+    return n;
 }
 
 size_t terminal_reply(void* buffer, size_t size) {

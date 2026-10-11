@@ -9,6 +9,8 @@
 #include <wolfssl/wolfcrypt/memory.h>
 
 #include "config.h"
+#include "keyboard_usb.h"
+#include "keys.h"
 #include "screen.h"
 #include "ssh.h"
 #include "storage.h"
@@ -64,7 +66,8 @@ static void bridge(void) {
     int pending = 0, off = 0;
     for (;;) {
         if (pending == 0) {
-            if ((pending = (int)terminal_reply(in, sizeof in)) == 0) pending = (int)usb_terminal_read(in, sizeof in);
+            if ((pending = (int)terminal_reply(in, sizeof in)) == 0 && (pending = (int)keys_read((char*)in, sizeof in)) == 0)
+                pending = (int)usb_terminal_read(in, sizeof in);
             off = 0;
         }
         int sent = pending > 0 ? ssh_write(&state, in + off, (size_t)pending) : WS_WANT_WRITE;
@@ -141,7 +144,10 @@ static void run_session(void* arg) {
 }
 
 void app_main(void) {
+    ESP_ERROR_CHECK(keys_start());
+    esp_err_t keyboard = keyboard_usb_start();
     ESP_ERROR_CHECK(usb_start());
+    if (keyboard != ESP_OK) ESP_LOGE(TAG, "no USB keyboard: %s", esp_err_to_name(keyboard));
     ESP_ERROR_CHECK(nvs_flash_init());
     if (storage_mount(usb_storage_boot()) != 0) ESP_LOGI(TAG, "no FAT SD card");
     if (usb_storage_boot()) return;
