@@ -7,6 +7,8 @@
 #include <sys/stat.h>
 
 #include <bsp/m5stack_tab5.h>
+#include <driver/ppa.h>
+#include <esp_cache.h>
 #include <esp_check.h>
 #include <esp_lcd_mipi_dsi.h>
 #include <esp_lcd_panel_ops.h>
@@ -22,12 +24,33 @@
 static const char* TAG = "screen";
 static esp_lcd_panel_handle_t panel;
 static shr_surface framebuffer;
-static shr_framebuffer_driver driver;
+static shr_framebuffer_driver software, driver;
+static ppa_client_handle_t ppa;
+static uint8_t band[BSP_LCD_V_RES * 2 * 16] __attribute__((aligned(CONFIG_CACHE_L2_CACHE_LINE_SIZE)));
 static shr_context* context;
-static shr_lyr *grid, *cursor;
+static shr_lyr *grid, *pictures, *cursor;
+static GhosttyKittyGraphicsPlacementIterator placements;
+
+// A kitty image as drawn: its source rect scaled to width x height
+typedef struct {
+    uint32_t id, source_x, source_y, source_width, source_height, width, height;
+    uint64_t generation;
+    shr_pl_res_image* image;
+    bool used;
+} picture;
+
+typedef struct {
+    shr_pl_res_image* image;
+    shr_point at;
+    int32_t width, height, z;
+} placed;
+
+static picture made[16];
+static placed shown[16], wanted[16];
+static int shown_count, wanted_count;
 static GhosttyRenderStateRowIterator rows;
 static GhosttyRenderStateRowCells cells;
-static GhosttyRenderStateCursor shown;
+static GhosttyRenderStateCursor shown_cursor;
 
 static shr_status acquire(void* user, shr_surface* out) {
     (void)user;
@@ -38,6 +61,48 @@ static shr_status acquire(void* user, shr_surface* out) {
 static shr_status present(void* user, const shr_surface* surface, uint64_t frame) {
     (void)user, (void)frame;
     return esp_lcd_panel_draw_bitmap(panel, 0, 0, surface->width, surface->height, surface->pixels) == ESP_OK ? SHR_OK : SHR_E_DEVICE;
+}
+
+// Band parts go to the portrait panel through the PPA; offsets of 2 mod 4 can hang it (esp-idf#19096), hence 16
+static bool rotate(const shr_surface* dst, const shr_draw_cmd* cmds, size_t count) {
+    for (size_t i = 0; i < count; i++)
+        if (cmds[i].kind != SHR_CMD_ROTATE || cmds[i].rotation != SHR_ROTATE_90_CCW || (cmds[i].dst.x0 | cmds[i].dst.y0) % 16 != 0 ||
+            (const uint8_t*)cmds[i].src.pixels < band || (const uint8_t*)cmds[i].src.pixels >= band + sizeof band)
+            return false;
+    for (size_t i = 0; i < count; i++) {
+        const shr_draw_cmd* c = &cmds[i];
+        size_t offset = (size_t)((const uint8_t*)c->src.pixels - band), stride = BSP_LCD_V_RES * 2;
+        ppa_srm_oper_config_t operation = {.in = {.buffer = band,
+                                                  .pic_w = BSP_LCD_V_RES,
+                                                  .pic_h = 16,
+                                                  .block_w = c->src.width,
+                                                  .block_h = c->src.height,
+                                                  .block_offset_x = offset % stride / 2,
+                                                  .block_offset_y = offset / stride,
+                                                  .srm_cm = PPA_SRM_COLOR_MODE_RGB565},
+                                           .out = {.buffer = dst->pixels,
+                                                   .buffer_size = dst->byte_length,
+                                                   .pic_w = dst->width,
+                                                   .pic_h = dst->height,
+                                                   .block_offset_x = c->dst.x0,
+                                                   .block_offset_y = c->dst.y0,
+                                                   .srm_cm = PPA_SRM_COLOR_MODE_RGB565},
+                                           .rotation_angle = PPA_SRM_ROTATION_ANGLE_90,
+                                           .scale_x = 1,
+                                           .scale_y = 1,
+                                           .mode = PPA_TRANS_MODE_BLOCKING};
+        if (ppa_do_scale_rotate_mirror(ppa, &operation) != ESP_OK) return false;
+    }
+    return true;
+}
+
+static shr_status execute(void* user, const shr_surface* dst, const shr_draw_cmd* cmds, size_t count, shr_fence fence) {
+    (void)user;
+    if (rotate(dst, cmds, count)) return SHR_OK;
+    shr_status status = software.execute(software.user, dst, cmds, count, fence);
+    // The PPA invalidates the panel's cache lines before writing
+    if (dst->pixels == framebuffer.pixels) esp_cache_msync(dst->pixels, dst->byte_length, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    return status;
 }
 
 static void discard(void* user, const shr_surface* surface) {
@@ -108,6 +173,9 @@ esp_err_t screen_start(const global_state* state) {
     shr_screen_desc sd;
     shr_screen_desc_init(&sd);
     sd.width = BSP_LCD_V_RES, sd.height = BSP_LCD_H_RES, sd.rotation = SHR_ROTATE_90_CCW, sd.clear = SHR_RGB(0, 0, 0);
+    shr_surface bands = {
+        .pixels = band, .width = BSP_LCD_V_RES, .height = 16, .stride = BSP_LCD_V_RES * 2, .byte_length = sizeof band, .format = SHR_FORMAT_RGB565};
+    sd.bands = &bands, sd.band_count = 1, sd.band_align = 16;
     shr_pl_res_bitmap_font_desc fd;
     shr_pl_res_bitmap_font_desc_init(&fd);
     fd.open = open_package, fd.locale = "ko";
@@ -115,15 +183,124 @@ esp_err_t screen_start(const global_state* state) {
     const terminal_size* size = &state->terminal_size;
     shr_rect area = {0, 0, (int32_t)size->width_pixels, (int32_t)size->height_pixels};
     shr_color background = SHR_RGB(0, 0, 0);
-    if (check(shr_software_driver_create(NULL, 0, 0, 256, &driver), "driver") != SHR_OK || check(shr_create(&cd, &context), "context") != SHR_OK ||
-        check(shr_screen_configure(context, &sd), "screen") != SHR_OK ||
+    ESP_RETURN_ON_ERROR(ppa_register_client(&(ppa_client_config_t){.oper_type = PPA_OPERATION_SRM}, &ppa), TAG, "PPA");
+    if (check(shr_software_driver_create(NULL, 0, 0, 256, &software), "driver") != SHR_OK) return ESP_FAIL;
+    // Translucent images: 8 bytes a pixel in planes, 8 MiB by default
+    shr_software_driver_image_planes(&software, 2 << 20);
+    driver = software, driver.execute = execute;
+    // Moves would be CPU memmoves in PSRAM: 33 ms per one-line scroll against 21 ms for drawing the rows again
+    driver.caps.flags &= ~SHR_DRIVER_CHEAP_MOVE;
+    if (check(shr_create(&cd, &context), "context") != SHR_OK || check(shr_screen_configure(context, &sd), "screen") != SHR_OK ||
         check(shr_pl_res_bitmap_font_create(context, &fd, &font), "font") != SHR_OK ||
-        check(shr_lyr_create(context, 0, area, &grid), "grid") != SHR_OK || check(shr_lyr_create(context, 1, area, &cursor), "cursor") != SHR_OK ||
+        check(shr_lyr_create(context, 0, area, &grid), "grid") != SHR_OK ||
+        check(shr_lyr_create(context, 1, area, &pictures), "pictures") != SHR_OK ||
+        check(shr_lyr_create(context, 2, area, &cursor), "cursor") != SHR_OK ||
         check(shr_pl_lyr_tilemap_resize(grid, font, (int32_t)size->rows, (int32_t)size->columns, &background), "tilemap") != SHR_OK ||
         ghostty_render_state_row_iterator_new(&terminal_allocator, &rows) != GHOSTTY_SUCCESS ||
-        ghostty_render_state_row_cells_new(&terminal_allocator, &cells) != GHOSTTY_SUCCESS)
+        ghostty_render_state_row_cells_new(&terminal_allocator, &cells) != GHOSTTY_SUCCESS ||
+        ghostty_kitty_graphics_placement_iterator_new(&terminal_allocator, &placements) != GHOSTTY_SUCCESS)
         return ESP_FAIL;
     return ESP_OK;
+}
+
+static picture* make_picture(GhosttyKittyGraphicsImage image, uint32_t id, const GhosttyKittyGraphicsPlacementRenderInfo* r) {
+    static const int sizes[] = {[GHOSTTY_KITTY_IMAGE_FORMAT_RGB] = 3,
+                                [GHOSTTY_KITTY_IMAGE_FORMAT_RGBA] = 4,
+                                [GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA] = 2,
+                                [GHOSTTY_KITTY_IMAGE_FORMAT_GRAY] = 1};
+    static const shr_image_source_format formats[] = {[GHOSTTY_KITTY_IMAGE_FORMAT_RGB] = SHR_IMAGE_SRC_RGB888,
+                                                      [GHOSTTY_KITTY_IMAGE_FORMAT_RGBA] = SHR_IMAGE_SRC_RGBA8888,
+                                                      [GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA] = SHR_IMAGE_SRC_GRAY_ALPHA88,
+                                                      [GHOSTTY_KITTY_IMAGE_FORMAT_GRAY] = SHR_IMAGE_SRC_GRAY8};
+    uint64_t generation = 0;
+    uint32_t width = 0, height = 0;
+    GhosttyKittyImageFormat format = GHOSTTY_KITTY_IMAGE_FORMAT_PNG;
+    const uint8_t* pixels = NULL;
+    ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_GENERATION, &generation);
+    picture key = {id, r->source_x, r->source_y, r->source_width, r->source_height, r->pixel_width, r->pixel_height, generation, NULL, true};
+    picture* free_slot = NULL;
+    for (size_t i = 0; i < sizeof made / sizeof made[0]; i++) {
+        picture* p = &made[i];
+        if (p->image != NULL && p->id == id && p->generation == generation && p->source_x == key.source_x && p->source_y == key.source_y &&
+            p->source_width == key.source_width && p->source_height == key.source_height && p->width == key.width && p->height == key.height) {
+            p->used = true;
+            return p;
+        }
+        if (p->image == NULL && free_slot == NULL) free_slot = p;
+    }
+    ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_WIDTH, &width);
+    ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_HEIGHT, &height);
+    ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_FORMAT, &format);
+    if (free_slot == NULL || format == GHOSTTY_KITTY_IMAGE_FORMAT_PNG || format > GHOSTTY_KITTY_IMAGE_FORMAT_GRAY ||
+        ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR, (void*)&pixels) != GHOSTTY_SUCCESS)
+        return NULL;
+    shr_image_source source = {(int32_t)width, (int32_t)height, formats[format], pixels, (size_t)width * sizes[format]};
+    shr_rect area = {(int32_t)key.source_x, (int32_t)key.source_y, (int32_t)(key.source_x + key.source_width),
+                     (int32_t)(key.source_y + key.source_height)};
+    shr_status status;
+    if (key.width == key.source_width && key.height == key.source_height) {
+        source.pixels = pixels + key.source_y * source.stride + key.source_x * sizes[format];
+        source.width = (int32_t)key.width, source.height = (int32_t)key.height;
+        status = shr_pl_res_image_create_from(context, &source, &key.image);
+    } else {
+        uint32_t filter = key.width < key.source_width || key.height < key.source_height ? SHR_SCALE_BOX : SHR_SCALE_BILINEAR;
+        status = shr_pl_res_image_create_scaled(context, &source, area, (int32_t)key.width, (int32_t)key.height, filter, &key.image);
+    }
+    if (status != SHR_OK) return NULL;
+    *free_slot = key;
+    return free_slot;
+}
+
+// Under the terminal's lock: its kitty images and their places in this frame; z < 0 would be under the opaque cells
+static void find_pictures(GhosttyTerminal terminal, GhosttyKittyGraphics graphics) {
+    uint64_t generation = 0;
+    wanted_count = 0;
+    for (size_t i = 0; i < sizeof made / sizeof made[0]; i++)
+        made[i].used = false;
+    if (ghostty_kitty_graphics_get(graphics, GHOSTTY_KITTY_GRAPHICS_DATA_GENERATION, &generation) != GHOSTTY_SUCCESS || generation == 0 ||
+        ghostty_kitty_graphics_get(graphics, GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR, (void*)&placements) != GHOSTTY_SUCCESS)
+        return;
+    while (wanted_count < (int)(sizeof wanted / sizeof wanted[0]) && ghostty_kitty_graphics_placement_next(placements)) {
+        uint32_t id = 0, x = 0, y = 0;
+        int32_t z = 0;
+        GhosttyKittyGraphicsPlacementRenderInfo r = GHOSTTY_INIT_SIZED(GhosttyKittyGraphicsPlacementRenderInfo);
+        ghostty_kitty_graphics_placement_get(placements, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID, &id);
+        ghostty_kitty_graphics_placement_get(placements, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z, &z);
+        ghostty_kitty_graphics_placement_get(placements, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_X_OFFSET, &x);
+        ghostty_kitty_graphics_placement_get(placements, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Y_OFFSET, &y);
+        GhosttyKittyGraphicsImage image = ghostty_kitty_graphics_image(graphics, id);
+        picture* p;
+        if (z < 0 || image == NULL || ghostty_kitty_graphics_placement_render_info(placements, image, terminal, &r) != GHOSTTY_SUCCESS ||
+            !r.viewport_visible || r.pixel_width == 0 || r.pixel_height == 0 || (p = make_picture(image, id, &r)) == NULL)
+            continue;
+        placed e = {p->image,
+                    {r.viewport_col * SHR_CELL_WIDTH + (int32_t)x, r.viewport_row * SHR_CELL_HEIGHT + (int32_t)y},
+                    (int32_t)p->width,
+                    (int32_t)p->height,
+                    z};
+        int i = wanted_count++;
+        for (; i > 0 && wanted[i - 1].z > z; i--)
+            wanted[i] = wanted[i - 1];
+        wanted[i] = e;
+    }
+}
+
+static void draw_pictures(void) {
+    if (wanted_count == shown_count && memcmp(wanted, shown, sizeof wanted[0] * (size_t)wanted_count) == 0) return;
+    shr_lyr_cmd_begin(pictures);
+    for (int i = 0; i < wanted_count; i++) {
+        const placed* e = &wanted[i];
+        shr_rect src = {e->at.x < 0 ? -e->at.x : 0, e->at.y < 0 ? -e->at.y : 0, e->width, e->height};
+        shr_lyr_cmd_image(pictures, e->image, src, (shr_point){e->at.x < 0 ? 0 : e->at.x, e->at.y < 0 ? 0 : e->at.y});
+    }
+    shr_lyr_cmd_commit(pictures);
+    memcpy(shown, wanted, sizeof wanted);
+    shown_count = wanted_count;
+    for (size_t k = 0; k < sizeof made / sizeof made[0]; k++)
+        if (made[k].image != NULL && !made[k].used) {
+            shr_pl_res_image_release(made[k].image);
+            made[k].image = NULL;
+        }
 }
 
 static shr_color rgb(GhosttyColorRgb c) {
@@ -170,7 +347,7 @@ static void draw_cursor(const GhosttyRenderStateCursor* c, const GhosttyRenderSt
 }
 
 void screen_draw(void) {
-    GhosttyRenderState render = terminal_update();
+    GhosttyRenderState render = terminal_update(find_pictures);
     GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
     GhosttyRenderStateCursor now = GHOSTTY_INIT_SIZED(GhosttyRenderStateCursor);
     ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors);
@@ -186,10 +363,12 @@ void screen_draw(void) {
             draw_cell(y, x, &colors);
     }
     ghostty_render_state_clean(render);
-    if (now.visible != shown.visible || now.viewport_has_value != shown.viewport_has_value || now.viewport_x != shown.viewport_x ||
-        now.viewport_y != shown.viewport_y || now.wide_tail != shown.wide_tail || now.visual_style != shown.visual_style)
+    draw_pictures();
+    if (now.visible != shown_cursor.visible || now.viewport_has_value != shown_cursor.viewport_has_value ||
+        now.viewport_x != shown_cursor.viewport_x || now.viewport_y != shown_cursor.viewport_y || now.wide_tail != shown_cursor.wide_tail ||
+        now.visual_style != shown_cursor.visual_style)
         draw_cursor(&now, &colors);
-    shown = now;
+    shown_cursor = now;
 
     shr_deadline next;
     shr_event event;

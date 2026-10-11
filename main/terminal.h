@@ -14,5 +14,5 @@ void terminal_write(const void* data, size_t size);
 // The terminal's answers to queries, for the SSH channel
 size_t terminal_reply(void* buffer, size_t size);
 // From the render task: the terminal's state, safe to read until the next call; rows that only moved are not dirty,
-// so its row moves must be replayed first
-GhosttyRenderState terminal_update(void);
+// so its row moves must be replayed first. `images` gets the kitty images, valid only during the call.
+GhosttyRenderState terminal_update(void (*images)(GhosttyTerminal terminal, GhosttyKittyGraphics graphics));

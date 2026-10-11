@@ -38,4 +38,5 @@ make test test-linux                   # SSH tests against a local sshd under sa
 ## Licence
 
 GPL-3.0-or-later. wolfSSH and wolfSSL: GPL-3.0-or-later; Shiroko: MIT (`third_party/shiroko/NOTICE`); zstd:
-BSD-3-Clause; ESP-IDF and the Tab5 BSP: Apache-2.0.
+BSD-3-Clause; Ghostty (libghostty-vt, with uucode and Zig's compiler_rt): MIT; Wuffs: Apache-2.0 OR MIT; ESP-IDF and
+the Tab5 BSP: Apache-2.0.

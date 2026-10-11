@@ -1,0 +1,60 @@
+ED3 (CSI 3 J) left kitty placements anchored in the erased scrollback alive, moved to the top
+of the screen: delete them first, as kitty does. Upstream report: ghostty-org/ghostty discussions #14457.
+
+--- a/src/terminal/Terminal.zig
++++ b/src/terminal/Terminal.zig
+@@ -3783,7 +3783,18 @@
+             assert(!self.screens.active.cursor.pending_wrap);
+         },
+ 
+-        .scrollback => self.screens.active.eraseHistory(null),
++        .scrollback => {
++            if (comptime build_options.kitty_graphics) {
++                // Erasing history moves the pins in its rows to the top of
++                // their page, which can be in the active area.
++                self.screens.active.kitty_images.clearHistory(
++                    self.io(),
++                    self.screens.active.alloc,
++                    self,
++                );
++            }
++            self.screens.active.eraseHistory(null);
++        },
+     }
+ }
+ 
+--- a/src/terminal/kitty/graphics_storage.zig
++++ b/src/terminal/kitty/graphics_storage.zig
+@@ -1190,6 +1190,32 @@
+             self.images.count() != images_before) self.markMutated(io);
+     }
+ 
++    /// Clear placements anchored in scrollback before it is erased (ED3),
++    /// then reclaim their images if unused.
++    pub fn clearHistory(
++        self: *ImageStorage,
++        io: std.Io,
++        alloc: Allocator,
++        t: *terminal.Terminal,
++    ) void {
++        const placements_before = self.placements.count();
++        var it = self.placements.iterator();
++        while (it.next()) |entry| {
++            const pin = switch (entry.value_ptr.location) {
++                .pin => |pin| pin,
++                .virtual, .relative => continue,
++            };
++            if (pin.garbage) continue;
++            if (t.screens.active.pages.pointFromPin(.active, pin.*) != null) continue;
++
++            const image_id = entry.key_ptr.image_id;
++            self.removePlacement(t.screens.active, entry);
++            self.deleteIfUnused(alloc, image_id);
++        }
++        _ = self.removeOrphans(t.screens.active, null);
++        if (self.placements.count() != placements_before) self.markMutated(io);
++    }
++
+     /// Delete placements, images.
+     pub fn delete(
+         self: *ImageStorage,

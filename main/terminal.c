@@ -48,6 +48,7 @@ esp_err_t terminal_start(const terminal_size* size) {
         return ESP_ERR_NO_MEM;
     GhosttyTerminalModeConfig graphemes = {GHOSTTY_MODE_GRAPHEME_CLUSTER, true};
     uint64_t image_bytes = 4 << 20;
+    size_t command_bytes = 8 << 20; // instead of 65 MiB
     ghostty_terminal_resize(terminal, (uint16_t)size->columns, (uint16_t)size->rows, size->width_pixels / size->columns,
                             size->height_pixels / size->rows);
     // Without defaults, ?5h and OSC 10/11 do nothing
@@ -55,6 +56,7 @@ esp_err_t terminal_start(const terminal_size* size) {
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &(GhosttyColorRgb){0, 0, 0});
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_MODE_DEFAULT, &graphemes);
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &image_bytes);
+    ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY, &command_bytes);
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, (const void*)reply);
     ghostty_render_state_set(render, GHOSTTY_RENDER_STATE_OPTION_ROW_MOVES, &(bool){true});
     return ESP_OK;
@@ -74,9 +76,11 @@ size_t terminal_reply(void* buffer, size_t size) {
     return n;
 }
 
-GhosttyRenderState terminal_update(void) {
+GhosttyRenderState terminal_update(void (*images)(GhosttyTerminal terminal, GhosttyKittyGraphics graphics)) {
+    GhosttyKittyGraphics graphics;
     xSemaphoreTake(lock, portMAX_DELAY);
     ghostty_render_state_update(render, terminal);
+    if (ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, (void*)&graphics) == GHOSTTY_SUCCESS) images(terminal, graphics);
     xSemaphoreGive(lock);
     return render;
 }
