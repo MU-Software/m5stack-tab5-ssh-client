@@ -175,6 +175,10 @@ void screen_draw(void) {
     GhosttyRenderStateCursor now = GHOSTTY_INIT_SIZED(GhosttyRenderStateCursor);
     ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors);
     ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_CURSOR, &now);
+    GhosttyRenderStateRowMoves moves = {0};
+    ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_ROW_MOVES, &moves);
+    for (int32_t i = 0; i < moves.count; i++)
+        shr_pl_lyr_tilemap_scroll(grid, moves.moves[i].top, moves.moves[i].bottom, moves.moves[i].n, (shr_text_style){0});
     ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, (void*)&rows);
     for (uint16_t y; ghostty_render_state_row_iterator_next_dirty(rows, &y);) {
         ghostty_render_state_row_get(rows, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, (void*)&cells);

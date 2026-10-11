@@ -56,6 +56,7 @@ esp_err_t terminal_start(const terminal_size* size) {
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_MODE_DEFAULT, &graphemes);
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &image_bytes);
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, (const void*)reply);
+    ghostty_render_state_set(render, GHOSTTY_RENDER_STATE_OPTION_ROW_MOVES, &(bool){true});
     return ESP_OK;
 }
 

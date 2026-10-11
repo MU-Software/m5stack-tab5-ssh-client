@@ -14,7 +14,7 @@ GHOSTTY = build/ghostty
 help:                ## List the targets
 	@grep -hE '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-14s %s\n", $$1, $$2}'
 
-build: $(SHIROKO)/generated $(GHOSTTY)/out  ## Build the firmware (re-applies sdkconfig.defaults when it changed)
+build: $(SHIROKO)/generated $(GHOSTTY)/out/lib/libghostty-vt.a  ## Build the firmware (re-applies sdkconfig.defaults when it changed)
 	@if [ sdkconfig.defaults -nt $(APP)/sdkconfig ]; then rm -f $(APP)/sdkconfig; fi
 	$(call IDF,.,,app) build
 
@@ -32,8 +32,9 @@ ghostty:             ## libghostty-vt for the ESP32-P4, from a copy of third_par
 	cd $(GHOSTTY)/src && zig build -Demit-lib-vt -Dtarget=riscv32-freestanding-none -Dcpu=baseline-d -Doptimize=ReleaseSmall \
 	    -Dsimd=false -Dvt-features=-all,+render-state,+grid_introspection,+kitty-graphics,+png --prefix ../out
 
-$(GHOSTTY)/out:
+$(GHOSTTY)/out/lib/libghostty-vt.a: $(wildcard patches/ghostty/*.patch)
 	$(MAKE) ghostty
+	touch $@
 
 reconfigure:         ## Discard sdkconfig and re-apply sdkconfig.defaults
 	rm -f $(APP)/sdkconfig

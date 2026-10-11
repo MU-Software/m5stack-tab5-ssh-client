@@ -1,0 +1,767 @@
+--- a/src/terminal/Screen.zig
++++ b/src/terminal/Screen.zig
+@@ -86,6 +86,76 @@
+ /// Dirty flags for the renderer.
+ dirty: Dirty = .{},
+ 
++/// Full-width row moves of the active area since the last render state
++/// update. See RowMoves.
++row_moves: RowMoves = .{},
++
++/// A short log of full-width row moves of the active area, recorded by the
++/// scroll primitives and consumed by RenderState.beginUpdate. A consumer that
++/// applies the moves in order to its copy of the previous rows and then
++/// rebuilds the dirty rows gets the current rows. Partial-width (left/right
++/// margin) moves are not recorded: they keep their rows dirty.
++pub const RowMoves = struct {
++    pub const capacity = 16;
++
++    /// Rows [top, bottom) of the active area: the row at y + n moves to y.
++    /// n > 0 moves content up, n < 0 down. |n| is at most bottom - top.
++    pub const Move = struct {
++        top: size.CellCountInt,
++        bottom: size.CellCountInt,
++        n: i32,
++    };
++
++    items: [capacity]Move = undefined,
++    len: u8 = 0,
++
++    /// Moves were lost: the log no longer describes the changes.
++    overflow: bool = false,
++
++    /// Set by the consumer: scroll fast paths leave rows that only moved
++    /// clean, because the consumer replays the moves.
++    clean_moves: bool = false,
++
++    /// Some fast path left moved rows clean since the last reset.
++    cleaned: bool = false,
++
++    pub fn record(self: *RowMoves, top: usize, bottom: usize, n: isize) void {
++        if (self.overflow) return;
++        const h: i32 = @intCast(bottom - top);
++        const d: i32 = std.math.clamp(@as(i32, @intCast(n)), -h, h);
++        if (self.len > 0) {
++            const last = &self.items[self.len - 1];
++            if (last.top == top and last.bottom == bottom and (last.n > 0) == (d > 0)) {
++                last.n = std.math.clamp(last.n + d, -h, h);
++                return;
++            }
++        }
++        if (self.len == capacity) {
++            self.overflow = true;
++            return;
++        }
++        self.items[self.len] = .{ .top = @intCast(top), .bottom = @intCast(bottom), .n = d };
++        self.len += 1;
++    }
++
++    /// Whether a fast path may leave its moved rows clean (and must say so).
++    pub fn leaveClean(self: *RowMoves) bool {
++        if (!self.clean_moves or self.overflow) return false;
++        self.cleaned = true;
++        return true;
++    }
++
++    pub fn slice(self: *const RowMoves) []const Move {
++        return self.items[0..self.len];
++    }
++
++    pub fn reset(self: *RowMoves) void {
++        self.len = 0;
++        self.overflow = false;
++        self.cleaned = false;
++    }
++};
++
+ /// See Terminal.Dirty. This behaves the same way.
+ pub const Dirty = packed struct {
+     /// Set when the selection is set or unset, regardless of if the
+@@ -980,6 +1050,7 @@
+ 
+             // eraseRow will shift everything below it up.
+             try self.pages.eraseRow(.{ .active = .{} });
++            self.row_moves.record(0, self.pages.rows, 1);
+ 
+             // Note we don't need to mark anything dirty in this branch
+             // because eraseRow will mark all the rotated rows as dirty
+@@ -1001,6 +1072,7 @@
+         // Grow our pages by one row. The PageList will handle if we need to
+         // allocate, prune scrollback, whatever.
+         _ = try self.pages.grow();
++        self.row_moves.record(0, self.pages.rows, 1);
+ 
+         const new_pin = new_pin: {
+             // Calculate this before cursorChangePin because that function may
+@@ -1097,6 +1169,7 @@
+ 
+     // Logic below assumes we always have at least one row that isn't moving
+     assert(self.cursor.y < self.pages.rows - 1);
++    self.row_moves.record(0, self.cursor.y + 1, 1);
+ 
+     // Explanation:
+     //  We don't actually move everything that's at or above the cursor row,
+@@ -1289,6 +1362,7 @@
+     assert(limit >= 1);
+     assert(self.cursor.y >= limit);
+     defer self.assertIntegrity();
++    self.row_moves.record(self.cursor.y - limit, self.cursor.y + 1, 1);
+ 
+     const pin: *Pin = self.cursor.page_pin;
+ 
+@@ -1344,8 +1418,9 @@
+     // Mark the whole page as dirty.
+     //
+     // Technically we only need to mark the rotated rows but this is
+-    // a hot function, so we want to minimize work.
+-    page.dirty = true;
++    // a hot function, so we want to minimize work. A consumer replaying
++    // row moves only needs the cleared row, which reset() marked.
++    if (!self.row_moves.leaveClean()) page.dirty = true;
+ 
+     // If our viewport is a pin and it's within the rotated region
+     // then we need to shift its cached row offset up. See
+--- a/src/terminal/Terminal.zig
++++ b/src/terminal/Terminal.zig
+@@ -2950,6 +2950,7 @@
+         const end_cell: *Cell = &cells[page.size.cols - 1];
+         if (end_cell.wide == .spacer_head) {
+             end_cell.wide = .narrow;
++            row.dirty = true;
+         }
+     }
+ 
+@@ -2968,6 +2969,7 @@
+         wide_cell.content.codepoint = .{ .data = 0 };
+         wide_cell.wide = .narrow;
+         left_cell.wide = .narrow;
++        row.dirty = true;
+     }
+ 
+     if (right_cell.wide == .wide) {
+@@ -2979,6 +2981,7 @@
+         right_cell.content.codepoint.data = 0;
+         right_cell.wide = .narrow;
+         tail_cell.wide = .narrow;
++        row.dirty = true;
+     }
+ }
+ 
+@@ -3077,6 +3080,9 @@
+         self.screens.active.cursor.page_pin.node,
+         cur_p.node,
+     );
++    const moves = &self.screens.active.row_moves;
++    if (!left_right) moves.record(start_y, self.scrolling_region.bottom + 1, -@as(isize, @intCast(adjusted_count)));
++    const leave_clean = !left_right and moves.leaveClean();
+ 
+     // Our current y position relative to the cursor
+     var y: usize = rem;
+@@ -3085,6 +3091,7 @@
+     while (y > 0) {
+         const cur_rac = cur_p.rowAndCell();
+         const cur_row: *Row = cur_rac.row;
++        var moved_clean = false;
+ 
+         // If this is one of the lines we need to shift, do so
+         if (y > adjusted_count) {
+@@ -3132,6 +3139,7 @@
+                     const dst = dst_row.*;
+                     dst_row.* = src_row.*;
+                     src_row.* = dst;
++                    moved_clean = leave_clean;
+ 
+                     // Ensure what we did didn't corrupt the page
+                     cur_p.node.page().assertIntegrity();
+@@ -3168,8 +3176,9 @@
+             if (!left_right) cur_row.reset();
+         }
+ 
+-        // Mark the row as dirty
+-        cur_p.markDirty();
++        // Mark the row as dirty. A row that only moved keeps its own
++        // dirty bit when the consumer replays the move.
++        if (!moved_clean) cur_p.markDirty();
+ 
+         // We have successfully processed a line.
+         y -= 1;
+@@ -3245,6 +3254,9 @@
+         cur_p.node,
+         cur_p.down(rem - 1).?.node,
+     );
++    const moves = &self.screens.active.row_moves;
++    if (!left_right) moves.record(start_y, self.scrolling_region.bottom + 1, @intCast(adjusted_count));
++    const leave_clean = !left_right and moves.leaveClean();
+ 
+     // Our current y position relative to the cursor
+     var y: usize = 0;
+@@ -3253,6 +3265,7 @@
+     while (y < rem) {
+         const cur_rac = cur_p.rowAndCell();
+         const cur_row: *Row = cur_rac.row;
++        var moved_clean = false;
+ 
+         // If this is one of the lines we need to shift, do so
+         if (y < rem - adjusted_count) {
+@@ -3300,6 +3313,7 @@
+                     const dst = dst_row.*;
+                     dst_row.* = src_row.*;
+                     src_row.* = dst;
++                    moved_clean = leave_clean;
+ 
+                     // Ensure what we did didn't corrupt the page
+                     cur_p.node.page().assertIntegrity();
+@@ -3336,8 +3350,9 @@
+             if (!left_right) cur_row.reset();
+         }
+ 
+-        // Mark the row as dirty
+-        cur_p.markDirty();
++        // Mark the row as dirty. A row that only moved keeps its own
++        // dirty bit when the consumer replays the move.
++        if (!moved_clean) cur_p.markDirty();
+ 
+         // We have successfully processed a line.
+         y += 1;
+--- a/src/terminal/render.zig
++++ b/src/terminal/render.zig
+@@ -198,6 +198,26 @@
+     /// beginUpdate.
+     pending_styles: std.ArrayList(StyleRun) = .empty,
+ 
++    /// Opt in to replayed row moves (Screen.RowMoves). When set, scroll fast
++    /// paths leave rows that only moved clean and the update rotates
++    /// `row_data` itself, so a dirty row is a row whose content changed.
++    /// The caller must then replay `row_moves` on its own copy of the rows
++    /// before rebuilding the dirty rows. When unset, moved rows stay dirty
++    /// and `row_moves` is only a hint.
++    track_row_moves: bool = false,
++
++    /// The full-width viewport row moves since the last `clean`, in order.
++    /// Unknown (do not replay; rebuild every dirty row) when
++    /// `row_moves_unknown` or `row_moves.overflow` is set.
++    row_moves: Screen.RowMoves = .{},
++    row_moves_unknown: bool = false,
++
++    /// Whether the last update's viewport followed the active area.
++    viewport_active: bool = false,
++
++    /// Entries of row_data that a rotation left stale; rebuilt by the update.
++    rebuild: std.DynamicBitSetUnmanaged = .{},
++
+     /// Initial state.
+     pub const empty: RenderState = .{
+         .rows = 0,
+@@ -466,6 +486,7 @@
+         }
+         self.row_data.deinit(alloc);
+         self.pending_styles.deinit(alloc);
++        self.rebuild.deinit(alloc);
+     }
+ 
+     /// Update the render state to the latest terminal state.
+@@ -516,6 +537,12 @@
+         const s: *Screen = t.screens.active;
+         const viewport_pin = s.pages.getTopLeft(.viewport);
+ 
++        // Take the row moves since the last update. See Screen.RowMoves.
++        const moves = s.row_moves;
++        s.row_moves.reset();
++        s.row_moves.clean_moves = self.track_row_moves;
++        const viewport_active = s.pages.viewport == .active;
++
+         // The overscan rows to capture beyond the viewport. The request
+         // decides the layout of row_data, and the actual counts are
+         // limited to the rows that exist. With no request, everything
+@@ -550,7 +577,8 @@
+         // The index of top.pin in row_data.
+         const first: usize = above_req - top.above;
+ 
+-        const redraw = redraw: {
++        const pin_moved = if (self.viewport_pin) |old| !old.eql(viewport_pin) else false;
++        const hard_redraw = redraw: {
+             // If our screen key changed, we need to do a full rebuild
+             // because our render state is viewport-specific.
+             if (t.screens.active_key != self.screen) break :redraw true;
+@@ -588,14 +616,41 @@
+             if (self.overscan.above != top.above or
+                 self.overscan.below != below) break :redraw true;
+ 
+-            // If our viewport pin changed, we do a full rebuild.
+-            if (self.viewport_pin) |old| {
+-                if (!old.eql(viewport_pin)) break :redraw true;
+-            }
+-
+             break :redraw false;
++        };
++
++        // The moves can be replayed on the last update's rows: same screen,
++        // size and layout, and the viewport is the active area at both.
++        const moves_ok = !hard_redraw and !moves.overflow and
++            viewport_active and self.viewport_active and
++            above_req == 0 and below_req == 0;
++        if (!moves_ok) {
++            self.row_moves_unknown = true;
++        } else for (moves.slice()) |m| self.row_moves.record(m.top, m.bottom, m.n);
++
++        // Whether to rotate row_data by the moves rather than rebuild the
++        // moved rows. A moved viewport (rows scrolled into scrollback) is
++        // rotated only if row k of the last update is the new top row.
++        const rotate = rotate: {
++            if (!self.track_row_moves or !moves_ok or moves.len == 0) break :rotate false;
++            if (s.selection != null or self.pending_styles.items.len != 0) break :rotate false;
++            if (!pin_moved) break :rotate true;
++            var k: usize = 0;
++            for (moves.slice()) |m| {
++                if (m.top != 0 or m.bottom != s.pages.rows or m.n <= 0) break :rotate false;
++                k += @intCast(m.n);
++            }
++            if (k >= s.pages.rows) break :rotate false;
++            const old = self.row_data.slice();
++            const pin = old.items(.pin)[k];
++            break :rotate pin.node == viewport_pin.node and pin.y == viewport_pin.y and
++                old.items(.serial)[k] == viewport_pin.node.serial;
+         };
+ 
++        // A moved viewport is a full rebuild, and so are rows the terminal
++        // left clean for moves we can't replay.
++        const redraw = hard_redraw or (pin_moved and !rotate) or (moves.cleaned and !rotate);
++
+         // Always set our cheap fields, its more expensive to compare
+         self.rows = s.pages.rows;
+         self.cols = s.pages.cols;
+@@ -695,6 +750,28 @@
+         const row_dirties = row_data.items(.dirty);
+         const row_applied = row_data.items(.applied_styles);
+ 
++        // Replay the moves on row_data. Entries a move vacates are stale
++        // and rebuilt below; the flags move with the entries.
++        if (rotate) {
++            try self.rebuild.resize(alloc, row_data.len, false);
++            self.rebuild.unsetAll();
++            for (moves.slice()) |m| {
++                const h: usize = m.bottom - m.top;
++                const d: usize = @abs(m.n);
++                if (d < h) {
++                    inline for (comptime std.enums.values(std.MultiArrayList(Row).Field)) |f| {
++                        const items = row_data.items(f)[m.top..m.bottom];
++                        std.mem.rotate(@TypeOf(items[0]), items, if (m.n > 0) d else h - d);
++                    }
++                    rotateBits(&self.rebuild, m.top, m.bottom, if (m.n > 0) d else h - d);
++                }
++                if (m.n > 0)
++                    self.rebuild.setRangeValue(.{ .start = m.bottom - d, .end = m.bottom }, true)
++                else
++                    self.rebuild.setRangeValue(.{ .start = m.top, .end = m.top + d }, true);
++            }
++        }
++
+         // If we're redrawing then every row will be rebuilt, superseding
+         // any pending style runs from prior updates. Clearing also
+         // guarantees pending runs always match the current dimensions
+@@ -786,7 +863,7 @@
+             // node appears at most once and its stored pins have consecutive
+             // y values, so if the first and last entries of this chunk's range
+             // already match then every entry in between matches too.
+-            if (redraw or
++            if (redraw or rotate or
+                 row_pins[y].node != node or
+                 row_pins[y].y != chunk.start or
+                 row_serials[y] != node_serial or
+@@ -804,7 +881,14 @@
+                 }
+             }
+ 
+-            if (!redraw and !page_dirty) {
++            if (rotate and !redraw and !page_dirty) {
++                for (page_rows, 0..) |*page_row, i| {
++                    if (!page_row.dirty and !self.rebuild.isSet(y + i)) continue;
++                    page_row.dirty = false;
++                    any_dirty = true;
++                    try builder.row(p, page_row, y + i);
++                }
++            } else if (!redraw and !page_dirty) {
+                 // Only dirty rows (usually none) need a rebuild. Scan the
+                 // dirty flags a group at a time; the dirty bit is directly
+                 // testable on the packed row representation.
+@@ -923,6 +1007,9 @@
+             }
+         }
+ 
++        if (rotate) any_dirty = true;
++        self.viewport_active = viewport_active;
++
+         // Handle dirty state.
+         if (redraw) {
+             // Fully redraw resets some other state.
+@@ -1014,6 +1101,21 @@
+     pub fn clean(self: *RenderState) void {
+         self.dirty = .false;
+         @memset(self.row_data.items(.dirty), false);
++        self.row_moves.reset();
++        self.row_moves_unknown = false;
++    }
++
++    /// std.mem.rotate for bits [start, end) of a bit set.
++    fn rotateBits(bits: *std.DynamicBitSetUnmanaged, start: usize, end: usize, amount: usize) void {
++        var tmp: [256]bool = undefined;
++        const n = end - start;
++        if (n > tmp.len) {
++            // Too long to rotate here: rebuild the whole range instead.
++            bits.setRangeValue(.{ .start = start, .end = end }, true);
++            return;
++        }
++        for (0..n) |i| tmp[i] = bits.isSet(start + (i + amount) % n);
++        for (0..n) |i| bits.setValue(start + i, tmp[i]);
+     }
+ 
+     /// Returns the `row_data` index of the top row of the viewport.
+@@ -1799,14 +1901,22 @@
+ }
+ 
+ test "incremental updates match full rebuild" {
+-    try testIncrementalMatchesFresh(.{});
++    try testIncrementalMatchesFresh(.{}, false);
+ }
+ 
+ test "incremental updates match full rebuild with overscan" {
+-    try testIncrementalMatchesFresh(.{ .above = 2, .below = 1 });
++    try testIncrementalMatchesFresh(.{ .above = 2, .below = 1 }, false);
+ }
+ 
+-fn testIncrementalMatchesFresh(request: RenderState.Overscan) !void {
++test "incremental updates match full rebuild with row moves" {
++    try testIncrementalMatchesFresh(.{}, true);
++}
++
++test "incremental updates match full rebuild with row moves and overscan" {
++    try testIncrementalMatchesFresh(.{ .above = 2, .below = 1 }, true);
++}
++
++fn testIncrementalMatchesFresh(request: RenderState.Overscan, track: bool) !void {
+     const testing = std.testing;
+     const alloc = testing.allocator;
+     const io = testing.io;
+@@ -1828,6 +1938,7 @@
+     var inc: RenderState = .empty;
+     defer inc.deinit(alloc);
+     inc.overscan_request = request;
++    inc.track_row_moves = track;
+ 
+     var buf: [64]u8 = undefined;
+     for (0..300) |_| {
+@@ -1945,6 +2056,168 @@
+     }
+ }
+ 
++/// A renderer's view of a row: its cells with styles resolved.
++fn testRowHash(state: *const RenderState, y: usize) u64 {
++    var h = std.hash.Wyhash.init(0);
++    const cells = state.row_data.items(.cells)[y].slice();
++    for (cells.items(.raw), cells.items(.style), cells.items(.grapheme)) |raw, st, gr| {
++        var r = raw;
++        r.style_id = 0;
++        h.update(std.mem.asBytes(&@as(page.Cell.Backing, @bitCast(r))));
++        if (raw.style_id != 0) h.update(std.mem.asBytes(&st.hash()));
++        if (raw.content_tag == .codepoint_grapheme) h.update(std.mem.sliceAsBytes(gr));
++    }
++    return h.final();
++}
++
++/// A renderer that keeps its own rows, replays the row moves and rebuilds
++/// only dirty rows must match a fresh render state after every update.
++fn testRowMovesReplay(track: bool) !void {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++    const io = testing.io;
++
++    var prng = std.Random.DefaultPrng.init(0x5C20_11ED);
++    const rand = prng.random();
++
++    var t = try Terminal.init(io, alloc, .{
++        .cols = 20,
++        .rows = 8,
++        .max_scrollback_bytes = 500,
++    });
++    defer t.deinit(alloc);
++
++    var s = t.vtStream();
++    defer s.deinit();
++
++    var inc: RenderState = .empty;
++    defer inc.deinit(alloc);
++    inc.track_row_moves = track;
++
++    var model: [8]u64 = @splat(0);
++    var replayed: usize = 0;
++    var buf: [64]u8 = undefined;
++    for (0..600) |_| {
++        for (0..rand.intRangeAtMost(usize, 1, 6)) |_| {
++            switch (rand.intRangeAtMost(u8, 0, 15)) {
++                0, 1 => for (0..rand.intRangeAtMost(usize, 1, 30)) |_| {
++                    s.nextSlice(&.{rand.intRangeAtMost(u8, 'A', 'Z')});
++                },
++                2, 3 => for (0..rand.intRangeAtMost(usize, 1, 10)) |_| s.nextSlice("x\r\n"),
++                4 => s.nextSlice(try std.fmt.bufPrint(&buf, "\x1b[{};{}H", .{
++                    rand.intRangeAtMost(u16, 1, 8),
++                    rand.intRangeAtMost(u16, 1, 20),
++                })),
++                5 => s.nextSlice(switch (rand.intRangeAtMost(u8, 0, 2)) {
++                    0 => "\x1b[48;2;30;60;90m",
++                    1 => "\x1b[38;5;120m",
++                    else => "\x1b[0m",
++                }),
++                6 => s.nextSlice(try std.fmt.bufPrint(&buf, "\x1b[{}L", .{rand.intRangeAtMost(u16, 1, 4)})),
++                7 => s.nextSlice(try std.fmt.bufPrint(&buf, "\x1b[{}M", .{rand.intRangeAtMost(u16, 1, 4)})),
++                8 => s.nextSlice(try std.fmt.bufPrint(&buf, "\x1b[{}S", .{rand.intRangeAtMost(u16, 1, 4)})),
++                9 => s.nextSlice(try std.fmt.bufPrint(&buf, "\x1b[{}T", .{rand.intRangeAtMost(u16, 1, 4)})),
++                10 => {
++                    const top = rand.intRangeAtMost(u16, 1, 4);
++                    const bot = rand.intRangeAtMost(u16, top + 1, 8);
++                    s.nextSlice(try std.fmt.bufPrint(&buf, "\x1b[{};{}r", .{ top, bot }));
++                },
++                11 => s.nextSlice(if (rand.boolean()) "\x1bM" else "\x1b[r"),
++                12 => s.nextSlice("字👨‍👩‍👧"),
++                13 => s.nextSlice(if (rand.boolean()) "\x1b[?1049h" else "\x1b[?1049l"),
++                14 => {
++                    const l = rand.intRangeAtMost(u16, 1, 10);
++                    const r = rand.intRangeAtMost(u16, l + 1, 20);
++                    s.nextSlice(try std.fmt.bufPrint(&buf, "\x1b[?69h\x1b[{};{}s", .{ l, r }));
++                },
++                15 => s.nextSlice(if (rand.boolean()) "\x1b[?69l" else "\x1b[2J"),
++                else => unreachable,
++            }
++        }
++        switch (rand.intRangeAtMost(u8, 0, 19)) {
++            0 => t.scrollViewport(.{ .delta = -3 }),
++            1 => t.scrollViewport(.bottom),
++            else => {},
++        }
++
++        try inc.update(alloc, &t);
++        if (!inc.row_moves_unknown and !inc.row_moves.overflow) {
++            for (inc.row_moves.slice()) |m| {
++                const h: usize = m.bottom - m.top;
++                const d: usize = @abs(m.n);
++                const rows = model[m.top..m.bottom];
++                if (d < h) std.mem.rotate(u64, rows, if (m.n > 0) d else h - d);
++                if (m.n > 0) @memset(rows[h - d ..], 0xdead) else @memset(rows[0..d], 0xdead);
++                replayed += 1;
++            }
++        }
++        const dirties = inc.row_data.items(.dirty);
++        for (0..inc.rows) |y| {
++            if (inc.dirty == .full or dirties[y]) model[y] = testRowHash(&inc, y);
++        }
++        inc.clean();
++
++        var fresh: RenderState = .empty;
++        defer fresh.deinit(alloc);
++        try fresh.update(alloc, &t);
++        for (0..fresh.rows) |y| {
++            errdefer std.log.warn("replayed model mismatch on row y={}", .{y});
++            try testing.expectEqual(testRowHash(&fresh, y), model[y]);
++        }
++        if (track) try testCompareStates(&inc, &fresh);
++    }
++    try testing.expect(replayed > 0);
++}
++
++test "row moves replay matches fresh" {
++    try testRowMovesReplay(false);
++}
++
++test "row moves replay matches fresh with clean moves" {
++    try testRowMovesReplay(true);
++}
++
++test "row moves leave moved rows clean" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++    const io = testing.io;
++
++    var t = try Terminal.init(io, alloc, .{ .cols = 10, .rows = 5, .max_scrollback_bytes = 0 });
++    defer t.deinit(alloc);
++    var s = t.vtStream();
++    defer s.deinit();
++    s.nextSlice("\x1b[?1049h1\r\n2\r\n3\r\n4\r\n5");
++
++    var state: RenderState = .empty;
++    defer state.deinit(alloc);
++    state.track_row_moves = true;
++    try state.update(alloc, &t);
++    state.clean();
++    try state.update(alloc, &t);
++    state.clean();
++
++    // LF at the bottom of the alternate screen: one row moves up.
++    s.nextSlice("\n");
++    try state.update(alloc, &t);
++    try testing.expectEqual(.partial, state.dirty);
++    try testing.expectEqual(@as(u8, 1), state.row_moves.len);
++    try testing.expectEqual(Screen.RowMoves.Move{ .top = 0, .bottom = 5, .n = 1 }, state.row_moves.items[0]);
++    const dirties = state.row_data.items(.dirty);
++    for (0..4) |y| try testing.expect(!dirties[y]);
++    try testing.expect(dirties[4]);
++    try testing.expectEqual('2', state.row_data.items(.cells)[0].get(0).raw.codepoint());
++    state.clean();
++
++    // Reverse index at the top: one row moves down.
++    s.nextSlice("\x1b[H\x1bM");
++    try state.update(alloc, &t);
++    try testing.expectEqual(Screen.RowMoves.Move{ .top = 0, .bottom = 5, .n = -1 }, state.row_moves.items[0]);
++    // Row 1 is old row 0, dirty from the cursor move; the rest only moved.
++    try testing.expect(state.row_data.items(.dirty)[0]);
++    for (2..5) |y| try testing.expect(!state.row_data.items(.dirty)[y]);
++    try testing.expectEqual('2', state.row_data.items(.cells)[1].get(0).raw.codepoint());
++}
++
+ test "begin and end update" {
+     const testing = std.testing;
+     const alloc = testing.allocator;
+--- a/src/terminal/c/render.zig
++++ b/src/terminal/c/render.zig
+@@ -200,6 +200,7 @@
+     colors = 19,
+     overscan = 20,
+     overscan_request = 21,
++    row_moves = 22,
+ 
+     /// Output type expected for querying the data of the given kind.
+     pub fn OutType(comptime self: Data) type {
+@@ -218,6 +219,7 @@
+             .cursor => Cursor,
+             .colors => Colors,
+             .overscan, .overscan_request => Overscan,
++            .row_moves => RowMoves,
+         };
+     }
+ };
+@@ -226,14 +228,30 @@
+ pub const SetOption = enum(c_int) {
+     dirty = 0,
+     overscan = 1,
++    row_moves = 2,
+ 
+     /// Input type expected for setting the option.
+     pub fn InType(comptime self: SetOption) type {
+         return switch (self) {
+             .dirty => Dirty,
+             .overscan => Overscan,
++            .row_moves => bool,
+         };
+     }
++};
++
++/// C: GhosttyRenderStateRowMove
++pub const RowMove = extern struct {
++    top: u16 = 0,
++    bottom: u16 = 0,
++    n: i32 = 0,
++};
++
++/// C: GhosttyRenderStateRowMoves
++pub const RowMoves = extern struct {
++    /// Number of moves, or -1 when they are unknown.
++    count: i32 = 0,
++    moves: [@import("../Screen.zig").RowMoves.capacity]RowMove = @splat(.{}),
+ };
+ 
+ /// C: GhosttyRenderStateColors
+@@ -436,6 +454,15 @@
+         .colors => return writeColors(state, out),
+         .overscan => out.* = .init(state.state.overscan),
+         .overscan_request => out.* = .init(state.overscan_request),
++        .row_moves => {
++            const m = &state.state.row_moves;
++            if (state.state.row_moves_unknown or m.overflow) {
++                out.count = -1;
++            } else {
++                out.count = m.len;
++                for (m.slice(), 0..) |v, i| out.moves[i] = .{ .top = v.top, .bottom = v.bottom, .n = v.n };
++            }
++        },
+     }
+ 
+     return .success;
+@@ -476,6 +503,7 @@
+             .above = value.above,
+             .below = value.below,
+         },
++        .row_moves => state.state.track_row_moves = value.*,
+     }
+ 
+     return .success;
+--- a/src/terminal/c/types.zig
++++ b/src/terminal/c/types.zig
+@@ -205,6 +205,8 @@
+     .initStruct("GhosttyRenderStateCursor", render.Cursor),
+     .initStruct("GhosttyRenderStateOverscan", render.Overscan),
+     .initStruct("GhosttyRenderStateRowId", render.RowId),
++    .initStruct("GhosttyRenderStateRowMove", render.RowMove),
++    .initStruct("GhosttyRenderStateRowMoves", render.RowMoves),
+     .initStruct("GhosttyRenderStateRowSelection", render.RowSelection),
+     .initStruct("GhosttySelection", selection.CSelection),
+     .initStruct("GhosttySelectionBuffer", selection.CSelectionBuffer),
+--- a/include/ghostty/vt/render.h
++++ b/include/ghostty/vt/render.h
+@@ -302,6 +302,36 @@
+ } GhosttyRenderStateRowId;
+ 
+ /**
++ * A full-width move of viewport rows [top, bottom): the row at y + n moves
++ * to y (n > 0 moves content up, n < 0 down; |n| <= bottom - top). Rows a
++ * move vacates are dirty.
++ *
++ * @ingroup render
++ */
++typedef struct {
++  uint16_t top;
++  uint16_t bottom;
++  int32_t n;
++} GhosttyRenderStateRowMove;
++
++/**
++ * The row moves since the last ghostty_render_state_clean(), in order.
++ * Replay them on your copy of the rows, then rebuild the dirty rows (all
++ * rows when dirty is GHOSTTY_RENDER_STATE_DIRTY_FULL). With count -1 the
++ * moves are unknown: rebuild every dirty row without replaying.
++ *
++ * Without GHOSTTY_RENDER_STATE_OPTION_ROW_MOVES every moved row is also
++ * dirty, so replaying is optional. With it, rows that only moved are not
++ * dirty and replaying is required.
++ *
++ * @ingroup render
++ */
++typedef struct {
++  int32_t count;
++  GhosttyRenderStateRowMove moves[16];
++} GhosttyRenderStateRowMoves;
++
++/**
+  * Queryable data kinds for ghostty_render_state_get().
+  *
+  * @ingroup render
+@@ -396,6 +426,9 @@
+    *  The next update uses this request. Both sides are zero if it was
+    *  never set. */
+   GHOSTTY_RENDER_STATE_DATA_OVERSCAN_REQUEST = 21,
++
++  /** The row moves since the last clean (GhosttyRenderStateRowMoves). */
++  GHOSTTY_RENDER_STATE_DATA_ROW_MOVES = 22,
+   GHOSTTY_RENDER_STATE_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
+ } GhosttyRenderStateData;
+ 
+@@ -416,6 +449,12 @@
+    *  redraw on the update after a change. See "Overscan" in the render
+    *  state overview. */
+   GHOSTTY_RENDER_STATE_OPTION_OVERSCAN = 1,
++
++  /** Leave rows that only moved clean (bool). The caller must replay
++   *  GHOSTTY_RENDER_STATE_DATA_ROW_MOVES before rebuilding dirty rows.
++   *  Off by default. Takes effect for terminal changes after the next
++   *  update. */
++  GHOSTTY_RENDER_STATE_OPTION_ROW_MOVES = 2,
+   GHOSTTY_RENDER_STATE_OPTION_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
+ } GhosttyRenderStateOption;
+ 
