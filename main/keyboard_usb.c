@@ -13,10 +13,9 @@
 
 static const char* TAG = "keyboard";
 static uint8_t held[HID_KEYBOARD_KEY_MAX], modifiers;
-static bool caps_lock;
 
 static void send(uint8_t usage, GhosttyKeyAction action) {
-    keys_push(&(key_event){usage, modifiers, caps_lock, action});
+    keys_push(&(key_event){.usage = usage, .modifiers = modifiers, .action = action});
 }
 
 static bool contains(const uint8_t* keys, uint8_t usage) {
@@ -30,7 +29,6 @@ static void report(const hid_keyboard_input_report_boot_t* r) {
         if (held[i] > HID_KEY_ERROR_UNDEFINED && !contains(r->key, held[i])) send(held[i], GHOSTTY_KEY_ACTION_RELEASE);
     for (int i = 0; i < HID_KEYBOARD_KEY_MAX; i++)
         if (r->key[i] > HID_KEY_ERROR_UNDEFINED && !contains(held, r->key[i])) {
-            caps_lock ^= r->key[i] == HID_KEY_CAPS_LOCK;
             send(r->key[i], GHOSTTY_KEY_ACTION_PRESS);
         }
     memcpy(held, r->key, sizeof held);

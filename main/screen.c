@@ -18,6 +18,7 @@
 #include <shiroko/port_software.h>
 #include <shiroko/shiroko.h>
 
+#include "keys.h"
 #include "storage.h"
 #include "terminal.h"
 
@@ -28,7 +29,7 @@ static shr_framebuffer_driver software, driver;
 static ppa_client_handle_t ppa;
 static uint8_t band[BSP_LCD_V_RES * 2 * 16] __attribute__((aligned(CONFIG_CACHE_L2_CACHE_LINE_SIZE)));
 static shr_context* context;
-static shr_lyr *grid, *pictures, *cursor;
+static shr_lyr *grid, *pictures, *cursor, *composing;
 static GhosttyKittyGraphicsPlacementIterator placements;
 
 // A kitty image as drawn: its source rect scaled to width x height
@@ -195,6 +196,8 @@ esp_err_t screen_start(const global_state* state) {
         check(shr_lyr_create(context, 0, area, &grid), "grid") != SHR_OK ||
         check(shr_lyr_create(context, 1, area, &pictures), "pictures") != SHR_OK ||
         check(shr_lyr_create(context, 2, area, &cursor), "cursor") != SHR_OK ||
+        check(shr_lyr_create(context, 3, (shr_rect){0, 0, 2 * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &composing), "composing") != SHR_OK ||
+        check(shr_pl_lyr_tilemap_resize(composing, font, 1, 2, NULL), "composing") != SHR_OK ||
         check(shr_pl_lyr_tilemap_resize(grid, font, (int32_t)size->rows, (int32_t)size->columns, &background), "tilemap") != SHR_OK ||
         ghostty_render_state_row_iterator_new(&terminal_allocator, &rows) != GHOSTTY_SUCCESS ||
         ghostty_render_state_row_cells_new(&terminal_allocator, &cells) != GHOSTTY_SUCCESS ||
@@ -346,6 +349,22 @@ static void draw_cursor(const GhosttyRenderStateCursor* c, const GhosttyRenderSt
     shr_lyr_cmd_commit(cursor);
 }
 
+// The Korean syllable being typed, over the cursor's cell
+static void draw_composing(const GhosttyRenderStateCursor* c, const GhosttyRenderStateColors* colors) {
+    static uint32_t shown_text;
+    static int32_t shown_x, shown_y;
+    uint32_t p = keys_preedit();
+    int32_t x = c->viewport_x * SHR_CELL_WIDTH, y = c->viewport_y * SHR_CELL_HEIGHT;
+    if (p == shown_text && (p == 0 || (x == shown_x && y == shown_y))) return;
+    shown_text = p, shown_x = x, shown_y = y;
+    shr_lyr_set_visible(composing, p != 0);
+    if (p == 0) return;
+    char text[3] = {(char)(0xe0 | p >> 12), (char)(0x80 | (p >> 6 & 0x3f)), (char)(0x80 | (p & 0x3f))};
+    shr_lyr_set_rect(composing, (shr_rect){x, y, x + 2 * SHR_CELL_WIDTH, y + SHR_CELL_HEIGHT});
+    shr_pl_lyr_tilemap_set_cell(composing, 0, 0, text, sizeof text, 2,
+                                (shr_text_style){.fg = rgb(colors->background), .bg = rgb(colors->foreground)});
+}
+
 void screen_draw(void) {
     GhosttyRenderState render = terminal_update(find_pictures);
     GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
@@ -369,6 +388,7 @@ void screen_draw(void) {
         now.visual_style != shown_cursor.visual_style)
         draw_cursor(&now, &colors);
     shown_cursor = now;
+    draw_composing(&now, &colors);
 
     shr_deadline next;
     shr_event event;

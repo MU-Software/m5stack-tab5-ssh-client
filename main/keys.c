@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "keys.h"
 
+#include <stdatomic.h>
+
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 
+#include "hangul.h"
 #include "terminal.h"
 
 typedef struct {
@@ -65,12 +68,20 @@ static const key_info others[] = {
     [0x65] = {GHOSTTY_KEY_CONTEXT_MENU},
 };
 
+#define LANG1              0x90
+#define CAPS_LOCK          0x39
+#define BACKSPACE          0x2a
+#define LONG_PRESS_US      500000
 #define REPEAT_DELAY_US    500000
 #define REPEAT_INTERVAL_US 33000
 
 static QueueHandle_t events;
 static esp_timer_handle_t repeat;
 static key_event repeating;
+static bool korean, caps_lock;
+static int64_t caps_pressed;
+static hangul typing = HANGUL_EMPTY;
+static atomic_uint preedit;
 
 static void repeat_key(void* arg) {
     (void)arg;
@@ -85,13 +96,19 @@ esp_err_t keys_start(void) {
 }
 
 void keys_push(const key_event* event) {
-    xQueueSend(events, event, 0);
-    if (event->action == GHOSTTY_KEY_ACTION_PRESS || event->usage == repeating.usage) esp_timer_stop(repeat);
-    if (event->action == GHOSTTY_KEY_ACTION_PRESS && event->usage != 0x39) {
-        repeating = *event;
+    key_event e = *event;
+    e.time = esp_timer_get_time();
+    xQueueSend(events, &e, 0);
+    if (e.action == GHOSTTY_KEY_ACTION_PRESS || e.usage == repeating.usage || e.usage == 0) esp_timer_stop(repeat);
+    if (e.action == GHOSTTY_KEY_ACTION_PRESS && e.usage != CAPS_LOCK) {
+        repeating = e;
         repeating.action = GHOSTTY_KEY_ACTION_REPEAT;
         esp_timer_start_once(repeat, REPEAT_DELAY_US);
     }
+}
+
+uint32_t keys_preedit(void) {
+    return atomic_load(&preedit);
 }
 
 static key_info find(uint8_t usage) {
@@ -111,9 +128,9 @@ static size_t encode(const key_event* e, char* out, size_t size) {
     if (k.key == GHOSTTY_KEY_UNIDENTIFIED || ghostty_key_event_new(&terminal_allocator, &event) != GHOSTTY_SUCCESS) return 0;
     uint8_t m = e->modifiers;
     GhosttyMods mods = (m & 0x22 ? GHOSTTY_MODS_SHIFT : 0) | (m & 0x11 ? GHOSTTY_MODS_CTRL : 0) | (m & 0x44 ? GHOSTTY_MODS_ALT : 0) |
-                       (m & 0x88 ? GHOSTTY_MODS_SUPER : 0) | (e->caps_lock ? GHOSTTY_MODS_CAPS_LOCK : 0);
+                       (m & 0x88 ? GHOSTTY_MODS_SUPER : 0) | (caps_lock ? GHOSTTY_MODS_CAPS_LOCK : 0);
     bool letter = k.text >= 'a' && k.text <= 'z';
-    char text = (mods & GHOSTTY_MODS_SHIFT) != (letter && e->caps_lock) ? k.shifted : k.text;
+    char text = (mods & GHOSTTY_MODS_SHIFT) != (letter && caps_lock) ? k.shifted : k.text;
     ghostty_key_event_set_action(event, e->action);
     ghostty_key_event_set_key(event, k.key);
     ghostty_key_event_set_mods(event, mods);
@@ -125,10 +142,33 @@ static size_t encode(const key_event* e, char* out, size_t size) {
     return n;
 }
 
+static size_t handle(const key_event* e, char* out, size_t size) {
+    key_info k = find(e->usage);
+    bool press = e->action != GHOSTTY_KEY_ACTION_RELEASE, shift = e->modifiers & 0x22, plain = (e->modifiers & 0xdd) == 0;
+    size_t n = 0;
+    if (e->usage == CAPS_LOCK) {
+        if (press)
+            caps_pressed = e->time;
+        else if (e->time - caps_pressed >= LONG_PRESS_US)
+            caps_lock = !caps_lock;
+        else
+            n = hangul_flush(&typing, out), korean = !korean;
+    } else if (e->usage == LANG1) {
+        if (press) n = hangul_flush(&typing, out), korean = !korean;
+    } else if (korean && plain && k.text >= 'a' && k.text <= 'z') {
+        if (press) hangul_key(&typing, shift ? k.shifted : k.text, out, &n);
+    } else if (!(e->usage == BACKSPACE && press && hangul_backspace(&typing))) {
+        if (press) n = hangul_flush(&typing, out);
+        n += encode(e, out + n, size - n);
+    }
+    atomic_store(&preedit, hangul_preedit(&typing));
+    return n;
+}
+
 size_t keys_read(char* out, size_t size) {
     key_event e;
     size_t n = 0;
     while (n == 0 && xQueueReceive(events, &e, 0) == pdTRUE)
-        n = encode(&e, out, size);
+        n = handle(&e, out, size);
     return n;
 }
