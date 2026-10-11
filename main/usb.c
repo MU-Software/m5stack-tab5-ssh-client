@@ -2,6 +2,7 @@
 #include "usb.h"
 
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/param.h>
@@ -125,9 +126,19 @@ static void control(void* arg) {
     }
 }
 
+static void keep_image(int check) {
+    static atomic_int passed;
+    if ((atomic_fetch_or(&passed, check) | check) == 3 && rollback != NULL && esp_timer_stop(rollback) == ESP_OK)
+        esp_ota_mark_app_valid_cancel_rollback();
+}
+
+void usb_keep_image(void) {
+    keep_image(2);
+}
+
 static void attach(tinyusb_event_t* event, void* arg) {
     (void)arg;
-    if (event->id == TINYUSB_EVENT_ATTACHED && rollback != NULL && esp_timer_stop(rollback) == ESP_OK) esp_ota_mark_app_valid_cancel_rollback();
+    if (event->id == TINYUSB_EVENT_ATTACHED) keep_image(1);
 }
 
 static void roll_back(void* arg) {

@@ -24,6 +24,7 @@ rolls back after 30 s. The ROM loader needs a BOOT reset.
   Schema: `tools/config.schema.json`.
 - SSH: the SD card's `.ssh/` as `~/.ssh/`: the first non-pattern `Host` in `config`, `known_hosts`, keys
   (`id_ed25519`, `id_ecdsa`, `id_rsa`). No key: password prompt. Unknown host: yes/no prompt.
+- Fonts: `build/shiroko-host/fonts/` (`*.shrf`, `NOTICE`, `LICENSES/`) to the SD card's `.local/share/tab5-ssh/fonts/`.
 
 ## Development
 
@@ -36,4 +37,5 @@ make test test-linux                   # SSH tests against a local sshd under sa
 
 ## Licence
 
-GPL-3.0-or-later. wolfSSH and wolfSSL: GPL-3.0-or-later; ESP-IDF: Apache-2.0.
+GPL-3.0-or-later. wolfSSH and wolfSSL: GPL-3.0-or-later; Shiroko: MIT (`third_party/shiroko/NOTICE`); zstd:
+BSD-3-Clause; ESP-IDF and the Tab5 BSP: Apache-2.0.

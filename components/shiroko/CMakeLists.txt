@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Shiroko's own CMake build, fed by the host build (make shiroko-host): generated sources, uthash/xxhash and zstd
+idf_component_register(LDFRAGMENTS linker.lf)
+set(top ${CMAKE_CURRENT_LIST_DIR}/../..)
+set(host ${top}/build/shiroko-host)
+file(GLOB utlist ${host}/vcpkg_installed/*/include/utlist.h)
+file(GLOB zstd ${host}/vcpkg_installed/*/share/zstd-source/zstd.h)
+if(NOT utlist OR NOT zstd OR NOT EXISTS ${host}/generated/shr_gen_builtin_package.c)
+  message(FATAL_ERROR "No Shiroko host build in ${host}: run make shiroko-host")
+endif()
+# The built-in package is baked at the host's cell size
+load_cache(${host} READ_WITH_PREFIX host_ SHIROKO_CELL_WIDTH SHIROKO_CELL_HEIGHT)
+set(SHIROKO_CELL_WIDTH ${host_SHIROKO_CELL_WIDTH} CACHE STRING "" FORCE)
+set(SHIROKO_CELL_HEIGHT ${host_SHIROKO_CELL_HEIGHT} CACHE STRING "" FORCE)
+set(SHIROKO_PIXEL_FORMAT RGB565 CACHE STRING "" FORCE)
+cmake_path(GET utlist PARENT_PATH UTHASH_INCLUDE_DIR)
+set(SHIROKO_GENERATED_DIR ${host}/generated CACHE PATH "" FORCE)
+
+cmake_path(GET zstd PARENT_PATH zstd)
+file(GLOB zstd_sources ${zstd}/common/*.c ${zstd}/decompress/*.c)
+add_library(shiroko_zstd STATIC ${zstd_sources})
+target_include_directories(shiroko_zstd SYSTEM INTERFACE ${zstd})
+target_compile_definitions(shiroko_zstd PRIVATE ZSTD_LEGACY_SUPPORT=0 ZSTD_DISABLE_ASM)
+target_compile_options(shiroko_zstd PRIVATE -w)
+set(SHIROKO_ZSTD ON CACHE BOOL "" FORCE)
+set(SHIROKO_ZSTD_TARGET shiroko_zstd CACHE STRING "" FORCE)
+
+set(SHIROKO_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(SHIROKO_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(CMAKE_SKIP_INSTALL_RULES ON)
+add_subdirectory(${top}/third_party/shiroko shiroko EXCLUDE_FROM_ALL)
+target_link_libraries(${COMPONENT_LIB} INTERFACE shiroko)
+# Needs a 64-bit off_t; newlib's is 32-bit
+get_target_property(sources shiroko_port_software SOURCES)
+list(FILTER sources EXCLUDE REGEX "file_source\\.c$")
+set_target_properties(shiroko_port_software PROPERTIES SOURCES "${sources}")
+# IDF's libc headers use #include_next
+get_property(parts GLOBAL PROPERTY SHIROKO_PARTS)
+foreach(part IN LISTS parts)
+  target_compile_options(${part} PRIVATE -Wno-pedantic)
+endforeach()

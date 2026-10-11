@@ -10,3 +10,7 @@
 	path = third_party/cjson
 	url = https://github.com/DaveGamble/cJSON.git
 	shallow = true
+[submodule "third_party/shiroko"]
+	path = third_party/shiroko
+	url = https://github.com/MU-Software/shiroko.git
+	shallow = true

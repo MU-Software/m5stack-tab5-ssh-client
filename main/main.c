@@ -9,6 +9,7 @@
 #include <wolfssl/wolfcrypt/memory.h>
 
 #include "config.h"
+#include "screen.h"
 #include "ssh.h"
 #include "storage.h"
 #include "usb.h"
@@ -85,6 +86,8 @@ void app_main(void) {
     ESP_ERROR_CHECK(nvs_flash_init());
     if (storage_mount(usb_storage_boot()) != 0) ESP_LOGI(TAG, "no FAT SD card");
     if (usb_storage_boot()) return;
+    if (screen_start(&state) != ESP_OK) ESP_LOGE(TAG, "no screen");
+    usb_keep_image();
     config_source source;
     cJSON* config = storage_get_device_config(&source);
     if (config_wifi_networks(config, &state.wifi) != 0)

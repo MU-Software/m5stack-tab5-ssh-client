@@ -6,15 +6,22 @@ BAUD ?= 921600
 APP     = build/app
 IDF     = docker compose run --rm $(2) idf idf.py -C $(1) -B /workspace/build/$(3) -D SDKCONFIG=/workspace/build/$(3)/sdkconfig
 DEVICE  = uv run python $(CURDIR)/tools/device.py
+SHIROKO = build/shiroko-host
 
-.PHONY: help build reconfigure menuconfig size clean ide check test test-linux flash monitor erase-flash erase-config c6-update sd-on sd-off
+.PHONY: help build reconfigure menuconfig size clean ide check test test-linux flash monitor erase-flash erase-config c6-update sd-on sd-off shiroko-host
 
 help:                ## List the targets
 	@grep -hE '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-14s %s\n", $$1, $$2}'
 
-build:               ## Build the firmware (re-applies sdkconfig.defaults when it changed)
+build: $(SHIROKO)/generated  ## Build the firmware (re-applies sdkconfig.defaults when it changed)
 	@if [ sdkconfig.defaults -nt $(APP)/sdkconfig ]; then rm -f $(APP)/sdkconfig; fi
 	$(call IDF,.,,app) build
+
+shiroko-host:        ## Shiroko's generated sources and the 12x24 font packages (fonts/ goes to the SD card's .local/share/tab5-ssh/)
+	$(MAKE) -C third_party/shiroko tab5-host TAB5_HOST=$(CURDIR)/$(SHIROKO) TAB5_CELL_WIDTH=12 TAB5_CELL_HEIGHT=24
+
+$(SHIROKO)/generated:
+	$(MAKE) shiroko-host
 
 reconfigure:         ## Discard sdkconfig and re-apply sdkconfig.defaults
 	rm -f $(APP)/sdkconfig

@@ -40,7 +40,7 @@ int storage_mount(int with_usb) {
         .clk = 43, .cmd = 44, .d0 = 39, .d1 = 40, .d2 = 41, .d3 = 42, .cd = SDMMC_SLOT_NO_CD, .wp = SDMMC_SLOT_NO_WP, .width = 4};
     tinyusb_msc_storage_config_t usb = {
         .medium.card = &card,
-        .fat_fs = {.base_path = SD, .config.max_files = 4, .do_not_format = true},
+        .fat_fs = {.base_path = SD, .config.max_files = 8, .do_not_format = true},
         .mount_point = with_usb ? TINYUSB_MSC_STORAGE_MOUNT_USB : TINYUSB_MSC_STORAGE_MOUNT_APP,
     };
     if (sdmmc_host_init() != ESP_OK || sdmmc_host_init_slot(host.slot, &slot) != ESP_OK || sdmmc_card_init(&host, &card) != ESP_OK ||
