@@ -1,7 +1,8 @@
 # m5stack-tab5-ssh-client
 
 SSH client for the M5Stack Tab5 (ESP32-P4) on wolfSSH, drawn on the panel through Ghostty and Shiroko. Work in progress:
-keys from a USB keyboard on the USB-A port (boot protocol, no hubs) or the USB terminal port.
+keys from M5Stack's Keyboard for Tab5, a USB keyboard on the USB-A port (boot protocol, no hubs) or the USB terminal
+port.
 
 ## Build and flash
 

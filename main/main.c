@@ -9,6 +9,7 @@
 #include <wolfssl/wolfcrypt/memory.h>
 
 #include "config.h"
+#include "keyboard_tab5.h"
 #include "keyboard_usb.h"
 #include "keys.h"
 #include "screen.h"
@@ -148,6 +149,7 @@ void app_main(void) {
     esp_err_t keyboard = keyboard_usb_start();
     ESP_ERROR_CHECK(usb_start());
     if (keyboard != ESP_OK) ESP_LOGE(TAG, "no USB keyboard: %s", esp_err_to_name(keyboard));
+    if (keyboard_tab5_start() != ESP_OK) ESP_LOGE(TAG, "no Tab5 keyboard");
     ESP_ERROR_CHECK(nvs_flash_init());
     if (storage_mount(usb_storage_boot()) != 0) ESP_LOGI(TAG, "no FAT SD card");
     if (usb_storage_boot()) return;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "keys.h"
 
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 
@@ -64,15 +65,33 @@ static const key_info others[] = {
     [0x65] = {GHOSTTY_KEY_CONTEXT_MENU},
 };
 
+#define REPEAT_DELAY_US    500000
+#define REPEAT_INTERVAL_US 33000
+
 static QueueHandle_t events;
+static esp_timer_handle_t repeat;
+static key_event repeating;
+
+static void repeat_key(void* arg) {
+    (void)arg;
+    xQueueSend(events, &repeating, 0);
+    esp_timer_start_once(repeat, REPEAT_INTERVAL_US);
+}
 
 esp_err_t keys_start(void) {
     events = xQueueCreate(32, sizeof(key_event));
-    return events != NULL ? ESP_OK : ESP_ERR_NO_MEM;
+    if (events == NULL) return ESP_ERR_NO_MEM;
+    return esp_timer_create(&(esp_timer_create_args_t){.callback = repeat_key, .name = "key repeat"}, &repeat);
 }
 
 void keys_push(const key_event* event) {
     xQueueSend(events, event, 0);
+    if (event->action == GHOSTTY_KEY_ACTION_PRESS || event->usage == repeating.usage) esp_timer_stop(repeat);
+    if (event->action == GHOSTTY_KEY_ACTION_PRESS && event->usage != 0x39) {
+        repeating = *event;
+        repeating.action = GHOSTTY_KEY_ACTION_REPEAT;
+        esp_timer_start_once(repeat, REPEAT_DELAY_US);
+    }
 }
 
 static key_info find(uint8_t usage) {
