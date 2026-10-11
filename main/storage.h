@@ -6,7 +6,7 @@
 typedef enum { CONFIG_NONE, CONFIG_SD, CONFIG_NVS } config_source;
 
 char* storage_read_file_text(const char* path);
-int storage_mount(void);
+int storage_mount(int with_usb);
 cJSON* storage_get_device_config(config_source* source);
 char* storage_get_ssh_config(void);
 char* storage_get_known_hosts(void);

@@ -2,13 +2,12 @@
 # esptool and the monitor run on the host: the IDF container cannot see USB serial devices.
 
 BAUD ?= 921600
-PORT ?= $(firstword $(wildcard /dev/cu.usbmodem*) $(wildcard /dev/ttyACM*))
 
 APP     = build/app
 IDF     = docker compose run --rm $(2) idf idf.py -C $(1) -B /workspace/build/$(3) -D SDKCONFIG=/workspace/build/$(3)/sdkconfig
-ESPTOOL = uv run python -m esptool --chip esp32p4 --port $(PORT)
+DEVICE  = uv run python $(CURDIR)/tools/device.py
 
-.PHONY: help build reconfigure menuconfig size clean ide check test test-linux flash monitor erase-flash erase-config c6-update require-port
+.PHONY: help build reconfigure menuconfig size clean ide check test test-linux flash monitor erase-flash erase-config c6-update sd-on sd-off
 
 help:                ## List the targets
 	@grep -hE '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -43,22 +42,25 @@ test-linux:          ## The same in Linux under ASan+UBSan+LSan, then MSan
 check:               ## Run every pre-commit hook (format, cppcheck, clang-tidy, ...) on all files
 	uv run pre-commit run --all-files
 
-require-port:
-	@test -n "$(PORT)" || { echo "no serial port found; pass PORT=/dev/cu.usbmodemXXXX"; exit 1; }
+flash: build         ## Build and install: an OTA update over USB, or esptool while USB-Serial/JTAG has the port
+	$(DEVICE) flash $(APP)/tab5_ssh.bin
 
-flash: build require-port  ## Build and flash over USB
-	cd $(APP) && $(ESPTOOL) --baud $(BAUD) write-flash "@flash_args"
+erase-flash:         ## Erase the whole flash
+	$(DEVICE) esptool erase-flash
 
-erase-flash: require-port  ## Erase the whole flash
-	$(ESPTOOL) erase-flash
+erase-config:        ## Erase the configuration in NVS (Wi-Fi networks)
+	uv run python tools/config.py erase
 
-erase-config: require-port ## Erase the configuration in NVS (Wi-Fi networks)
-	uv run python tools/config.py erase --serial $(PORT)
+sd-on:               ## Hand the SD card to this computer as USB mass storage (the terminal cannot use it meanwhile)
+	$(DEVICE) send "sd on"
 
-c6-update: require-port    ## Flash a one-shot image that updates the ESP32-C6's esp_hosted (then make monitor, make flash)
+sd-off:              ## Give the SD card back to the firmware
+	$(DEVICE) send "sd off"
+
+c6-update:           ## Flash a one-shot image that updates the ESP32-C6's esp_hosted (then make monitor, make flash)
 	$(call IDF,tools/c6-update/cp,-e IDF_TARGET=esp32c6,c6) build
 	$(call IDF,tools/c6-update/host,,c6-update) -D C6_IMAGE=/workspace/build/c6/tab5_c6.bin build
-	cd build/c6-update && $(ESPTOOL) --baud $(BAUD) write-flash "@flash_args"
+	cd build/c6-update && $(DEVICE) esptool --baud $(BAUD) write-flash "@flash_args"
 
-monitor: require-port      ## Serial monitor with backtrace decoding
-	uv run python -m esp_idf_monitor --port $(PORT) --target esp32p4 $(APP)/tab5_ssh.elf
+monitor:             ## Logs from the control port, with backtrace decoding
+	uv run python -m esp_idf_monitor --no-reset --port $$($(DEVICE) port control) --target esp32p4 $(APP)/tab5_ssh.elf

@@ -7,11 +7,13 @@
 
 #include <driver/sdmmc_host.h>
 #include <esp_log.h>
-#include <esp_vfs_fat.h>
 #include <nvs.h>
 #include <sd_pwr_ctrl_by_on_chip_ldo.h>
+#include <sdmmc_cmd.h>
+#include <tinyusb_msc.h>
 
 static const char* TAG = "storage";
+static sdmmc_card_t card;
 
 char* storage_read_file_text(const char* path) {
     FILE* f = fopen(path, "rb");
@@ -27,7 +29,7 @@ char* storage_read_file_text(const char* path) {
 }
 
 // FAT only: ESP-IDF builds FatFs without exFAT
-int storage_mount(void) {
+int storage_mount(int with_usb) {
     sd_pwr_ctrl_handle_t pwr;
     if (sd_pwr_ctrl_new_on_chip_ldo(&(sd_pwr_ctrl_ldo_config_t){.ldo_chan_id = 4}, &pwr) != ESP_OK) return -1;
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
@@ -36,8 +38,15 @@ int storage_mount(void) {
     host.pwr_ctrl_handle = pwr;
     sdmmc_slot_config_t slot = {
         .clk = 43, .cmd = 44, .d0 = 39, .d1 = 40, .d2 = 41, .d3 = 42, .cd = SDMMC_SLOT_NO_CD, .wp = SDMMC_SLOT_NO_WP, .width = 4};
-    sdmmc_card_t* card;
-    if (esp_vfs_fat_sdmmc_mount(SD, &host, &slot, &(esp_vfs_fat_mount_config_t){.max_files = 4}, &card) != ESP_OK) return -1;
+    tinyusb_msc_storage_config_t usb = {
+        .medium.card = &card,
+        .fat_fs = {.base_path = SD, .config.max_files = 4, .do_not_format = true},
+        .mount_point = with_usb ? TINYUSB_MSC_STORAGE_MOUNT_USB : TINYUSB_MSC_STORAGE_MOUNT_APP,
+    };
+    if (sdmmc_host_init() != ESP_OK || sdmmc_host_init_slot(host.slot, &slot) != ESP_OK || sdmmc_card_init(&host, &card) != ESP_OK ||
+        tinyusb_msc_install_driver(&(tinyusb_msc_driver_config_t){.user_flags.auto_mount_off = 1}) != ESP_OK ||
+        tinyusb_msc_new_storage_sdmmc(&usb, NULL) != ESP_OK)
+        return -1;
     mkdir(SD "/.ssh", 0700);
     mkdir(SD "/.config", 0700);
     mkdir(SD "/.config/tab5-ssh", 0700);
