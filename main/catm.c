@@ -17,6 +17,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 #include <freertos/queue.h>
+#include <freertos/semphr.h>
 
 #define UART    UART_NUM_2
 #define TX      6
@@ -34,6 +35,8 @@ static const uint8_t terminate[] = {0x7e, 0xff, 0x7d, 0x23, 0xc0, 0x21, 0x7d, 0x
 static QueueHandle_t lines;
 static EventGroupHandle_t events;
 static esp_netif_t* netif;
+// One user of the modem at a time: the LTE task dials while a control command may ask for the status
+static SemaphoreHandle_t lock;
 static atomic_bool dialing, data_mode;
 // When the modem last left a command unanswered: asking a quiet modem again keeps it quiet longer
 static int64_t unanswered = -90 * SECOND;
@@ -165,15 +168,23 @@ static esp_err_t ready(void) {
 
 esp_err_t catm_status(void) {
     esp_netif_ip_info_t ip;
-    if (!data_mode) return ready();
-    esp_netif_get_ip_info(netif, &ip);
-    ESP_LOGI(TAG, "PPP, ip " IPSTR, IP2STR(&ip.ip));
-    return ESP_OK;
+    if (lines == NULL) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    esp_err_t err = ESP_OK;
+    if (!data_mode)
+        err = ready();
+    else if (esp_netif_get_ip_info(netif, &ip) == ESP_OK)
+        ESP_LOGI(TAG, "PPP, ip " IPSTR, IP2STR(&ip.ip));
+    xSemaphoreGive(lock);
+    return err;
 }
 
-esp_err_t catm_connect(void) {
+static void disconnect(void);
+
+static esp_err_t dial(void) {
     char line[LINE];
-    ESP_RETURN_ON_ERROR(ready(), TAG, "modem");
+    esp_err_t err = ready();
+    if (err != ESP_OK) return err;
     // So that no late result of the checks reads as the dial's
     vTaskDelay(pdMS_TO_TICKS(1000));
     xEventGroupClearBits(events, GOT_IP | DEAD);
@@ -190,11 +201,19 @@ esp_err_t catm_connect(void) {
     }
     esp_netif_action_start(netif, NULL, 0, NULL);
     if (xEventGroupWaitBits(events, GOT_IP | DEAD, pdFALSE, pdFALSE, pdMS_TO_TICKS(60000)) & GOT_IP) return ESP_OK;
-    catm_disconnect();
+    disconnect();
     return ESP_ERR_TIMEOUT;
 }
 
-void catm_disconnect(void) {
+esp_err_t catm_connect(void) {
+    if (lines == NULL) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    esp_err_t err = dial();
+    xSemaphoreGive(lock);
+    return err;
+}
+
+static void disconnect(void) {
     char line[LINE];
     if (!data_mode) return;
     esp_netif_action_stop(netif, NULL, 0, NULL);
@@ -206,13 +225,26 @@ void catm_disconnect(void) {
     if (!at("AT", "", NULL)) ESP_LOGW(TAG, "no answer after PPP");
 }
 
+void catm_disconnect(void) {
+    if (lines == NULL) return;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    disconnect();
+    xSemaphoreGive(lock);
+}
+
+bool catm_connected(void) {
+    return events != NULL && (xEventGroupGetBits(events) & (GOT_IP | DEAD)) == GOT_IP;
+}
+
+esp_netif_t* catm_netif(void) {
+    return netif;
+}
+
 static void on_event(void* arg, esp_event_base_t base, int32_t id, void* data) {
     (void)arg;
     (void)id;
     if (base == IP_EVENT) {
         ESP_LOGI(TAG, "ip " IPSTR, IP2STR(&((ip_event_got_ip_t*)data)->ip_info.ip));
-        // esp_netif picks a default when the address arrives, before lwIP's PPP brings the interface up
-        esp_netif_set_default_netif(netif);
         xEventGroupSetBits(events, GOT_IP);
     } else {
         // The modem's NO CARRIER and everything after it are lines again
@@ -235,9 +267,10 @@ static esp_err_t attach(esp_netif_t* esp_netif, esp_netif_iodriver_handle handle
 esp_err_t catm_start(void) {
     static esp_netif_driver_base_t driver = {.post_attach = attach};
     lines = xQueueCreate(16, LINE);
+    lock = xSemaphoreCreateMutex();
     events = xEventGroupCreate();
     netif = esp_netif_new(&(esp_netif_config_t)ESP_NETIF_DEFAULT_PPP());
-    ESP_RETURN_ON_FALSE(lines != NULL && events != NULL && netif != NULL, ESP_ERR_NO_MEM, TAG, "objects");
+    ESP_RETURN_ON_FALSE(lines != NULL && lock != NULL && events != NULL && netif != NULL, ESP_ERR_NO_MEM, TAG, "objects");
     ESP_RETURN_ON_ERROR(esp_netif_attach(netif, &driver), TAG, "attach");
     // The modem asks for CHAP with an empty name
     ESP_RETURN_ON_ERROR(esp_netif_ppp_set_auth(netif, NETIF_PPP_AUTHTYPE_CHAP, "", ""), TAG, "auth");

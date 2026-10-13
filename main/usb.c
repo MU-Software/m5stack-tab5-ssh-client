@@ -63,8 +63,9 @@ size_t usb_terminal_read(void* buffer, size_t size) {
     return tinyusb_cdcacm_read(TINYUSB_CDC_ACM_0, buffer, size, &n) == ESP_OK ? n : 0;
 }
 
+// Only to an open port: a closed one fills up and holds every write for a second
 void usb_terminal_write(const void* buffer, size_t size) {
-    put(TINYUSB_CDC_ACM_0, buffer, size);
+    if (tud_cdc_n_connected(TINYUSB_CDC_ACM_0)) put(TINYUSB_CDC_ACM_0, buffer, size);
 }
 
 static esp_err_t receive_update(size_t size, uint32_t crc) {
@@ -108,7 +109,8 @@ static void command(char* line) {
             esp_restart();
         }
     } else if (line[0] && !app_command(line)) {
-        ESP_LOGW(TAG, "commands: sd on, sd off, restart, update SIZE CRC32, lte on, lte off, lte status, net check HOST PORT");
+        ESP_LOGW(TAG, "commands: sd on|off, restart, update SIZE CRC32, wifi on|off|connect SSID [PASSWORD]|forget SSID, lte on|off|status, net "
+                      "status|check HOST PORT");
     }
 }
 

@@ -25,6 +25,8 @@ typedef struct {
     const char *known_hosts, *private_key, *password;
     // Run with the terminal instead of a shell, if not NULL
     const char* command;
+    // IPv4 source address in network order, 0 for any: keeps the connection on one interface
+    uint32_t local_address;
     WOLFSSH_CTX* ctx;
     WOLFSSH* ssh;
     int fd;

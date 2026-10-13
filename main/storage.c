@@ -147,3 +147,44 @@ void storage_set_tmux_session(const char* alias, const char* name) {
     if (err != ESP_OK) ESP_LOGW(TAG, "tmux session for %s: %s", alias, esp_err_to_name(err));
     nvs_close(h);
 }
+
+static int save_config(const char* text, config_source source) {
+    if (source == CONFIG_SD) {
+        FILE* f = fopen(SD "/.config/tab5-ssh/config.json", "w");
+        int err = f == NULL || fputs(text, f) < 0;
+        if (f != NULL && fclose(f) != 0) err = 1;
+        return err ? -1 : 0;
+    }
+    nvs_handle_t h;
+    if (nvs_open("cfg", NVS_READWRITE, &h) != ESP_OK) return -1;
+    esp_err_t err = nvs_set_str(h, "config", text);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err == ESP_OK ? 0 : -1;
+}
+
+int storage_add_wifi(const char* ssid, const char* password) {
+    config_source source;
+    cJSON* config = storage_get_device_config(&source);
+    cJSON* list = cJSON_GetObjectItemCaseSensitive(config, "wifi");
+    if (!cJSON_IsArray(list)) {
+        cJSON_DeleteItemFromObjectCaseSensitive(config, "wifi");
+        list = cJSON_AddArrayToObject(config, "wifi");
+    }
+    for (int i = cJSON_GetArraySize(list) - 1; i >= 0; i--) {
+        const cJSON* name = cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(list, i), "ssid");
+        if (cJSON_IsString(name) && strcmp(name->valuestring, ssid) == 0) cJSON_DeleteItemFromArray(list, i);
+    }
+    if (password != NULL) {
+        cJSON* entry = cJSON_CreateObject();
+        cJSON_AddStringToObject(entry, "ssid", ssid);
+        if (password[0]) cJSON_AddStringToObject(entry, "password", password);
+        cJSON_InsertItemInArray(list, 0, entry);
+    }
+    char* text = cJSON_PrintUnformatted(config);
+    cJSON_Delete(config);
+    int err = text != NULL ? save_config(text, source) : -1;
+    if (text != NULL) memset(text, 0, strlen(text));
+    free(text);
+    return err;
+}

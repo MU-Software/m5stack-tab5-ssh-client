@@ -4,7 +4,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/poll.h>
@@ -106,13 +108,27 @@ static int user_auth(byte type, WS_UserAuthData* d, void* ctx) {
     return WOLFSSH_USERAUTH_FAILURE;
 }
 
-static int dial(const char* host, uint16_t port) {
+// Bounded: a path that just died must not hold the session for TCP's minutes of retries
+static bool connected(int fd, const struct addrinfo* ai, uint32_t local_address) {
+    int err = 0;
+    socklen_t length = sizeof err;
+    struct sockaddr_in source = {.sin_family = AF_INET, .sin_addr.s_addr = local_address};
+    if ((local_address != 0 && bind(fd, (struct sockaddr*)&source, sizeof source) != 0) ||
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) != 0)
+        return false;
+    if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) return true;
+    return errno == EINPROGRESS && poll(&(struct pollfd){.fd = fd, .events = POLLOUT}, 1, TIMEOUT_MS) == 1 &&
+           getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &length) == 0 && err == 0;
+}
+
+static int dial(const char* host, uint16_t port, uint32_t local_address) {
     char service[6];
     snprintf(service, sizeof service, "%u", port);
     struct addrinfo* ai;
-    if (getaddrinfo(host, service, &(struct addrinfo){.ai_socktype = SOCK_STREAM}, &ai) != 0) return -1;
+    if (getaddrinfo(host, service, &(struct addrinfo){.ai_family = local_address != 0 ? AF_INET : AF_UNSPEC, .ai_socktype = SOCK_STREAM}, &ai) != 0)
+        return -1;
     int fd = socket(ai->ai_family, SOCK_STREAM, 0);
-    if (fd >= 0 && (connect(fd, ai->ai_addr, ai->ai_addrlen) != 0 || fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) != 0)) {
+    if (fd >= 0 && !connected(fd, ai, local_address)) {
         close(fd);
         fd = -1;
     }
@@ -135,9 +151,14 @@ int ssh_open(const global_state* state) {
     ssh_session* s = state->session;
     const ssh_host* h = state->current_host;
     const terminal_size* size = &state->terminal_size;
-    *s = (ssh_session){.known_hosts = s->known_hosts, .private_key = s->private_key, .password = s->password, .command = s->command, .fd = -1};
+    *s = (ssh_session){.known_hosts = s->known_hosts,
+                       .private_key = s->private_key,
+                       .password = s->password,
+                       .command = s->command,
+                       .local_address = s->local_address,
+                       .fd = -1};
     if (wolfSSH_Init() != WS_SUCCESS) return WS_MEMORY_E;
-    s->fd = dial(h->hostname, h->port);
+    s->fd = dial(h->hostname, h->port, s->local_address);
     int rc = WS_SOCKET_ERROR_E;
     if (s->fd < 0) goto done;
 

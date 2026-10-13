@@ -15,6 +15,8 @@ char* storage_get_ssh_config(void);
 char* storage_get_known_hosts(void);
 int storage_add_known_host(const char* line);
 char* storage_get_private_key(const char* identity_file);
+// First in the Wi-Fi list of the configuration in use (the SD card's, else NVS); a NULL password removes it
+int storage_add_wifi(const char* ssid, const char* password);
 // The tmux session kept in NVS for a host alias; NULL name forgets it
 esp_err_t storage_get_tmux_session(const char* alias, char* name, size_t size);
 void storage_set_tmux_session(const char* alias, const char* name);

@@ -29,8 +29,10 @@ rolls back after 30 s. The ROM loader needs a BOOT reset.
   (`id_ed25519`, `id_ecdsa`, `id_rsa`). No key: password prompt. Unknown host: yes/no prompt.
 - tmux: the session runs in `tmux new-session -s tab5-XXXXXXXX`, its name kept in NVS per `Host`; the next connection
   attaches to it, or starts another when it is gone. No tmux on the host: a plain shell.
-- LTE: a Stamp CAT-M (Tab5 TX G6, RX G46) when no Wi-Fi network joins, on the control command `lte on`
-  (`lte off`, `lte status`, `net check HOST PORT`).
+- Network: Wi-Fi while it reaches the SSH host, else LTE through a Stamp CAT-M (Tab5 TX G6, RX G46), kept connected
+  in the background. A dropped or moved session reconnects to its tmux session; a closed one on Enter. Control
+  commands: `wifi on|off`, `wifi connect SSID [PASSWORD]` (saved to the configuration in use), `wifi forget SSID`,
+  `lte on|off|status`, `net status`, `net check HOST PORT`.
 - Fonts: `build/shiroko-host/fonts/` (`*.shrf`, `NOTICE`, `LICENSES/`) to the SD card's `.local/share/tab5-ssh/fonts/`.
 
 ## Development

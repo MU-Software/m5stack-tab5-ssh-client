@@ -93,9 +93,7 @@ def run_esptool(context: typer.Context) -> None:
 
 
 @app.command()
-def send(
-    command: Annotated[str, typer.Argument(help="sd on|off, restart, lte on|off|status, net check HOST PORT")],
-) -> None:
+def send(command: Annotated[str, typer.Argument(help="any unknown command makes the firmware log the list")]) -> None:
     """Send a control command to the firmware."""
     with serial.Serial(firmware_port(-1)) as s:
         s.write(command.encode() + b"\n")
