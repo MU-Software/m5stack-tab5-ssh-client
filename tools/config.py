@@ -50,7 +50,8 @@ def write(config: Path) -> None:
 
     offset, size = nvs_partition()
     image = io.BytesIO()
-    with nvs.nvs_open(image, size, nvs.Page.VERSION2) as part:
+    # nvs_open adds a reserved page past the size it is given, as the generator's own CLI accounts for
+    with nvs.nvs_open(image, size - nvs.Page.PAGE_PARAMS["max_size"], nvs.Page.VERSION2) as part:
         part.write_namespace("cfg")
         part.write_entry("config", text, "string")
     flash(lambda esp: write_flash(esp, [(offset, image.getvalue())]))
