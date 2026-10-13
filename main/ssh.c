@@ -135,7 +135,7 @@ int ssh_open(const global_state* state) {
     ssh_session* s = state->session;
     const ssh_host* h = state->current_host;
     const terminal_size* size = &state->terminal_size;
-    *s = (ssh_session){.known_hosts = s->known_hosts, .private_key = s->private_key, .password = s->password, .fd = -1};
+    *s = (ssh_session){.known_hosts = s->known_hosts, .private_key = s->private_key, .password = s->password, .command = s->command, .fd = -1};
     if (wolfSSH_Init() != WS_SUCCESS) return WS_MEMORY_E;
     s->fd = dial(h->hostname, h->port);
     int rc = WS_SOCKET_ERROR_E;
@@ -157,6 +157,8 @@ int ssh_open(const global_state* state) {
     wolfSSH_SetUserAuthCtx(s->ssh, (void*)state);
     if (wolfSSH_set_fd(s->ssh, s->fd) != WS_SUCCESS || wolfSSH_SetUsername(s->ssh, h->user) != WS_SUCCESS ||
         wolfSSH_SetChannelType(s->ssh, WOLFSSH_SESSION_TERMINAL, NULL, 0) != WS_SUCCESS ||
+        // EXEC keeps the terminal request TERMINAL turned on
+        (s->command != NULL && wolfSSH_SetChannelType(s->ssh, WOLFSSH_SESSION_EXEC, (byte*)s->command, (word32)strlen(s->command)) != WS_SUCCESS) ||
         wolfSSH_SetTerminal(s->ssh, state->terminal_type, size->columns, size->rows, size->width_pixels, size->height_pixels, pty_modes,
                             sizeof pty_modes) != WS_SUCCESS) {
         rc = WS_BAD_ARGUMENT;

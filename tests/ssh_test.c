@@ -117,6 +117,17 @@ int main(int argc, char** argv) {
     check(login(added, key, NULL) == WS_SUCCESS && asked == 2, "the known_hosts line offered for it is found next time");
     check(login(known, NULL, "not-the-password") == WS_USER_AUTH_E, "wrong password refused");
     check(login(known, NULL, argv[6]) == WS_SUCCESS, "password login");
+    int exit_status = 0;
+    session = (ssh_session){.known_hosts = known, .private_key = key, .command = "tty; echo T''2 $TERM; exit 7"};
+    if (ssh_open(&state) == WS_SUCCESS) {
+        check(read_until("T2 xterm-256color", 5000) >= 0 && strstr(out, "/dev/pts/") != NULL, "a command runs on a pty");
+        read_until(NULL, 3000);
+        ssh_close(&state, &exit_status);
+    }
+    check(exit_status == 7, "the command's exit status");
+    out_len = 0;
+    out[0] = 0;
+
     int rc = open_with(known, key, NULL);
     check(rc == WS_SUCCESS, "key login");
     if (rc != WS_SUCCESS) return 1;
@@ -145,7 +156,6 @@ int main(int argc, char** argv) {
 
     send_all("exit 3\n");
     read_until(NULL, 3000);
-    int exit_status;
     ssh_close(&state, &exit_status);
     check(exit_status == 3, "exit status");
     return failures != 0;

@@ -23,6 +23,8 @@ typedef struct wifi_network {
 typedef struct {
     // Set by the caller, NULL once used
     const char *known_hosts, *private_key, *password;
+    // Run with the terminal instead of a shell, if not NULL
+    const char* command;
     WOLFSSH_CTX* ctx;
     WOLFSSH* ssh;
     int fd;

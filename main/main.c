@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,6 +7,7 @@
 #include <esp_event.h>
 #include <esp_log.h>
 #include <esp_netif.h>
+#include <esp_random.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <nvs_flash.h>
@@ -92,6 +94,70 @@ static void bridge(void) {
     }
 }
 
+// The exit status is 0 when the connection ends without one
+static int run(const ssh_host* h, const char* command, int* exit_status) {
+    char* private_key = storage_get_private_key(h->identity_file);
+    char password[128] = "";
+    if (private_key == NULL) {
+        char prompt[300];
+        snprintf(prompt, sizeof prompt, "%s@%s's password: ", h->user, h->hostname);
+        read_line(prompt, password, sizeof password, 0);
+    }
+    char* known_hosts = storage_get_known_hosts();
+    session = (ssh_session){.known_hosts = known_hosts, .private_key = private_key, .password = password[0] ? password : NULL, .command = command};
+    state.session = &session;
+    int rc = ssh_open(&state);
+    if (private_key != NULL) wc_ForceZero(private_key, strlen(private_key));
+    free(private_key);
+    free(known_hosts);
+    memset(password, 0, sizeof password);
+    if (rc == WS_SUCCESS) {
+        ESP_LOGI(TAG, "connected to %s: %s", h->hostname, command != NULL ? command : "shell");
+        esp_log_level_set("*", ESP_LOG_WARN);
+        // They answer control commands
+        esp_log_level_set("catm", ESP_LOG_INFO);
+        esp_log_level_set("net", ESP_LOG_INFO);
+        bridge();
+        esp_log_level_set("*", ESP_LOG_INFO);
+        ssh_close(&state, exit_status);
+        ESP_LOGI(TAG, "exit status %d", *exit_status);
+    } else {
+        ESP_LOGE(TAG, "ssh %s@%s:%u: %s", h->user, h->hostname, h->port, wolfSSH_ErrorToName(rc));
+    }
+    state.session = NULL;
+    return rc;
+}
+
+static void message(const char* text) {
+    terminal_write(text, strlen(text));
+    usb_terminal_write(text, strlen(text));
+}
+
+// Attaches to the host's tmux session kept in NVS, or starts one when there is none or it has gone
+static void tmux(const ssh_host* h) {
+    char name[16], command[64];
+    bool attach = storage_get_tmux_session(h->alias, name, sizeof name) == ESP_OK;
+    for (;;) {
+        if (!attach) {
+            snprintf(name, sizeof name, "tab5-%08" PRIx32, esp_random());
+            storage_set_tmux_session(h->alias, name);
+        }
+        // '=': an exact name, not a prefix
+        snprintf(command, sizeof command, attach ? "tmux attach-session -t '=%s'" : "tmux new-session -s '%s'", name);
+        int exit_status = 0;
+        if (run(h, command, &exit_status) != WS_SUCCESS) return;
+        if (exit_status == 127) {
+            storage_set_tmux_session(h->alias, NULL);
+            message("\r\n\x1b[33mNo tmux on this host: a plain shell, lost when the connection drops\x1b[m\r\n");
+            run(h, NULL, &exit_status);
+            return;
+        }
+        if (!attach || exit_status == 0) return;
+        storage_set_tmux_session(h->alias, NULL);
+        attach = false;
+    }
+}
+
 static void connect(void) {
     static const char* const sources[] = {"nothing", "the SD card", "NVS"};
     config_source source;
@@ -105,7 +171,7 @@ static void connect(void) {
     state.hosts = text != NULL ? config_ssh_hosts(text) : NULL;
     free(text);
     state.current_host = state.hosts;
-    ssh_host* h = state.current_host;
+    const ssh_host* h = state.current_host;
     if (h == NULL || !h->user[0]) {
         ESP_LOGE(TAG, "incomplete configuration: a Host with a User in the SD card's .ssh/config");
         return;
@@ -115,36 +181,7 @@ static void connect(void) {
         xSemaphoreTake(online, portMAX_DELAY);
     }
 
-    char* private_key = storage_get_private_key(h->identity_file);
-    char password[128] = "";
-    if (private_key == NULL) {
-        char prompt[300];
-        snprintf(prompt, sizeof prompt, "%s@%s's password: ", h->user, h->hostname);
-        read_line(prompt, password, sizeof password, 0);
-    }
-    char* known_hosts = storage_get_known_hosts();
-    session = (ssh_session){.known_hosts = known_hosts, .private_key = private_key, .password = password[0] ? password : NULL};
-    state.session = &session;
-    int rc = ssh_open(&state);
-    if (private_key != NULL) wc_ForceZero(private_key, strlen(private_key));
-    free(private_key);
-    free(known_hosts);
-    memset(password, 0, sizeof password);
-    if (rc == WS_SUCCESS) {
-        ESP_LOGI(TAG, "connected to %s", h->hostname);
-        esp_log_level_set("*", ESP_LOG_WARN);
-        // They answer control commands
-        esp_log_level_set("catm", ESP_LOG_INFO);
-        esp_log_level_set("net", ESP_LOG_INFO);
-        bridge();
-        esp_log_level_set("*", ESP_LOG_INFO);
-        int exit_status;
-        ssh_close(&state, &exit_status);
-        ESP_LOGI(TAG, "exit status %d", exit_status);
-    } else {
-        ESP_LOGE(TAG, "ssh %s@%s:%u: %s", h->user, h->hostname, h->port, wolfSSH_ErrorToName(rc));
-    }
-    state.session = NULL;
+    tmux(h);
 }
 
 static bool command(const char* line) {

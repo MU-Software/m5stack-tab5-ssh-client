@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "storage.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 
 #include <driver/sdmmc_host.h>
 #include <esp_log.h>
+#include <esp_rom_crc.h>
 #include <nvs.h>
 #include <sd_pwr_ctrl_by_on_chip_ldo.h>
 #include <sdmmc_cmd.h>
@@ -116,4 +119,31 @@ char* storage_get_private_key(const char* identity_file) {
     for (size_t i = 0; text == NULL && i < sizeof defaults / sizeof defaults[0]; i++)
         text = storage_read_file_text(defaults[i]);
     return text;
+}
+
+// NVS keys are at most 15 characters: the alias's CRC
+static void tmux_key(const char* alias, char key[9]) {
+    snprintf(key, 9, "%08" PRIx32, esp_rom_crc32_le(0, (const uint8_t*)alias, strlen(alias)));
+}
+
+esp_err_t storage_get_tmux_session(const char* alias, char* name, size_t size) {
+    nvs_handle_t h;
+    char key[9];
+    tmux_key(alias, key);
+    esp_err_t err = nvs_open("tmux", NVS_READONLY, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_get_str(h, key, name, &size);
+    nvs_close(h);
+    return err;
+}
+
+void storage_set_tmux_session(const char* alias, const char* name) {
+    nvs_handle_t h;
+    char key[9];
+    tmux_key(alias, key);
+    if (nvs_open("tmux", NVS_READWRITE, &h) != ESP_OK) return;
+    esp_err_t err = name != NULL ? nvs_set_str(h, key, name) : nvs_erase_key(h, key);
+    if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) err = nvs_commit(h);
+    if (err != ESP_OK) ESP_LOGW(TAG, "tmux session for %s: %s", alias, esp_err_to_name(err));
+    nvs_close(h);
 }
