@@ -3,15 +3,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <esp_event.h>
 #include <esp_log.h>
+#include <esp_netif.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <nvs_flash.h>
 #include <wolfssl/wolfcrypt/memory.h>
 
+#include "catm.h"
 #include "config.h"
 #include "keyboard_tab5.h"
 #include "keyboard_usb.h"
 #include "keys.h"
+#include "net.h"
 #include "screen.h"
 #include "ssh.h"
 #include "storage.h"
@@ -21,6 +26,7 @@
 
 static const char* TAG = "main";
 static ssh_session session;
+static SemaphoreHandle_t online;
 static global_state state = {
     .terminal_type = "xterm-256color",
     .terminal_size = {.columns = 106, .rows = 30, .width_pixels = 1272, .height_pixels = 720},
@@ -100,13 +106,13 @@ static void connect(void) {
     free(text);
     state.current_host = state.hosts;
     ssh_host* h = state.current_host;
-    if (state.wifi == NULL || h == NULL || !h->user[0]) {
-        ESP_LOGE(TAG, "incomplete configuration: Wi-Fi networks, and a Host with a User in the SD card's .ssh/config");
+    if (h == NULL || !h->user[0]) {
+        ESP_LOGE(TAG, "incomplete configuration: a Host with a User in the SD card's .ssh/config");
         return;
     }
-    if (wifi_connect(state.wifi, 15000) != ESP_OK) {
-        ESP_LOGE(TAG, "no known Wi-Fi network answered");
-        return;
+    if (state.wifi == NULL || wifi_connect(state.wifi, 15000) != ESP_OK) {
+        ESP_LOGW(TAG, "no known Wi-Fi network answered: waiting for lte on");
+        xSemaphoreTake(online, portMAX_DELAY);
     }
 
     char* private_key = storage_get_private_key(h->identity_file);
@@ -127,6 +133,9 @@ static void connect(void) {
     if (rc == WS_SUCCESS) {
         ESP_LOGI(TAG, "connected to %s", h->hostname);
         esp_log_level_set("*", ESP_LOG_WARN);
+        // They answer control commands
+        esp_log_level_set("catm", ESP_LOG_INFO);
+        esp_log_level_set("net", ESP_LOG_INFO);
         bridge();
         esp_log_level_set("*", ESP_LOG_INFO);
         int exit_status;
@@ -138,6 +147,25 @@ static void connect(void) {
     state.session = NULL;
 }
 
+static bool command(const char* line) {
+    char host[64];
+    uint16_t port;
+    if (strcmp(line, "lte on") == 0) {
+        esp_err_t err = catm_connect();
+        ESP_LOGI(TAG, "lte on: %s", esp_err_to_name(err));
+        if (err == ESP_OK) xSemaphoreGive(online);
+    } else if (strcmp(line, "lte off") == 0) {
+        catm_disconnect();
+    } else if (strcmp(line, "lte status") == 0) {
+        ESP_LOGI(TAG, "lte status: %s", esp_err_to_name(catm_status()));
+    } else if (sscanf(line, "net check %63s %hu", host, &port) == 2) {
+        net_check(host, port);
+    } else {
+        return false;
+    }
+    return true;
+}
+
 static void run_session(void* arg) {
     (void)arg;
     connect();
@@ -147,12 +175,16 @@ static void run_session(void* arg) {
 void app_main(void) {
     ESP_ERROR_CHECK(keys_start());
     esp_err_t keyboard = keyboard_usb_start();
-    ESP_ERROR_CHECK(usb_start());
+    online = xSemaphoreCreateBinary();
+    ESP_ERROR_CHECK(usb_start(command));
     if (keyboard != ESP_OK) ESP_LOGE(TAG, "no USB keyboard: %s", esp_err_to_name(keyboard));
     if (keyboard_tab5_start() != ESP_OK) ESP_LOGE(TAG, "no Tab5 keyboard");
     ESP_ERROR_CHECK(nvs_flash_init());
     if (storage_mount(usb_storage_boot()) != 0) ESP_LOGI(TAG, "no FAT SD card");
     if (usb_storage_boot()) return;
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    if (catm_start() != ESP_OK) ESP_LOGE(TAG, "no PPP interface");
     ESP_ERROR_CHECK(terminal_start(&state.terminal_size));
     esp_err_t screen = screen_start(&state);
     usb_keep_image();

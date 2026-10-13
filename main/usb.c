@@ -30,6 +30,7 @@ static __NOINIT_ATTR uint32_t boot_mode;
 static int storage_boot;
 static tinyusb_cdcacm_itf_t control_port;
 static esp_timer_handle_t rollback;
+static bool (*app_command)(const char* line);
 
 static const uint8_t terminal_config[] = {
     TUD_CONFIG_DESCRIPTOR(1, 4, 0, TUD_CONFIG_DESC_LEN + 2 * TUD_CDC_DESC_LEN, 0, 100),
@@ -105,8 +106,8 @@ static void command(char* line) {
             vTaskDelay(pdMS_TO_TICKS(200)); // for the host to read the reply
             esp_restart();
         }
-    } else if (line[0]) {
-        ESP_LOGW(TAG, "commands: sd on, sd off, restart, update SIZE CRC32");
+    } else if (line[0] && !app_command(line)) {
+        ESP_LOGW(TAG, "commands: sd on, sd off, restart, update SIZE CRC32, lte on, lte off, lte status, net check HOST PORT");
     }
 }
 
@@ -154,7 +155,8 @@ static void give_pads_back(void) {
     usb_wrap_ll_phy_select(&USB_WRAP, 1);
 }
 
-esp_err_t usb_start(void) {
+esp_err_t usb_start(bool (*command)(const char* line)) {
+    app_command = command;
     storage_boot = boot_mode == STORAGE_BOOT;
     boot_mode = 0;
     control_port = storage_boot ? TINYUSB_CDC_ACM_0 : TINYUSB_CDC_ACM_1;
@@ -176,5 +178,5 @@ esp_err_t usb_start(void) {
     ESP_RETURN_ON_ERROR(tinyusb_cdcacm_init(&(tinyusb_config_cdcacm_t){.cdc_port = TINYUSB_CDC_ACM_0}), TAG, "CDC 0");
     if (!storage_boot) ESP_RETURN_ON_ERROR(tinyusb_cdcacm_init(&(tinyusb_config_cdcacm_t){.cdc_port = TINYUSB_CDC_ACM_1}), TAG, "CDC 1");
     ESP_RETURN_ON_ERROR(tinyusb_console_init(control_port), TAG, "console");
-    return xTaskCreatePinnedToCore(control, "usb_control", 4096, NULL, 5, NULL, 1) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+    return xTaskCreatePinnedToCore(control, "usb_control", 6144, NULL, 5, NULL, 1) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }

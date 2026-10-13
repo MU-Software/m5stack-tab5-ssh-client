@@ -61,8 +61,6 @@ static esp_err_t join(const char* ssid, const char* password, int timeout_ms) {
 esp_err_t wifi_connect(const wifi_network* networks, int timeout_ms) {
     events = xEventGroupCreate();
     ESP_RETURN_ON_ERROR(c6_start(), TAG, "C6");
-    ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "netif");
-    ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), TAG, "event loop");
     esp_netif_create_default_wifi_sta();
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&init), TAG, "init");
@@ -85,5 +83,7 @@ esp_err_t wifi_connect(const wifi_network* networks, int timeout_ms) {
         err = join(w->ssid, w->password, timeout_ms);
     }
     free(aps);
+    // A started station stays the default interface, ahead of PPP
+    if (err != ESP_OK) esp_wifi_stop();
     return err;
 }
