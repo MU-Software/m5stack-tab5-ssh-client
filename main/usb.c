@@ -9,6 +9,7 @@
 
 #include <esp_attr.h>
 #include <esp_check.h>
+#include <esp_mac.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_ota_ops.h>
@@ -168,10 +169,19 @@ esp_err_t usb_start(bool (*command)(const char* line)) {
     // The USB-C pads are FSLS PHY 0, USB-Serial/JTAG's unless the OTG controller is mapped onto it
     usb_wrap_ll_phy_select(&USB_WRAP, 0);
     ESP_RETURN_ON_ERROR(esp_register_shutdown_handler(give_pads_back), TAG, "shutdown handler");
+    // The MAC as USB-Serial/JTAG reports it, so a board keeps its name in both modes
+    static char serial[18];
+    uint8_t mac[6];
+    ESP_RETURN_ON_ERROR(esp_efuse_mac_get_default(mac), TAG, "MAC");
+    snprintf(serial, sizeof serial, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    static const char* strings[4] = {"\x09\x04", "Espressif", "Tab5 SSH client"}; // English
+    strings[3] = serial;
     tinyusb_config_t config = {
         .port = TINYUSB_PORT_FULL_SPEED_0,
         .task = {.size = 4096, .priority = 5, .xCoreID = 1},
         .descriptor.full_speed_config = storage_boot ? storage_config : terminal_config,
+        .descriptor.string = strings,
+        .descriptor.string_count = 4,
         .event_cb = attach,
     };
     ESP_RETURN_ON_ERROR(tinyusb_driver_install(&config), TAG, "driver");

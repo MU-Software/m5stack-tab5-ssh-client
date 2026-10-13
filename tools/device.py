@@ -19,7 +19,13 @@ app = typer.Typer(no_args_is_help=True)
 
 
 def ports(jtag: bool = False) -> list[str]:
-    return sorted(p.device for p in list_ports.comports() if p.vid == ESPRESSIF and (p.pid == USB_SERIAL_JTAG) == jtag)
+    """TAB5 picks a board by its MAC, the USB serial number in both modes."""
+    board = os.environ.get("TAB5")
+    return sorted(
+        p.device
+        for p in list_ports.comports()
+        if p.vid == ESPRESSIF and (p.pid == USB_SERIAL_JTAG) == jtag and board in (None, p.serial_number)
+    )
 
 
 def firmware_port(index: int) -> str:

@@ -19,6 +19,7 @@
 #include "keyboard_usb.h"
 #include "keys.h"
 #include "net.h"
+#include "power.h"
 #include "screen.h"
 #include "ssh.h"
 #include "storage.h"
@@ -210,6 +211,7 @@ static void run_session(void* arg) {
 }
 
 void app_main(void) {
+    if (power_start() != ESP_OK) ESP_LOGE(TAG, "charging left as it was");
     ESP_ERROR_CHECK(keys_start());
     esp_err_t keyboard = keyboard_usb_start();
     online = xSemaphoreCreateBinary();
