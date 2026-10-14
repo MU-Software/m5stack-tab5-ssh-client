@@ -147,15 +147,16 @@ static session_end run(const ssh_host* h, const char* command, unsigned path, in
 
 // Attaches to the host's tmux session kept in NVS, or starts one when there is none or it has gone
 static session_end tmux(const ssh_host* h, unsigned path) {
-    char name[16], command[64];
+    char name[16], command[192];
     bool attach = storage_get_tmux_session(h->alias, name, sizeof name) == ESP_OK;
     for (;;) {
         if (!attach) {
             snprintf(name, sizeof name, "tab5-%08" PRIx32, esp_random());
             storage_set_tmux_session(h->alias, name);
         }
-        // '=': an exact name, not a prefix
-        snprintf(command, sizeof command, attach ? "tmux attach-session -t '=%s'" : "tmux new-session -s '%s'", name);
+        // -T (tmux 3.2) passes what the screen draws beyond xterm-256color's terminfo; '=': an exact name, not a prefix
+        snprintf(command, sizeof command, "sh -c 'f=-TRGB,strikethrough,overline,usstyle; tmux $f -V >/dev/null 2>&1 || f=; exec tmux $f %s%s'",
+                 attach ? "attach-session -t =" : "new-session -s ", name);
         int exit_status;
         session_end end = run(h, command, path, &exit_status);
         if (end != SESSION_CLOSED) return end;

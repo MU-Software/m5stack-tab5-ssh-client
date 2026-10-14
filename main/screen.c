@@ -29,7 +29,7 @@ static shr_framebuffer_driver software, driver;
 static ppa_client_handle_t ppa;
 static uint8_t band[BSP_LCD_V_RES * 2 * 16] __attribute__((aligned(CONFIG_CACHE_L2_CACHE_LINE_SIZE)));
 static shr_context* context;
-static shr_lyr *grid, *pictures, *cursor, *composing;
+static shr_lyr *grid, *pictures, *cursor, *cursor_text, *composing;
 static GhosttyKittyGraphicsPlacementIterator placements;
 
 // A kitty image as drawn: its source rect scaled to width x height
@@ -52,6 +52,24 @@ static int shown_count, wanted_count;
 static GhosttyRenderStateRowIterator rows;
 static GhosttyRenderStateRowCells cells;
 static GhosttyRenderStateCursor shown_cursor;
+
+// A cell as drawn: its cluster, its style and the lines over it
+typedef struct {
+    char text[64];
+    size_t length;
+    uint32_t span;
+    shr_text_style style;
+    int underline; // GHOSTTY_SGR_UNDERLINE_*
+    shr_color underline_color;
+    bool strikethrough, overline;
+} look;
+
+// The lines of a row, runs of equal neighbours joined
+static struct {
+    shr_text_line items[3 * 256];
+    size_t count;
+    size_t last[3];
+} lines;
 
 static shr_status acquire(void* user, shr_surface* out) {
     (void)user;
@@ -196,7 +214,9 @@ esp_err_t screen_start(const global_state* state) {
         check(shr_lyr_create(context, 0, area, &grid), "grid") != SHR_OK ||
         check(shr_lyr_create(context, 1, area, &pictures), "pictures") != SHR_OK ||
         check(shr_lyr_create(context, 2, area, &cursor), "cursor") != SHR_OK ||
-        check(shr_lyr_create(context, 3, (shr_rect){0, 0, 2 * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &composing), "composing") != SHR_OK ||
+        check(shr_lyr_create(context, 3, (shr_rect){0, 0, 2 * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &cursor_text), "cursor text") != SHR_OK ||
+        check(shr_pl_lyr_tilemap_resize(cursor_text, font, 1, 2, NULL), "cursor text") != SHR_OK ||
+        check(shr_lyr_create(context, 4, (shr_rect){0, 0, 2 * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &composing), "composing") != SHR_OK ||
         check(shr_pl_lyr_tilemap_resize(composing, font, 1, 2, NULL), "composing") != SHR_OK ||
         check(shr_pl_lyr_tilemap_resize(grid, font, (int32_t)size->rows, (int32_t)size->columns, &background), "tilemap") != SHR_OK ||
         ghostty_render_state_row_iterator_new(&terminal_allocator, &rows) != GHOSTTY_SUCCESS ||
@@ -310,16 +330,22 @@ static shr_color rgb(GhosttyColorRgb c) {
     return SHR_RGB(c.r, c.g, c.b);
 }
 
-static void draw_cell(int32_t y, int32_t x, const GhosttyRenderStateColors* colors) {
+// fg alpha: 255 full, 128 dim, 0 none
+static shr_color drawn(GhosttyColorRgb c, const GhosttyStyle* style) {
+    return (rgb(c) & 0xffffffu) | (style->invisible ? 0 : style->faint ? 0x80000000u : 0xff000000u);
+}
+
+// False for the tail of a wide cell
+static bool read_cell(const GhosttyRenderStateColors* colors, look* out) {
     GhosttyCell raw;
     GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
     GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
     GhosttyColorRgb fg = colors->foreground, bg = colors->background;
-    char text[64];
+    char text[sizeof out->text];
     GhosttyBuffer utf8 = {(uint8_t*)text, sizeof text, 0};
     ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw);
     ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide);
-    if (wide == GHOSTTY_CELL_WIDE_SPACER_TAIL) return;
+    if (wide == GHOSTTY_CELL_WIDE_SPACER_TAIL) return false;
     ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style);
     ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR, &fg);
     bool painted = ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &bg) == GHOSTTY_SUCCESS;
@@ -328,25 +354,95 @@ static void draw_cell(int32_t y, int32_t x, const GhosttyRenderStateColors* colo
         GhosttyColorRgb swap = fg;
         fg = bg, bg = swap, painted = true;
     }
-    // fg alpha: 255 full, 128 dim, 0 none; bg alpha 0 leaves the tilemap's background
-    shr_text_style cell = {.fg = (rgb(fg) & 0xffffffu) | (style.invisible ? 0
-                                                          : style.faint   ? 0x80000000u
-                                                                          : 0xff000000u),
-                           .bg = painted ? rgb(bg) : 0,
-                           .flags = (style.bold ? SHR_STYLE_BOLD : 0) | (style.italic ? SHR_STYLE_ITALIC : 0)};
-    shr_pl_lyr_tilemap_set_cell(grid, y, x, text, utf8.len, wide == GHOSTTY_CELL_WIDE_WIDE ? 2 : 1, cell);
+    GhosttyColorRgb under = style.underline_color.tag == GHOSTTY_STYLE_COLOR_RGB       ? style.underline_color.value.rgb
+                            : style.underline_color.tag == GHOSTTY_STYLE_COLOR_PALETTE ? colors->palette[style.underline_color.value.palette]
+                                                                                       : fg;
+    // bg alpha 0 leaves the tilemap's background
+    *out = (look){.length = utf8.len,
+                  .span = wide == GHOSTTY_CELL_WIDE_WIDE ? 2 : 1,
+                  .style = {drawn(fg, &style), painted ? rgb(bg) : 0, (style.bold ? SHR_STYLE_BOLD : 0) | (style.italic ? SHR_STYLE_ITALIC : 0)},
+                  .underline = style.underline,
+                  .underline_color = drawn(under, &style),
+                  .strikethrough = style.strikethrough,
+                  .overline = style.overline};
+    memcpy(out->text, text, utf8.len);
+    return true;
 }
 
-static void draw_cursor(const GhosttyRenderStateCursor* c, const GhosttyRenderStateColors* colors) {
+static void add_line(int32_t x, uint32_t span, uint8_t kind, uint8_t shape, shr_color color) {
+    shr_text_line* last = lines.last[kind] < lines.count ? &lines.items[lines.last[kind]] : NULL;
+    if (last != NULL && last->col + last->cols == x && last->shape == shape && last->color == color) {
+        last->cols += span;
+    } else if (lines.count < sizeof lines.items / sizeof lines.items[0]) {
+        lines.last[kind] = lines.count;
+        lines.items[lines.count++] = (shr_text_line){.col = (uint16_t)x, .cols = (uint16_t)span, .kind = kind, .shape = shape, .color = color};
+    }
+}
+
+static void clear_lines(void) {
+    lines.count = 0;
+    lines.last[0] = lines.last[1] = lines.last[2] = SIZE_MAX;
+}
+
+static void add_lines(const look* l, int32_t x, shr_color color) {
+    if (l->underline != GHOSTTY_SGR_UNDERLINE_NONE && l->underline <= GHOSTTY_SGR_UNDERLINE_DASHED)
+        add_line(x, l->span, SHR_LINE_UNDER, (uint8_t)(l->underline - 1), l->underline_color);
+    if (l->strikethrough) add_line(x, l->span, SHR_LINE_STRIKE, SHR_LINE_SINGLE, color);
+    if (l->overline) add_line(x, l->span, SHR_LINE_OVER, SHR_LINE_SINGLE, color);
+}
+
+static void draw_row(uint16_t y, const GhosttyRenderStateColors* colors) {
+    look l;
+    clear_lines();
+    for (int32_t x = 0; ghostty_render_state_row_cells_next(cells); x++)
+        if (read_cell(colors, &l)) {
+            shr_pl_lyr_tilemap_set_cell(grid, y, x, l.text, l.length, l.span, l.style);
+            add_lines(&l, x, l.style.fg);
+        }
+    // Every row, as set_cell leaves a row's lines as they were
+    shr_pl_lyr_tilemap_set_lines(grid, y, lines.items, lines.count, NULL);
+}
+
+// A block shows the cell under it in the cell's background colour
+static void draw_cursor(GhosttyRenderState render, const GhosttyRenderStateCursor* c, const GhosttyRenderStateColors* colors) {
+    look l = {.span = 1};
+    bool on = c->visible && c->viewport_has_value, block = c->visual_style == GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK;
+    int32_t x = 0, y = 0;
+    if (on) {
+        x = c->viewport_x - c->wide_tail, y = c->viewport_y;
+        ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, (void*)&rows);
+        for (int32_t i = 0; i <= y; i++)
+            ghostty_render_state_row_iterator_next(rows);
+        if (ghostty_render_state_row_get(rows, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, (void*)&cells) != GHOSTTY_SUCCESS ||
+            ghostty_render_state_row_cells_select(cells, (uint16_t)x) != GHOSTTY_SUCCESS || !read_cell(colors, &l))
+            l = (look){.span = 1};
+    }
     shr_lyr_cmd_begin(cursor);
-    if (c->visible && c->viewport_has_value) {
-        int32_t x = (c->viewport_x - c->wide_tail) * SHR_CELL_WIDTH, y = c->viewport_y * SHR_CELL_HEIGHT;
-        shr_rect r = {x, y, x + SHR_CELL_WIDTH, y + SHR_CELL_HEIGHT};
-        if (c->visual_style == GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR) r.x1 = x + 2;
+    if (on) {
+        shr_rect r = {x * SHR_CELL_WIDTH, y * SHR_CELL_HEIGHT, (x + (int32_t)l.span) * SHR_CELL_WIDTH, (y + 1) * SHR_CELL_HEIGHT};
+        if (c->visual_style == GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR) r.x1 = r.x0 + 2;
         if (c->visual_style == GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE) r.y0 = r.y1 - 2;
-        shr_lyr_cmd_fill(cursor, r, rgb(colors->cursor_has_value ? colors->cursor : colors->foreground));
+        shr_color color = rgb(colors->cursor_has_value ? colors->cursor : colors->foreground);
+        if (c->visual_style == GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW) {
+            shr_lyr_cmd_fill(cursor, (shr_rect){r.x0, r.y0, r.x1, r.y0 + 2}, color);
+            shr_lyr_cmd_fill(cursor, (shr_rect){r.x0, r.y1 - 2, r.x1, r.y1}, color);
+            shr_lyr_cmd_fill(cursor, (shr_rect){r.x0, r.y0, r.x0 + 2, r.y1}, color);
+            r.x0 = r.x1 - 2;
+        }
+        shr_lyr_cmd_fill(cursor, r, color);
     }
     shr_lyr_cmd_commit(cursor);
+    shr_lyr_set_visible(cursor_text, on && block);
+    if (!on || !block) return;
+    shr_color text = (l.style.bg >> 24 != 0 ? l.style.bg : rgb(colors->background)) & 0xffffffu;
+    l.style.fg = (l.style.fg & 0xff000000u) | text, l.style.bg = 0;
+    clear_lines();
+    add_lines(&l, 0, l.style.fg);
+    for (size_t i = 0; i < lines.count; i++)
+        lines.items[i].color = (lines.items[i].color & 0xff000000u) | text;
+    shr_lyr_set_rect(cursor_text, (shr_rect){x * SHR_CELL_WIDTH, y * SHR_CELL_HEIGHT, (x + 2) * SHR_CELL_WIDTH, (y + 1) * SHR_CELL_HEIGHT});
+    shr_pl_lyr_tilemap_set_cell(cursor_text, 0, 0, l.text, l.length, l.span, l.style);
+    shr_pl_lyr_tilemap_set_lines(cursor_text, 0, lines.items, lines.count, NULL);
 }
 
 // The Korean syllable being typed, over the cursor's cell
@@ -372,22 +468,24 @@ void screen_draw(void) {
     ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors);
     ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_CURSOR, &now);
     GhosttyRenderStateRowMoves moves = {0};
+    GhosttyRenderStateDirty dirty = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
+    ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty);
     ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_ROW_MOVES, &moves);
     for (int32_t i = 0; i < moves.count; i++)
         shr_pl_lyr_tilemap_scroll(grid, moves.moves[i].top, moves.moves[i].bottom, moves.moves[i].n, (shr_text_style){0});
     ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, (void*)&rows);
     for (uint16_t y; ghostty_render_state_row_iterator_next_dirty(rows, &y);) {
         ghostty_render_state_row_get(rows, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, (void*)&cells);
-        for (int32_t x = 0; ghostty_render_state_row_cells_next(cells); x++)
-            draw_cell(y, x, &colors);
+        draw_row(y, &colors);
     }
+    // The cell under the cursor may have changed with any row
+    if (dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE || now.visible != shown_cursor.visible ||
+        now.viewport_has_value != shown_cursor.viewport_has_value || now.viewport_x != shown_cursor.viewport_x ||
+        now.viewport_y != shown_cursor.viewport_y || now.wide_tail != shown_cursor.wide_tail || now.visual_style != shown_cursor.visual_style)
+        draw_cursor(render, &now, &colors);
+    shown_cursor = now;
     ghostty_render_state_clean(render);
     draw_pictures();
-    if (now.visible != shown_cursor.visible || now.viewport_has_value != shown_cursor.viewport_has_value ||
-        now.viewport_x != shown_cursor.viewport_x || now.viewport_y != shown_cursor.viewport_y || now.wide_tail != shown_cursor.wide_tail ||
-        now.visual_style != shown_cursor.visual_style)
-        draw_cursor(&now, &colors);
-    shown_cursor = now;
     draw_composing(&now, &colors);
 
     shr_deadline next;
