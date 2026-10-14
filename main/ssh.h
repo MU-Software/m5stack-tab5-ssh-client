@@ -10,5 +10,7 @@ int ssh_open(const global_state* state);
 int ssh_read(const global_state* state, void* buffer, size_t length);
 // Bytes, WS_WANT_WRITE (a full peer window opens only by reading), or a WS_ error
 int ssh_write(const global_state* state, const void* buffer, size_t length);
+// A request the host must answer, which counts in session->pongs: tells a slow network from a quiet program
+void ssh_ping(const global_state* state);
 void ssh_wait(const global_state* state, int timeout_ms);
 void ssh_close(const global_state* state, int* exit_status);

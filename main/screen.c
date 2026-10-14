@@ -2,6 +2,7 @@
 #include "screen.h"
 
 #include <errno.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -15,6 +16,7 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/stream_buffer.h>
 #include <shiroko/port_software.h>
 #include <shiroko/shiroko.h>
 
@@ -23,13 +25,14 @@
 #include "terminal.h"
 
 static const char* TAG = "screen";
+enum { BADGE = 24 }; // cells
 static esp_lcd_panel_handle_t panel;
 static shr_surface framebuffer;
 static shr_framebuffer_driver software, driver;
 static ppa_client_handle_t ppa;
 static uint8_t band[BSP_LCD_V_RES * 2 * 16] __attribute__((aligned(CONFIG_CACHE_L2_CACHE_LINE_SIZE)));
 static shr_context* context;
-static shr_lyr *beneath, *grid, *pictures, *cursor, *cursor_text, *composing;
+static shr_lyr *beneath, *grid, *pictures, *guesses, *cursor, *cursor_text, *composing, *badge;
 static shr_pl_res_bitmap_font* font;
 static int32_t rows_count, columns;
 static bool see_through; // the grid lets z < 0 images show under its default background
@@ -67,6 +70,23 @@ typedef struct {
     shr_color underline_color;
     bool strikethrough, overline;
 } look;
+
+// Keys sent to the host, shown before its echo as mosh does: printable ASCII at the end of the line only. A stretch of
+// typing ends with any other key or a wrong guess, and the next one is shown only once the host echoed one of its keys,
+// which keeps passwords hidden.
+static StreamBufferHandle_t typed;
+static atomic_bool typing_over;
+static struct {
+    char text[256];
+    TickType_t at[256];
+    int32_t row, col; // of text[0]
+    size_t count;
+    bool echoed;
+} guess;
+
+// What the session waits for, from when
+static _Atomic(const char*) waiting;
+static atomic_uint waiting_since;
 
 // The lines of a row, runs of equal neighbours joined
 static struct {
@@ -217,11 +237,15 @@ esp_err_t screen_start(const global_state* state) {
         check(shr_pl_res_bitmap_font_create(context, &fd, &font), "font") != SHR_OK ||
         check(shr_lyr_create(context, -1, area, &beneath), "beneath") != SHR_OK || check(shr_lyr_create(context, 0, area, &grid), "grid") != SHR_OK ||
         check(shr_lyr_create(context, 1, area, &pictures), "pictures") != SHR_OK ||
-        check(shr_lyr_create(context, 2, area, &cursor), "cursor") != SHR_OK ||
-        check(shr_lyr_create(context, 3, (shr_rect){0, 0, 2 * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &cursor_text), "cursor text") != SHR_OK ||
+        check(shr_lyr_create(context, 2, (shr_rect){0, 0, area.x1, SHR_CELL_HEIGHT}, &guesses), "guesses") != SHR_OK ||
+        check(shr_pl_lyr_tilemap_resize(guesses, font, 1, (int32_t)size->columns, NULL), "guesses") != SHR_OK ||
+        check(shr_lyr_create(context, 3, area, &cursor), "cursor") != SHR_OK ||
+        check(shr_lyr_create(context, 4, (shr_rect){0, 0, 2 * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &cursor_text), "cursor text") != SHR_OK ||
         check(shr_pl_lyr_tilemap_resize(cursor_text, font, 1, 2, NULL), "cursor text") != SHR_OK ||
-        check(shr_lyr_create(context, 4, (shr_rect){0, 0, 2 * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &composing), "composing") != SHR_OK ||
+        check(shr_lyr_create(context, 5, (shr_rect){0, 0, 2 * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &composing), "composing") != SHR_OK ||
         check(shr_pl_lyr_tilemap_resize(composing, font, 1, 2, NULL), "composing") != SHR_OK ||
+        check(shr_lyr_create(context, 6, (shr_rect){0, 0, BADGE * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &badge), "badge") != SHR_OK ||
+        check(shr_pl_lyr_tilemap_resize(badge, font, 1, BADGE, NULL), "badge") != SHR_OK || (typed = xStreamBufferCreate(256, 1)) == NULL ||
         check(shr_pl_lyr_tilemap_resize(grid, font, (int32_t)size->rows, (int32_t)size->columns, &background), "tilemap") != SHR_OK ||
         ghostty_render_state_row_iterator_new(&terminal_allocator, &rows) != GHOSTTY_SUCCESS ||
         ghostty_render_state_row_cells_new(&terminal_allocator, &cells) != GHOSTTY_SUCCESS ||
@@ -457,6 +481,128 @@ static void draw_row(uint16_t y, const GhosttyRenderStateColors* colors) {
     shr_pl_lyr_tilemap_set_lines(grid, y, lines.items, lines.count, NULL);
 }
 
+// Points `cells` at row y of the render state, for ghostty_render_state_row_cells_select
+static bool select_row(GhosttyRenderState render, int32_t y) {
+    ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, (void*)&rows);
+    for (int32_t i = 0; i <= y; i++)
+        if (!ghostty_render_state_row_iterator_next(rows)) return false;
+    return ghostty_render_state_row_get(rows, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, (void*)&cells) == GHOSTTY_SUCCESS;
+}
+
+// The text of the cell (x, y), or "" when it has none
+static void cell_text(GhosttyRenderState render, const GhosttyRenderStateColors* colors, int32_t x, int32_t y, look* out) {
+    if (!select_row(render, y) || ghostty_render_state_row_cells_select(cells, (uint16_t)x) != GHOSTTY_SUCCESS || !read_cell(colors, out))
+        out->length = 0;
+}
+
+static void forget_guesses(bool echoed) {
+    guess.count = 0;
+    guess.echoed = echoed;
+}
+
+static void guess_key(GhosttyRenderState render, const GhosttyRenderStateCursor* c, const GhosttyRenderStateColors* colors, char key) {
+    look l;
+    if (guess.count == 0) {
+        if (!c->visible || !c->viewport_has_value || c->wide_tail || !select_row(render, c->viewport_y)) return;
+        for (int32_t x = c->viewport_x; x < columns; x++)
+            if (ghostty_render_state_row_cells_select(cells, (uint16_t)x) != GHOSTTY_SUCCESS || (read_cell(colors, &l) && l.length > 0)) return;
+        guess.row = c->viewport_y, guess.col = c->viewport_x;
+    }
+    // Short of the last column, where the host's echo would wrap
+    if (guess.col + (int32_t)guess.count >= columns - 1 || guess.count == sizeof guess.text) return;
+    guess.text[guess.count] = key;
+    guess.at[guess.count++] = xTaskGetTickCount();
+}
+
+static void take_keys(GhosttyRenderState render, const GhosttyRenderStateCursor* c, const GhosttyRenderStateColors* colors) {
+    uint8_t in[64];
+    if (atomic_exchange(&typing_over, false)) forget_guesses(false);
+    for (size_t n; (n = xStreamBufferReceive(typed, in, sizeof in, 0)) > 0;)
+        for (size_t i = 0; i < n; i++) {
+            if (in[i] >= 0x20 && in[i] < 0x7f) {
+                guess_key(render, c, colors, (char)in[i]);
+            } else if ((in[i] == 0x7f || in[i] == '\b') && guess.count > 0) {
+                guess.count--;
+            } else {
+                forget_guesses(false);
+                // The rest of an escape sequence
+                if (in[i] == 0x1b) break;
+            }
+        }
+}
+
+// Echoed guesses leave; a wrong one ends the stretch
+static void check_guesses(GhosttyRenderState render, const GhosttyRenderStateCursor* c, const GhosttyRenderStateColors* colors) {
+    look l;
+    if (guess.count > 0 && (!c->viewport_has_value || c->viewport_y != guess.row)) forget_guesses(guess.echoed);
+    while (guess.count > 0) {
+        cell_text(render, colors, guess.col, guess.row, &l);
+        if (l.length == 1 && l.text[0] == guess.text[0]) {
+            guess.echoed = true;
+            guess.col++, guess.count--;
+            memmove(guess.text, guess.text + 1, guess.count);
+            memmove(guess.at, guess.at + 1, guess.count * sizeof guess.at[0]);
+        } else {
+            if (c->viewport_x > guess.col) forget_guesses(false);
+            return;
+        }
+    }
+}
+
+// Underlined over the cells after the cursor, which moves to their end; nothing within 50 ms of a key, so a quick echo
+// changes nothing
+static bool draw_guesses(const GhosttyRenderStateColors* colors) {
+    static char drawn_text[256];
+    static size_t drawn_count;
+    static int32_t drawn_row, drawn_col;
+    size_t count = guess.echoed && guess.count > 0 && xTaskGetTickCount() - guess.at[0] >= pdMS_TO_TICKS(50) ? guess.count : 0;
+    if (count == drawn_count && (count == 0 || (guess.row == drawn_row && guess.col == drawn_col && memcmp(guess.text, drawn_text, count) == 0)))
+        return count > 0;
+    drawn_count = count, drawn_row = guess.row, drawn_col = guess.col;
+    memcpy(drawn_text, guess.text, count);
+    shr_lyr_set_visible(guesses, count > 0);
+    if (count == 0) return false;
+    shr_text_style style = {rgb(colors->foreground), rgb(colors->background), 0};
+    shr_lyr_set_rect(guesses, (shr_rect){0, guess.row * SHR_CELL_HEIGHT, columns * SHR_CELL_WIDTH, (guess.row + 1) * SHR_CELL_HEIGHT});
+    shr_pl_lyr_tilemap_clear(guesses, 0, 0, 1, columns, (shr_text_style){0});
+    for (size_t i = 0; i < count; i++)
+        shr_pl_lyr_tilemap_set_cell(guesses, 0, guess.col + (int32_t)i, &guess.text[i], 1, 1, style);
+    shr_pl_lyr_tilemap_set_lines(
+        guesses, 0, &(shr_text_line){.col = (uint16_t)guess.col, .cols = (uint16_t)count, .kind = SHR_LINE_UNDER, .color = style.fg}, 1, NULL);
+    return true;
+}
+
+// Top right: what the session waits for and for how long
+static void draw_badge(void) {
+    static char shown_text[BADGE + 1];
+    char text[BADGE + 1] = "";
+    const char* what = atomic_load(&waiting);
+    TickType_t now = xTaskGetTickCount(), since = (TickType_t)atomic_load(&waiting_since);
+    if (what != NULL) snprintf(text, sizeof text, " %s %lu s ", what, (unsigned long)((now - since) / configTICK_RATE_HZ));
+    if (strcmp(text, shown_text) == 0) return;
+    memcpy(shown_text, text, sizeof text);
+    shr_lyr_set_visible(badge, text[0] != 0);
+    if (text[0] == 0) return;
+    int32_t n = (int32_t)strlen(text), right = columns * SHR_CELL_WIDTH;
+    shr_lyr_set_rect(badge, (shr_rect){right - n * SHR_CELL_WIDTH, 0, right, SHR_CELL_HEIGHT});
+    shr_pl_lyr_tilemap_clear(badge, 0, 0, 1, BADGE, (shr_text_style){0});
+    shr_pl_lyr_tilemap_set_text(badge, 0, 0, text, (size_t)n, (shr_text_style){SHR_RGB(0, 0, 0), SHR_RGB(0xff, 0xcc, 0), SHR_STYLE_BOLD}, NULL, 0, 0,
+                                NULL);
+}
+
+void screen_typed(const void* bytes, size_t size) {
+    if (bytes == NULL)
+        atomic_store(&typing_over, true);
+    else if (typed != NULL)
+        xStreamBufferSend(typed, bytes, size, 0);
+}
+
+void screen_waiting(const char* what, TickType_t since) {
+    if (what != NULL && what == atomic_load(&waiting)) return;
+    atomic_store(&waiting_since, since);
+    atomic_store(&waiting, what);
+}
+
 // A block shows the cell under it in the cell's background colour
 static void draw_cursor(GhosttyRenderState render, const GhosttyRenderStateCursor* c, const GhosttyRenderStateColors* colors) {
     look l = {.span = 1};
@@ -464,11 +610,7 @@ static void draw_cursor(GhosttyRenderState render, const GhosttyRenderStateCurso
     int32_t x = 0, y = 0;
     if (on) {
         x = c->viewport_x - c->wide_tail, y = c->viewport_y;
-        ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, (void*)&rows);
-        for (int32_t i = 0; i <= y; i++)
-            ghostty_render_state_row_iterator_next(rows);
-        if (ghostty_render_state_row_get(rows, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, (void*)&cells) != GHOSTTY_SUCCESS ||
-            ghostty_render_state_row_cells_select(cells, (uint16_t)x) != GHOSTTY_SUCCESS || !read_cell(colors, &l))
+        if (!select_row(render, y) || ghostty_render_state_row_cells_select(cells, (uint16_t)x) != GHOSTTY_SUCCESS || !read_cell(colors, &l))
             l = (look){.span = 1};
     }
     shr_lyr_cmd_begin(cursor);
@@ -532,6 +674,9 @@ void screen_draw(void) {
         ghostty_render_state_row_get(rows, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, (void*)&cells);
         draw_row(y, &colors);
     }
+    take_keys(render, &now, &colors);
+    check_guesses(render, &now, &colors);
+    if (draw_guesses(&colors)) now.viewport_x = (uint16_t)(guess.col + (int32_t)guess.count), now.wide_tail = false;
     // The cell under the cursor may have changed with any row
     if (dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE || now.visible != shown_cursor.visible ||
         now.viewport_has_value != shown_cursor.viewport_has_value || now.viewport_x != shown_cursor.viewport_x ||
@@ -541,6 +686,7 @@ void screen_draw(void) {
     ghostty_render_state_clean(render);
     draw_pictures();
     draw_composing(&now, &colors);
+    draw_badge();
 
     shr_deadline next;
     shr_event event;

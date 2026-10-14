@@ -13,11 +13,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <wolfssh/internal.h>
 #include <wolfssl/wolfcrypt/hash.h>
 
 #include "config.h"
-
-#define TIMEOUT_MS 10000
 
 #define MODE(op, v) (op), 0, 0, (v) >> 8, (v) & 0xff
 // A fresh pty otherwise keeps sshd's defaults, which on Linux lack IUTF8 (Hangul backspace deletes one byte)
@@ -108,8 +107,14 @@ static int user_auth(byte type, WS_UserAuthData* d, void* ctx) {
     return WOLFSSH_USERAUTH_FAILURE;
 }
 
+static int pong(WOLFSSH* ssh, void* buf, word32 size, void* ctx) {
+    (void)ssh, (void)buf, (void)size;
+    ((ssh_session*)ctx)->pongs++;
+    return WS_SUCCESS;
+}
+
 // Bounded: a path that just died must not hold the session for TCP's minutes of retries
-static bool connected(int fd, const struct addrinfo* ai, uint32_t local_address) {
+static bool connected(int fd, const struct addrinfo* ai, uint32_t local_address, int timeout_ms) {
     int err = 0;
     socklen_t length = sizeof err;
     struct sockaddr_in source = {.sin_family = AF_INET, .sin_addr.s_addr = local_address};
@@ -117,18 +122,18 @@ static bool connected(int fd, const struct addrinfo* ai, uint32_t local_address)
         fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) != 0)
         return false;
     if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) return true;
-    return errno == EINPROGRESS && poll(&(struct pollfd){.fd = fd, .events = POLLOUT}, 1, TIMEOUT_MS) == 1 &&
+    return errno == EINPROGRESS && poll(&(struct pollfd){.fd = fd, .events = POLLOUT}, 1, timeout_ms) == 1 &&
            getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &length) == 0 && err == 0;
 }
 
-static int dial(const char* host, uint16_t port, uint32_t local_address) {
+static int dial(const char* host, uint16_t port, uint32_t local_address, int timeout_ms) {
     char service[6];
     snprintf(service, sizeof service, "%u", port);
     struct addrinfo* ai;
     if (getaddrinfo(host, service, &(struct addrinfo){.ai_family = local_address != 0 ? AF_INET : AF_UNSPEC, .ai_socktype = SOCK_STREAM}, &ai) != 0)
         return -1;
     int fd = socket(ai->ai_family, SOCK_STREAM, 0);
-    if (fd >= 0 && !connected(fd, ai, local_address)) {
+    if (fd >= 0 && !connected(fd, ai, local_address, timeout_ms)) {
         close(fd);
         fd = -1;
     }
@@ -156,9 +161,10 @@ int ssh_open(const global_state* state) {
                        .password = s->password,
                        .command = s->command,
                        .local_address = s->local_address,
+                       .timeout_ms = s->timeout_ms > 0 ? s->timeout_ms : 10000,
                        .fd = -1};
     if (wolfSSH_Init() != WS_SUCCESS) return WS_MEMORY_E;
-    s->fd = dial(h->hostname, h->port, s->local_address);
+    s->fd = dial(h->hostname, h->port, s->local_address, s->timeout_ms);
     int rc = WS_SOCKET_ERROR_E;
     if (s->fd < 0) goto done;
 
@@ -169,6 +175,8 @@ int ssh_open(const global_state* state) {
     wolfSSH_SetIOSend(s->ctx, io_send);
     wolfSSH_CTX_SetPublicKeyCheck(s->ctx, check_host_key);
     wolfSSH_SetUserAuth(s->ctx, user_auth);
+    wolfSSH_SetReqSuccess(s->ctx, pong);
+    wolfSSH_SetReqFailure(s->ctx, pong);
     // The 128 KiB default window let ^C take 1-3 s to stop a flood; 32 KiB stops it in ~70 ms
     wolfSSH_CTX_SetWindowPacketSize(s->ctx, 32768, 32768);
 
@@ -176,6 +184,8 @@ int ssh_open(const global_state* state) {
     if (s->ssh == NULL) goto done;
     wolfSSH_SetPublicKeyCheckCtx(s->ssh, (void*)state);
     wolfSSH_SetUserAuthCtx(s->ssh, (void*)state);
+    wolfSSH_SetReqSuccessCtx(s->ssh, s);
+    wolfSSH_SetReqFailureCtx(s->ssh, s);
     if (wolfSSH_set_fd(s->ssh, s->fd) != WS_SUCCESS || wolfSSH_SetUsername(s->ssh, h->user) != WS_SUCCESS ||
         wolfSSH_SetChannelType(s->ssh, WOLFSSH_SESSION_TERMINAL, NULL, 0) != WS_SUCCESS ||
         // EXEC keeps the terminal request TERMINAL turned on
@@ -192,7 +202,7 @@ int ssh_open(const global_state* state) {
             rc = s->error != WS_SUCCESS ? s->error : e;
             goto done;
         }
-        if (poll(&(struct pollfd){.fd = s->fd, .events = e == WS_WANT_WRITE ? POLLOUT : POLLIN}, 1, TIMEOUT_MS) <= 0) {
+        if (poll(&(struct pollfd){.fd = s->fd, .events = e == WS_WANT_WRITE ? POLLOUT : POLLIN}, 1, s->timeout_ms) <= 0) {
             rc = WS_SOCKET_ERROR_E;
             goto done;
         }
@@ -244,6 +254,11 @@ int ssh_write(const global_state* state, const void* buffer, size_t length) {
     default:
         return e;
     }
+}
+
+void ssh_ping(const global_state* state) {
+    static const char name[] = "keepalive@openssh.com";
+    SendGlobalRequest(state->session->ssh, (const unsigned char*)name, sizeof name - 1, 1, NULL);
 }
 
 void ssh_wait(const global_state* state, int timeout_ms) {

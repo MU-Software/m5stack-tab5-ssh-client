@@ -19,6 +19,8 @@ void net_suspect(void);
 uint32_t net_local_address(void);
 // TCP keepalive for the path
 void net_keepalive(int fd);
+// The path is LTE, with its seconds-long stalls
+bool net_on_lte(void);
 // Joins network now
 esp_err_t net_join(const wifi_network* network);
 // wifi on|off, lte on|off|status, net status, net check HOST PORT

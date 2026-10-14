@@ -275,10 +275,14 @@ uint32_t net_local_address(void) {
     return netif != NULL && esp_netif_get_ip_info(netif, &ip) == ESP_OK ? ip.ip.addr : 0;
 }
 
+bool net_on_lte(void) {
+    return current == PATH_LTE;
+}
+
 void net_keepalive(int fd) {
     // LTE: a probe every 6 s keeps the radio from idling (5-8 s gave the fewest stalls), and a link is dead only after
     // 120 s (30-90 s declared live links dead); Wi-Fi: dead after ~11 s
-    bool lte_path = current == PATH_LTE;
+    bool lte_path = net_on_lte();
     int idle = lte_path ? 6 : 5, interval = lte_path ? 6 : 2, count = lte_path ? 20 : 3;
     setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &(int){1}, sizeof(int));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof idle);

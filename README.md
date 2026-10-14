@@ -35,6 +35,9 @@ rolls back after 30 s. The ROM loader needs a BOOT reset.
   in the background. A dropped or moved session reconnects to its tmux session; a closed one on Enter. Control
   commands: `wifi on|off`, `wifi connect SSID [PASSWORD]` (saved to the configuration in use), `wifi forget SSID`,
   `lte on|off|status`, `net status`, `net check HOST PORT`.
+- Slow links: keys typed at the end of a line show underlined until the host echoes them (only once it echoed one since
+  the last Enter or other key, so not at password prompts); top right, the seconds typing has had no answer from the host,
+  not even to a keepalive request, or a session reconnects. Over LTE each connection step may take 30 s.
 - Fonts: `build/shiroko-host/fonts/` (`*.shrf`, `NOTICE`, `LICENSES/`) to the SD card's `.local/share/tab5-ssh/fonts/`.
 
 ## Development

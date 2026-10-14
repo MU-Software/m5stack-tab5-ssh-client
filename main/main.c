@@ -77,14 +77,23 @@ int accept_new_host(const global_state* state, const char* name, const char* fin
 
 typedef enum { SESSION_CLOSED, SESSION_REFUSED, SESSION_DROPPED, SESSION_MOVED } session_end;
 
+// Typing that 1 s brings no output pings the host; no answer for another second shows as held until anything arrives
 static session_end bridge(unsigned path) {
     uint8_t in[256], out[1024];
     int pending = 0, off = 0;
+    TickType_t typed_at = 0, pinged_at = 0;
+    bool typed = false, pinged = false, held = false;
+    unsigned pongs = 0;
     for (;;) {
         if (net_generation() != path) return SESSION_MOVED;
         if (pending == 0) {
-            if ((pending = (int)terminal_reply(in, sizeof in)) == 0 && (pending = (int)keys_read((char*)in, sizeof in)) == 0)
-                pending = (int)usb_terminal_read(in, sizeof in);
+            if ((pending = (int)terminal_reply(in, sizeof in)) == 0) {
+                if ((pending = (int)keys_read((char*)in, sizeof in)) == 0) pending = (int)usb_terminal_read(in, sizeof in);
+                if (pending > 0) {
+                    screen_typed(in, (size_t)pending);
+                    if (!typed) typed = true, typed_at = xTaskGetTickCount();
+                }
+            }
             off = 0;
         }
         int sent = pending > 0 ? ssh_write(&state, in + off, (size_t)pending) : WS_WANT_WRITE;
@@ -94,6 +103,17 @@ static session_end bridge(unsigned path) {
         if (sent > 0) {
             off += sent;
             pending -= sent;
+        }
+        TickType_t now = xTaskGetTickCount();
+        if (got > 0 || (pinged && session.pongs != pongs)) {
+            typed = pinged = false;
+            if (held) screen_waiting(NULL, 0), held = false;
+        } else if (typed && !pinged && now - typed_at >= pdMS_TO_TICKS(1000)) {
+            pongs = session.pongs, pinged = true, pinged_at = now;
+            ssh_ping(&state);
+        } else if (pinged && !held && now - pinged_at >= pdMS_TO_TICKS(1000)) {
+            screen_waiting("held", typed_at);
+            held = true;
         }
         if (got > 0) {
             terminal_write(out, (size_t)got);
@@ -117,7 +137,8 @@ static session_end run(const ssh_host* h, const char* command, unsigned path, in
                             .private_key = private_key,
                             .password = password[0] ? password : NULL,
                             .command = command,
-                            .local_address = net_local_address()};
+                            .local_address = net_local_address(),
+                            .timeout_ms = net_on_lte() ? 30000 : 10000};
     state.session = &session;
     int rc = ssh_open(&state);
     if (private_key != NULL) wc_ForceZero(private_key, strlen(private_key));
@@ -129,12 +150,14 @@ static session_end run(const ssh_host* h, const char* command, unsigned path, in
     *exit_status = 0;
     if (rc == WS_SUCCESS) {
         net_keepalive(session.fd);
+        screen_waiting(NULL, 0);
         ESP_LOGI(TAG, "connected to %s: %s", h->hostname, command != NULL ? command : "shell");
         esp_log_level_set("*", ESP_LOG_WARN);
         // They answer control commands
         for (size_t i = 0; i < 5; i++)
             esp_log_level_set((const char* const[]){"catm", "main", "net", "power", "wifi"}[i], ESP_LOG_INFO);
         end = bridge(path);
+        screen_typed(NULL, 0);
         esp_log_level_set("*", ESP_LOG_INFO);
         ssh_close(&state, exit_status);
         ESP_LOGI(TAG, "session %s, exit status %d", (const char* const[]){"closed", "refused", "dropped", "moved"}[end], *exit_status);
@@ -191,6 +214,7 @@ static void sessions(const ssh_host* h) {
     int retry_ms = 1000;
     for (;;) {
         session_end end = tmux(h, net_wait());
+        screen_waiting(end == SESSION_DROPPED || end == SESSION_MOVED ? "reconnecting" : NULL, xTaskGetTickCount());
         if (end == SESSION_CLOSED || end == SESSION_REFUSED) {
             message(end == SESSION_CLOSED ? "\r\n[Session closed. Enter connects again.]\r\n" : "\r\n[Not connected. Enter tries again.]\r\n");
             wait_enter();

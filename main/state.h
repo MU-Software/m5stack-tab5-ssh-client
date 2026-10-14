@@ -27,6 +27,10 @@ typedef struct {
     const char* command;
     // IPv4 source address in network order, 0 for any: keeps the connection on one interface
     uint32_t local_address;
+    // For each step of connecting
+    int timeout_ms;
+    // Replies to ssh_ping
+    unsigned pongs;
     WOLFSSH_CTX* ctx;
     WOLFSSH* ssh;
     int fd;
