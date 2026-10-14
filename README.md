@@ -33,7 +33,7 @@ rolls back after 30 s. The ROM loader needs a BOOT reset.
   windows allow passthrough, for kitty images from programs in it. No tmux on the host: a plain shell.
 - Network: Wi-Fi while it reaches the SSH host, else LTE through a Stamp CAT-M (Tab5 TX G6, RX G46), kept connected
   in the background. A dropped or moved session reconnects to its tmux session; a closed one on Enter. Control
-  commands: `wifi on|off`, `wifi connect SSID [PASSWORD]` (saved to the configuration in use), `wifi forget SSID`,
+  commands: `wifi on|off` (`wifi off save`: also after restarts, until `wifi on` or `wifi connect`), `wifi connect SSID [PASSWORD]` (saved to the configuration in use), `wifi forget SSID`,
   `lte on|off|status`, `net status`, `net check HOST PORT`.
 - Slow links: keys typed at the end of a line show underlined until the host echoes them (only once it echoed one since
   the last Enter or other key, so not at password prompts); top right, the seconds typing has had no answer from the host,

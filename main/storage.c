@@ -148,6 +148,24 @@ void storage_set_tmux_session(const char* alias, const char* name) {
     nvs_close(h);
 }
 
+bool storage_get_wifi_off(void) {
+    nvs_handle_t h;
+    uint8_t off = 0;
+    if (nvs_open("net", NVS_READONLY, &h) != ESP_OK) return false;
+    nvs_get_u8(h, "wifi_off", &off);
+    nvs_close(h);
+    return off != 0;
+}
+
+void storage_set_wifi_off(bool off) {
+    nvs_handle_t h;
+    if (nvs_open("net", NVS_READWRITE, &h) != ESP_OK) return;
+    esp_err_t err = off ? nvs_set_u8(h, "wifi_off", 1) : nvs_erase_key(h, "wifi_off");
+    if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) err = nvs_commit(h);
+    if (err != ESP_OK) ESP_LOGW(TAG, "wifi_off: %s", esp_err_to_name(err));
+    nvs_close(h);
+}
+
 static int save_config(const char* text, config_source source) {
     if (source == CONFIG_SD) {
         FILE* f = fopen(SD "/.config/tab5-ssh/config.json", "w");

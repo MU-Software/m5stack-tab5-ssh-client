@@ -243,6 +243,7 @@ static void connect(void) {
     state.hosts = text != NULL ? config_ssh_hosts(text) : NULL;
     free(text);
     state.current_host = state.hosts;
+    state.wifi_off = storage_get_wifi_off();
     // Also without a host, for the control commands
     if (net_start(&state) != ESP_OK) ESP_LOGE(TAG, "no network");
     const ssh_host* h = state.current_host;
@@ -269,6 +270,8 @@ static void wifi_connect_command(const char* arguments) {
     while (*password == ' ')
         password++;
     strlcpy(network->password, password, sizeof network->password);
+    // It turns Wi-Fi on, as wifi on does
+    if (state.wifi_off) storage_set_wifi_off(state.wifi_off = false);
     esp_err_t err = net_join(network);
     ESP_LOGI(TAG, "wifi connect %s: %s", network->ssid, esp_err_to_name(err));
     if (err == ESP_OK && storage_add_wifi(network->ssid, network->password) != 0) ESP_LOGW(TAG, "%s not saved", network->ssid);
@@ -309,6 +312,12 @@ static bool command(const char* line) {
     if (strcmp(line, "power") == 0) {
         power_report();
         return true;
+    }
+    // wifi off alone lasts the boot
+    if (strcmp(line, "wifi off save") == 0 || strcmp(line, "wifi on") == 0) {
+        state.wifi_off = strcmp(line, "wifi on") != 0;
+        storage_set_wifi_off(state.wifi_off);
+        return net_command(state.wifi_off ? "wifi off" : "wifi on");
     }
     if (strncmp(line, "wifi forget ", 12) == 0) {
         // Emptied, not unlinked, for the same reason

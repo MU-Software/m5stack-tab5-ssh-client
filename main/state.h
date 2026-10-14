@@ -47,4 +47,6 @@ typedef struct {
     const char* terminal_type;
     terminal_size terminal_size;
     ssh_session* session;
+    // Kept across boots: Wi-Fi stays off from boot, for LTE only
+    bool wifi_off;
 } global_state;

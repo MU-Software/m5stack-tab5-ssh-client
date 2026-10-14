@@ -125,9 +125,10 @@ static void command(char* line) {
             esp_restart();
         }
     } else if (line[0] && !app_command(line)) {
-        ESP_LOGW(TAG, "commands: sd on|off, restart, update SIZE CRC32, c6 update SIZE CRC32, wifi on|off|connect SSID [PASSWORD]|forget SSID, lte "
-                      "on|off|status, net "
-                      "status|check HOST PORT");
+        ESP_LOGW(TAG,
+                 "commands: sd on|off, restart, update SIZE CRC32, c6 update SIZE CRC32, wifi on|off [save]|connect SSID [PASSWORD]|forget SSID, lte "
+                 "on|off|status, net "
+                 "status|check HOST PORT");
     }
 }
 

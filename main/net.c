@@ -138,6 +138,7 @@ static void manage(void* arg) {
     (void)arg;
     wifi_started = wifi_start() == ESP_OK;
     if (!wifi_started) ESP_LOGE(TAG, "no Wi-Fi");
+    if (wifi_started && !wifi_enabled) wifi_off();
     // LTE waits for the first try, so a boot does not connect over LTE only to move to Wi-Fi
     if (wifi_started) join_known(NULL, portMAX_DELAY);
     bool was_up = false;
@@ -225,7 +226,9 @@ static void run_lte(void* arg) {
             continue;
         }
         ESP_LOGI(TAG, "LTE again in %lld s", wait / SECOND);
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait / 1000));
+        // Only lte on|off end it early: network events would redial within the research's 60 s of the last dial
+        for (int64_t until = esp_timer_get_time() + wait; lte_enabled && !lte_reset && esp_timer_get_time() < until;)
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS((until - esp_timer_get_time()) / 1000) + 1);
     }
 }
 
@@ -240,6 +243,7 @@ static void on_event(void* arg, esp_event_base_t base, int32_t id, void* data) {
 
 esp_err_t net_start(const global_state* global) {
     state = global;
+    wifi_enabled = !global->wifi_off;
     paths = xEventGroupCreate();
     lock = xSemaphoreCreateMutex();
     suspected = xSemaphoreCreateBinary();
