@@ -1,0 +1,195 @@
+--- a/include/ghostty/vt/kitty_graphics.h
++++ b/include/ghostty/vt/kitty_graphics.h
+@@ -487,6 +487,49 @@
+ } GhosttyKittyGraphicsPlacementRenderInfo;
+ 
+ /**
++ * A run of Unicode placeholder cells (U+10EEEE) in one viewport row that
++ * shows part of a virtual placement.
++ *
++ * The placement's image is fitted into grid_cols x grid_rows cells keeping
++ * its aspect ratio and centred; the run shows the cells [col, col + width)
++ * of row `row` of that grid. Initialize with
++ * GHOSTTY_INIT_SIZED(GhosttyKittyGraphicsVirtualRun).
++ *
++ * @ingroup kitty_graphics
++ */
++typedef struct {
++  /** Size of this struct in bytes. Must be set to sizeof(GhosttyKittyGraphicsVirtualRun). */
++  size_t size;
++  /** The image ID. */
++  uint32_t image_id;
++  /** The placement ID, 0 when the placeholder names none. */
++  uint32_t placement_id;
++  /** Viewport column of the run's first cell. */
++  uint32_t viewport_col;
++  /** Viewport row of the run. */
++  uint32_t viewport_row;
++  /** Column of the run's first cell in the placement's grid. */
++  uint32_t col;
++  /** Row of the run in the placement's grid. */
++  uint32_t row;
++  /** Length of the run in cells. */
++  uint32_t width;
++  /** Columns of the placement's grid. */
++  uint32_t grid_cols;
++  /** Rows of the placement's grid. */
++  uint32_t grid_rows;
++  /** The placement's z-index. */
++  int32_t z;
++} GhosttyKittyGraphicsVirtualRun;
++
++/**
++ * Callback for ghostty_kitty_graphics_virtual_runs().
++ *
++ * @ingroup kitty_graphics
++ */
++typedef void (*GhosttyKittyGraphicsVirtualRunFn)(void* user, const GhosttyKittyGraphicsVirtualRun* run);
++
++/**
+  * Get data from a kitty graphics storage instance.
+  *
+  * The output pointer must be of the appropriate type for the requested
+@@ -861,6 +904,24 @@
+     GhosttyKittyGraphicsImage image,
+     GhosttyTerminal terminal,
+     GhosttyKittyGraphicsPlacementRenderInfo* out_info);
++
++/**
++ * Call `callback` for each run of Unicode placeholder cells in the viewport
++ * whose image is loaded, top to bottom and left to right. The run is valid
++ * only during the call.
++ *
++ * @param terminal The terminal handle
++ * @param callback Called once per run
++ * @param user Passed to the callback
++ * @return GHOSTTY_SUCCESS, GHOSTTY_INVALID_VALUE for a NULL terminal or
++ *         callback, GHOSTTY_NO_VALUE without Kitty graphics
++ *
++ * @ingroup kitty_graphics
++ */
++GHOSTTY_API GhosttyResult ghostty_kitty_graphics_virtual_runs(
++    GhosttyTerminal terminal,
++    GhosttyKittyGraphicsVirtualRunFn callback,
++    void* user);
+ 
+ /** @} */
+ 
+--- a/src/lib_vt.zig
++++ b/src/lib_vt.zig
+@@ -404,6 +404,7 @@
+             @export(&c.kitty_graphics_placement_viewport_pos, .{ .name = "ghostty_kitty_graphics_placement_viewport_pos" });
+             @export(&c.kitty_graphics_placement_source_rect, .{ .name = "ghostty_kitty_graphics_placement_source_rect" });
+             @export(&c.kitty_graphics_placement_render_info, .{ .name = "ghostty_kitty_graphics_placement_render_info" });
++            @export(&c.kitty_graphics_virtual_runs, .{ .name = "ghostty_kitty_graphics_virtual_runs" });
+         }
+         if (features.grid_introspection) {
+             @export(&c.grid_ref_cell, .{ .name = "ghostty_grid_ref_cell" });
+--- a/src/terminal/c/kitty_graphics.zig
++++ b/src/terminal/c/kitty_graphics.zig
+@@ -6,6 +6,7 @@
+ const kitty_storage = @import("../kitty/graphics_storage.zig");
+ const kitty_cmd = @import("../kitty/graphics_command.zig");
+ const Image = @import("../kitty/graphics_image.zig").Image;
++const kitty_unicode = @import("../kitty/graphics_unicode.zig");
+ const grid_ref = @import("grid_ref.zig");
+ const selection_c = @import("selection.zig");
+ const terminal_c = @import("terminal.zig");
+@@ -581,6 +582,66 @@
+     out.source_y = source.y;
+     out.source_width = source.width;
+     out.source_height = source.height;
++
++    return .success;
++}
++
++/// C: GhosttyKittyGraphicsVirtualRun
++pub const VirtualRun = extern struct {
++    size: usize = @sizeOf(VirtualRun),
++    image_id: u32 = 0,
++    placement_id: u32 = 0,
++    viewport_col: u32 = 0,
++    viewport_row: u32 = 0,
++    col: u32 = 0,
++    row: u32 = 0,
++    width: u32 = 0,
++    grid_cols: u32 = 0,
++    grid_rows: u32 = 0,
++    z: i32 = 0,
++};
++
++/// C: GhosttyKittyGraphicsVirtualRunFn
++pub const VirtualRunFn = *const fn (?*anyopaque, *const VirtualRun) callconv(lib.calling_conv) void;
++
++pub fn virtual_runs(
++    terminal_: terminal_c.Terminal,
++    callback_: ?VirtualRunFn,
++    user: ?*anyopaque,
++) callconv(lib.calling_conv) Result {
++    if (comptime !build_options.kitty_graphics) return .no_value;
++
++    const wrapper = terminal_ orelse return .invalid_value;
++    const callback = callback_ orelse return .invalid_value;
++    const t = wrapper.terminal;
++    if (t.cols == 0 or t.rows == 0) return .success;
++    const cell_width = t.width_px / t.cols;
++    const cell_height = t.height_px / t.rows;
++    const pages = &t.screens.active.pages;
++    const storage = &t.screens.active.kitty_images;
++    const bottom = pages.getBottomRight(.viewport) orelse return .success;
++
++    var it = kitty_unicode.placementIterator(pages.getTopLeft(.viewport), bottom);
++    while (it.next()) |p| {
++        const image = storage.imageById(p.image_id) orelse continue;
++        if (image.data.isPending()) continue;
++        const target = storage.placeholderTarget(p.image_id, p.placement_id) orelse continue;
++        const grid = p.grid(storage, &image, cell_width, cell_height) catch continue;
++        const vp = pages.pointFromPin(.viewport, p.pin) orelse continue;
++        const run: VirtualRun = .{
++            .image_id = p.image_id,
++            .placement_id = p.placement_id,
++            .viewport_col = vp.viewport.x,
++            .viewport_row = vp.viewport.y,
++            .col = p.col,
++            .row = p.row,
++            .width = p.width,
++            .grid_cols = grid.columns,
++            .grid_rows = grid.rows,
++            .z = target.placement.z,
++        };
++        callback(user, &run);
++    }
+ 
+     return .success;
+ }
+--- a/src/terminal/c/main.zig
++++ b/src/terminal/c/main.zig
+@@ -28,6 +28,7 @@
+ pub const kitty_graphics_placement_viewport_pos = kitty_graphics.placement_viewport_pos;
+ pub const kitty_graphics_placement_source_rect = kitty_graphics.placement_source_rect;
+ pub const kitty_graphics_placement_render_info = kitty_graphics.placement_render_info;
++pub const kitty_graphics_virtual_runs = kitty_graphics.virtual_runs;
+ pub const types = @import("types.zig");
+ pub const modes = @import("modes.zig");
+ pub const osc = @import("osc.zig");
+--- a/src/terminal/c/types.zig
++++ b/src/terminal/c/types.zig
+@@ -193,6 +193,7 @@
+     .initStruct("GhosttyFormatterTerminalOptions", formatter.TerminalOptions),
+     .initStruct("GhosttyGridRef", grid_ref.CGridRef),
+     .initStruct("GhosttyKittyGraphicsPlacementRenderInfo", kitty_graphics.PlacementRenderInfo),
++    .initStruct("GhosttyKittyGraphicsVirtualRun", kitty_graphics.VirtualRun),
+     .initStruct("GhosttyMimeReader", io.MimeReader),
+     .initStruct("GhosttyMouseEncoderSize", mouse_encode.Size),
+     .initStruct("GhosttyMousePosition", mouse_event.Position),
+--- a/src/terminal/kitty/graphics_unicode.zig
++++ b/src/terminal/kitty/graphics_unicode.zig
+@@ -357,7 +357,7 @@
+     //
+     // This part of the code does NOT do preserve any aspect ratios. Its
+     // dumbly fitting the image into the grid size -- possibly user specified.
+-    fn grid(
++    pub fn grid(
+         self: *const Placement,
+         storage: *const ImageStorage,
+         image: *const Image,

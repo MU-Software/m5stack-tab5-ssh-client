@@ -29,7 +29,8 @@ rolls back after 30 s. The ROM loader needs a BOOT reset.
   (`id_ed25519`, `id_ecdsa`, `id_rsa`). No key: password prompt. Unknown host: yes/no prompt.
 - tmux: the session runs in `tmux new-session -s tab5-XXXXXXXX`, its name kept in NVS per `Host`; the next connection
   attaches to it, or starts another when it is gone. From tmux 3.2 the client declares truecolor, strikethrough,
-  overline and underline styles and colours (`-T`). No tmux on the host: a plain shell.
+  overline, underline styles and colours, and kitty images as Unicode placeholders (`-T`); from tmux 3.3 the session's
+  windows allow passthrough, for kitty images from programs in it. No tmux on the host: a plain shell.
 - Network: Wi-Fi while it reaches the SSH host, else LTE through a Stamp CAT-M (Tab5 TX G6, RX G46), kept connected
   in the background. A dropped or moved session reconnects to its tmux session; a closed one on Enter. Control
   commands: `wifi on|off`, `wifi connect SSID [PASSWORD]` (saved to the configuration in use), `wifi forget SSID`,
