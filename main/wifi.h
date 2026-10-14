@@ -9,8 +9,8 @@
 
 // Powers the C6 and starts the station without joining
 esp_err_t wifi_start(void);
-// Joins the first of networks a scan sees, leaving any network joined before
-esp_err_t wifi_join(const wifi_network* networks, int timeout_ms);
+// Joins the first of networks but except that a scan sees, leaving any network joined before
+esp_err_t wifi_join(const wifi_network* networks, const char* except, int timeout_ms);
 esp_err_t wifi_on(void);
 esp_err_t wifi_off(void);
 // Joined with an address; a lost network is retried until wifi_join or wifi_off

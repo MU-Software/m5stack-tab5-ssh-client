@@ -50,6 +50,7 @@ static atomic_bool wifi_enabled = true, lte_enabled = true, lte_reset, suspect, 
 // The manager's view of Wi-Fi: since when it has an address, whether the internet check passed
 static int64_t wifi_since, wifi_lost, wifi_checked, wifi_tried;
 static bool wifi_ok;
+static int wifi_failures;
 
 static int64_t since(int64_t start) {
     return (esp_timer_get_time() - start) / 1000;
@@ -123,10 +124,11 @@ static void choose(path want) {
         xEventGroupClearBits(paths, READY);
 }
 
-static void join_known(TickType_t wait) {
+// Another known network than except, or any when except is NULL
+static void join_known(const char* except, TickType_t wait) {
     if (state->wifi == NULL || xSemaphoreTake(lock, wait) != pdTRUE) return;
     // A command may have joined meanwhile
-    if (wifi_enabled && !wifi_connected()) wifi_join(state->wifi, JOIN_MS);
+    if (wifi_enabled && (except != NULL || !wifi_connected())) wifi_join(state->wifi, except, JOIN_MS);
     wifi_tried = esp_timer_get_time();
     xSemaphoreGive(lock);
 }
@@ -136,7 +138,7 @@ static void manage(void* arg) {
     wifi_started = wifi_start() == ESP_OK;
     if (!wifi_started) ESP_LOGE(TAG, "no Wi-Fi");
     // LTE waits for the first try, so a boot does not connect over LTE only to move to Wi-Fi
-    if (wifi_started) join_known(portMAX_DELAY);
+    if (wifi_started) join_known(NULL, portMAX_DELAY);
     bool was_up = false;
     for (;;) {
         int64_t now = esp_timer_get_time();
@@ -145,10 +147,11 @@ static void manage(void* arg) {
             wifi_since = now;
             wifi_checked = 0;
             wifi_ok = false;
+            wifi_failures = 0;
         }
         if (!up && was_up) wifi_lost = now;
         was_up = up;
-        if (wifi_started && wifi_enabled && !up && now - wifi_tried >= WIFI_REJOIN) join_known(0);
+        if (wifi_started && wifi_enabled && !up && now - wifi_tried >= WIFI_REJOIN) join_known(NULL, 0);
         if (suspect) {
             int reached = up && current == PATH_WIFI ? wifi_reaches_host(pdMS_TO_TICKS(CHECK_MS)) : -1;
             if (reached >= 0) {
@@ -164,6 +167,14 @@ static void manage(void* arg) {
             if (reached >= 0) {
                 wifi_ok = reached;
                 wifi_checked = esp_timer_get_time();
+            }
+            // Joined but not getting through twice: another known network, if a scan sees one
+            if (reached == 0 && ++wifi_failures >= 2) {
+                wifi_ap_record_t ap = {0};
+                wifi_failures = 0;
+                if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) join_known((const char*)ap.ssid, 0);
+                // A new network is checked as one, even when the switch fell between two looks
+                was_up = false;
             }
         }
         path want = up && wifi_ok ? PATH_WIFI : catm_connected() ? PATH_LTE : PATH_NONE;
@@ -281,7 +292,7 @@ esp_err_t net_join(const wifi_network* network) {
         wifi_on();
     }
     xSemaphoreTake(lock, portMAX_DELAY);
-    esp_err_t err = wifi_join(network, JOIN_MS);
+    esp_err_t err = wifi_join(network, NULL, JOIN_MS);
     wifi_tried = esp_timer_get_time();
     xSemaphoreGive(lock);
     xTaskNotifyGive(manager);

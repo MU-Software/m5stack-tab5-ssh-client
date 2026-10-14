@@ -131,8 +131,8 @@ static session_end run(const ssh_host* h, const char* command, unsigned path, in
         ESP_LOGI(TAG, "connected to %s: %s", h->hostname, command != NULL ? command : "shell");
         esp_log_level_set("*", ESP_LOG_WARN);
         // They answer control commands
-        for (size_t i = 0; i < 4; i++)
-            esp_log_level_set((const char* const[]){"catm", "main", "net", "wifi"}[i], ESP_LOG_INFO);
+        for (size_t i = 0; i < 5; i++)
+            esp_log_level_set((const char* const[]){"catm", "main", "net", "power", "wifi"}[i], ESP_LOG_INFO);
         end = bridge(path);
         esp_log_level_set("*", ESP_LOG_INFO);
         ssh_close(&state, exit_status);
@@ -254,6 +254,10 @@ static void wifi_connect_command(const char* arguments) {
 static bool command(const char* line) {
     if (strncmp(line, "wifi connect ", 13) == 0) {
         wifi_connect_command(line + 13);
+        return true;
+    }
+    if (strcmp(line, "power") == 0) {
+        power_report();
         return true;
     }
     if (strncmp(line, "wifi forget ", 12) == 0) {

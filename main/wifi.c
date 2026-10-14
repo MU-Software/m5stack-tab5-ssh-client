@@ -78,14 +78,7 @@ esp_err_t wifi_start(void) {
     return esp_wifi_start();
 }
 
-esp_err_t wifi_join(const wifi_network* networks, int timeout_ms) {
-    if (xEventGroupGetBits(events) & GOT_IP) {
-        joined = false;
-        xEventGroupClearBits(events, FAILED);
-        esp_wifi_disconnect();
-        xEventGroupWaitBits(events, FAILED, pdFALSE, pdFALSE, pdMS_TO_TICKS(2000));
-    }
-    joined = false;
+esp_err_t wifi_join(const wifi_network* networks, const char* except, int timeout_ms) {
     ESP_RETURN_ON_ERROR(esp_wifi_scan_start(NULL, true), TAG, "scan");
     uint16_t n = 0;
     esp_wifi_scan_get_ap_num(&n);
@@ -94,7 +87,15 @@ esp_err_t wifi_join(const wifi_network* networks, int timeout_ms) {
     esp_wifi_scan_get_ap_records(&n, aps);
     esp_err_t err = ESP_ERR_NOT_FOUND;
     for (const wifi_network* w = networks; w != NULL && err != ESP_OK; w = w->next) {
-        if (!w->ssid[0] || !seen(w->ssid, aps, n)) continue;
+        if (!w->ssid[0] || (except != NULL && strcmp(w->ssid, except) == 0) || !seen(w->ssid, aps, n)) continue;
+        // Leaves the network joined before only for one that is there
+        if (xEventGroupGetBits(events) & GOT_IP) {
+            joined = false;
+            xEventGroupClearBits(events, FAILED);
+            esp_wifi_disconnect();
+            xEventGroupWaitBits(events, FAILED, pdFALSE, pdFALSE, pdMS_TO_TICKS(2000));
+        }
+        joined = false;
         ESP_LOGI(TAG, "joining %s", w->ssid);
         err = join(w->ssid, w->password, timeout_ms);
     }
