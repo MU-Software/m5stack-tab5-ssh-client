@@ -47,7 +47,7 @@ size:                ## Size per component
 	$(call IDF,.,,app) size-components
 
 clean:               ## Remove build output and managed components
-	rm -rf build managed_components tools/c6-update/*/managed_components
+	rm -rf build managed_components tools/c6/managed_components
 
 ide: build          ## Compile database for VS Code with the IDF headers copied out of the container
 	uv run python tools/ide.py
@@ -77,10 +77,9 @@ sd-on:               ## Hand the SD card to this computer as USB mass storage (t
 sd-off:              ## Give the SD card back to the firmware
 	$(DEVICE) send "sd off"
 
-c6-update:           ## Flash a one-shot image that updates the ESP32-C6's esp_hosted (then make monitor, make flash)
-	$(call IDF,tools/c6-update/cp,-e IDF_TARGET=esp32c6,c6) build
-	$(call IDF,tools/c6-update/host,,c6-update) -D C6_IMAGE=/workspace/build/c6/tab5_c6.bin build
-	cd build/c6-update && $(DEVICE) esptool --baud $(BAUD) write-flash "@flash_args"
+c6-update:           ## Build the ESP32-C6's esp_hosted and send it over USB; the Tab5 restarts into it
+	$(call IDF,tools/c6,-e IDF_TARGET=esp32c6,c6) build
+	$(DEVICE) update --c6 build/c6/tab5_c6.bin
 
 monitor:             ## Logs from the control port, with backtrace decoding
 	uv run python -m esp_idf_monitor --no-reset --port $$($(DEVICE) port control) --target esp32p4 $(APP)/tab5_ssh.elf

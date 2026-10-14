@@ -21,6 +21,7 @@
 #include <lwip/netdb.h>
 #include <lwip/sockets.h>
 
+#include "c6.h"
 #include "catm.h"
 #include "wifi.h"
 
@@ -302,15 +303,16 @@ esp_err_t net_join(const wifi_network* network) {
 static void status(void) {
     esp_netif_ip_info_t ip = {0};
     wifi_ap_record_t ap = {0};
-    char address[16];
+    char address[16], c6[24] = "off";
     if (wifi_connected()) {
         esp_wifi_sta_get_ap_info(&ap);
         esp_netif_get_ip_info(wifi_netif(), &ip);
     }
     esp_ip4addr_ntoa(&ip.ip, address, sizeof address);
-    ESP_LOGI(TAG, "path %s (%u); Wi-Fi %s %s %s %s; LTE %s %s", path_names[current], generation, wifi_enabled ? "on" : "off", (const char*)ap.ssid,
-             address, wifi_connected() ? (wifi_ok ? "reaches the host" : "not reaching the host yet") : "not joined", lte_enabled ? "on" : "off",
-             catm_connected() ? "connected" : "not connected");
+    if (wifi_started) c6_version(c6, sizeof c6);
+    ESP_LOGI(TAG, "path %s (%u); Wi-Fi %s %s %s %s (C6 %s); LTE %s %s", path_names[current], generation, wifi_enabled ? "on" : "off",
+             (const char*)ap.ssid, address, wifi_connected() ? (wifi_ok ? "reaches the host" : "not reaching the host yet") : "not joined", c6,
+             lte_enabled ? "on" : "off", catm_connected() ? "connected" : "not connected");
 }
 
 bool net_command(const char* line) {

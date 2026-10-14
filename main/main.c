@@ -12,6 +12,7 @@
 #include <nvs_flash.h>
 #include <wolfssl/wolfcrypt/memory.h>
 
+#include "c6.h"
 #include "catm.h"
 #include "config.h"
 #include "keyboard_tab5.h"
@@ -251,7 +252,26 @@ static void wifi_connect_command(const char* arguments) {
     state.wifi = network;
 }
 
+// The C6 boots the new image once the restart powers it again; it rolls back if that one does not stay up
+static void c6_update_command(size_t size, uint32_t crc) {
+    esp_err_t err;
+    uint8_t* image = usb_receive(size, crc, &err);
+    if (image != NULL) err = c6_update(image, size);
+    free(image);
+    char reply[48];
+    snprintf(reply, sizeof reply, "c6 update %s\n", esp_err_to_name(err));
+    usb_reply(reply);
+    if (err != ESP_OK) return;
+    vTaskDelay(pdMS_TO_TICKS(200)); // for the host to read the reply
+    esp_restart();
+}
+
 static bool command(const char* line) {
+    unsigned long size, crc;
+    if (sscanf(line, "c6 update %lu %lx", &size, &crc) == 2) {
+        c6_update_command(size, (uint32_t)crc);
+        return true;
+    }
     if (strncmp(line, "wifi connect ", 13) == 0) {
         wifi_connect_command(line + 13);
         return true;

@@ -57,14 +57,14 @@ def esptool_main(*args: str) -> None:
 
 
 @app.command()
-def update(image: Path) -> None:
-    """Send an app image over the control port into the other OTA slot, then wait for the Tab5 to come back."""
-    data = image.read_bytes()
+def update(image: Path, c6: Annotated[bool, typer.Option(help="an ESP32-C6 esp_hosted image")] = False) -> None:
+    """Send an app image (or the C6's) over the control port, then wait for the Tab5 to come back."""
+    data, command = image.read_bytes(), "c6 update" if c6 else "update"
     with serial.Serial(firmware_port(-1), timeout=0.1) as s:
-        s.write(f"update {len(data)} {zlib.crc32(data):08x}\n".encode())
+        s.write(f"{command} {len(data)} {zlib.crc32(data):08x}\n".encode())
         wait_line(s, b"ready", 10)
         s.write(data)
-        if (result := wait_line(s, b"update ", 60)) != b"update ESP_OK":
+        if (result := wait_line(s, f"{command} ".encode(), 180)) != f"{command} ESP_OK".encode():
             raise SystemExit(result.decode())
     for present in (False, True):
         for _ in range(150):
@@ -73,7 +73,11 @@ def update(image: Path) -> None:
             time.sleep(0.2)
         else:
             raise SystemExit("the Tab5 did not come back on USB" if present else "the Tab5 did not restart")
-    print("updated; the new image keeps itself once this computer configures its USB")
+    print(
+        "updated; the C6 keeps the image once it has run 30 s"
+        if c6
+        else "updated; the new image keeps itself once this computer configures its USB"
+    )
 
 
 @app.command()

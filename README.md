@@ -15,7 +15,7 @@ make build
 make flash      # OTA over USB; esptool while the Tab5 shows USB-Serial/JTAG
 make monitor    # logs
 make sd-on      # SD card as USB mass storage, until make sd-off
-make c6-update  # once per Tab5, from the ROM loader
+make c6-update  # the ESP32-C6's esp_hosted, over USB (logged at boot when it differs)
 ```
 
 USB-C is TinyUSB: a terminal port and a control port (`tools/device.py`). An OTA image that USB never comes up with

@@ -68,10 +68,10 @@ void usb_terminal_write(const void* buffer, size_t size) {
     if (tud_cdc_n_connected(TINYUSB_CDC_ACM_0)) put(TINYUSB_CDC_ACM_0, buffer, size);
 }
 
-static esp_err_t receive_update(size_t size, uint32_t crc) {
-    const esp_partition_t* slot = esp_ota_get_next_update_partition(NULL);
-    uint8_t* image = slot != NULL && size > 0 && size <= slot->size ? heap_caps_malloc(size, MALLOC_CAP_SPIRAM) : NULL;
-    if (image == NULL) return ESP_ERR_INVALID_SIZE;
+uint8_t* usb_receive(size_t size, uint32_t crc, esp_err_t* err) {
+    uint8_t* image = size > 0 ? heap_caps_malloc(size, MALLOC_CAP_SPIRAM) : NULL;
+    *err = ESP_ERR_INVALID_SIZE;
+    if (image == NULL) return NULL;
     put(control_port, "ready\n", 6);
     size_t got = 0;
     for (TickType_t last = xTaskGetTickCount(); got < size && xTaskGetTickCount() - last < pdMS_TO_TICKS(5000);) {
@@ -84,8 +84,24 @@ static esp_err_t receive_update(size_t size, uint32_t crc) {
             vTaskDelay(1);
         }
     }
+    *err = got != size ? ESP_ERR_TIMEOUT : esp_rom_crc32_le(0, image, size) != crc ? ESP_ERR_INVALID_CRC : ESP_OK;
+    if (*err == ESP_OK) return image;
+    free(image);
+    return NULL;
+}
+
+void usb_reply(const char* text) {
+    put(control_port, text, strlen(text));
+}
+
+static esp_err_t receive_update(size_t size, uint32_t crc) {
+    const esp_partition_t* slot = esp_ota_get_next_update_partition(NULL);
+    if (slot == NULL || size > slot->size) return ESP_ERR_INVALID_SIZE;
+    esp_err_t err;
+    uint8_t* image = usb_receive(size, crc, &err);
+    if (image == NULL) return err;
     esp_ota_handle_t ota = 0;
-    esp_err_t err = got != size ? ESP_ERR_TIMEOUT : esp_rom_crc32_le(0, image, size) != crc ? ESP_ERR_INVALID_CRC : esp_ota_begin(slot, size, &ota);
+    err = esp_ota_begin(slot, size, &ota);
     if (err == ESP_OK) err = esp_ota_write(ota, image, size);
     free(image);
     if (ota != 0) err = err == ESP_OK ? esp_ota_end(ota) : (esp_ota_abort(ota), err);
@@ -109,7 +125,8 @@ static void command(char* line) {
             esp_restart();
         }
     } else if (line[0] && !app_command(line)) {
-        ESP_LOGW(TAG, "commands: sd on|off, restart, update SIZE CRC32, wifi on|off|connect SSID [PASSWORD]|forget SSID, lte on|off|status, net "
+        ESP_LOGW(TAG, "commands: sd on|off, restart, update SIZE CRC32, c6 update SIZE CRC32, wifi on|off|connect SSID [PASSWORD]|forget SSID, lte "
+                      "on|off|status, net "
                       "status|check HOST PORT");
     }
 }

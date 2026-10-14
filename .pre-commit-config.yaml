@@ -75,4 +75,4 @@ repos:
         entry: tools/clang-tidy.sh
         files: \.c$
         require_serial: true
-        exclude: ^tools/c6-update/
+        exclude: ^tools/c6/
