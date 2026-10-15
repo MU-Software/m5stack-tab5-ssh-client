@@ -25,6 +25,15 @@ static int wifi(const char* json, wifi_network** w) {
     return rc;
 }
 
+static int logs(const char* json, log_settings* l, char* tz) {
+    cJSON* config = cJSON_Parse(json);
+    *l = (log_settings){.enabled = true, .file_kb = 1024, .keep_mb = 32, .keep_days = 14};
+    snprintf(tz, 48, "KST-9");
+    int rc = config_log(config, l, tz, 48);
+    cJSON_Delete(config);
+    return rc;
+}
+
 static int count(const wifi_network* w) {
     int n = 0;
     for (; w != NULL; w = w->next)
@@ -68,6 +77,20 @@ int main(void) {
     check(wifi("{\"wifi\": []}", &w) == 0 && w == NULL, "empty list, no networks");
     check(wifi("{\"wifi\": {}}", &w) != 0, "wifi as an object refused");
     check(wifi("{\"host\": ", &w) != 0 && wifi("[]", &w) != 0, "malformed or non-object JSON refused");
+    log_settings l;
+    char tz[48];
+    check(logs("{}", &l, tz) == 0 && l.enabled && l.file_kb == 1024 && l.keep_mb == 32 && l.keep_days == 14 && !l.quiet_sessions &&
+              strcmp(tz, "KST-9") == 0,
+          "no log key keeps the defaults");
+    check(logs("{\"log\": {\"enabled\": false, \"file_kb\": 256, \"keep_mb\": 8, \"keep_days\": 3, \"session_level\": \"warn\"}, "
+               "\"timezone\": \"UTC0\"}",
+               &l, tz) == 0 &&
+              !l.enabled && l.file_kb == 256 && l.keep_mb == 8 && l.keep_days == 3 && l.quiet_sessions && strcmp(tz, "UTC0") == 0,
+          "log settings and time zone read");
+    check(logs("{\"log\": {\"file_kb\": 8}}", &l, tz) != 0 && l.file_kb == 1024, "file_kb below 16 refused, defaults kept");
+    check(logs("{\"log\": {\"keep_days\": 1.5}}", &l, tz) != 0, "fractional keep_days refused");
+    check(logs("{\"log\": {\"session_level\": \"debug\"}}", &l, tz) != 0, "unknown session_level refused");
+    check(logs("{\"log\": []}", &l, tz) != 0 && logs("{\"timezone\": 9}", &l, tz) != 0, "log as a list or a numeric time zone refused");
 
     ssh_host* hosts = config_ssh_hosts(ssh_config);
     check(hosts != NULL && strcmp(hosts[0].alias, "tab5") == 0 && strcmp(hosts[1].alias, "work") == 0 && strcmp(hosts[2].alias, "printer.lan") == 0 &&

@@ -40,6 +40,9 @@ rolls back after 30 s. The ROM loader needs a BOOT reset.
 - Slow links: keys typed at the end of a line show underlined until the host echoes them (only once it echoed one since
   the last Enter or other key, so not at password prompts); top right, the seconds typing has had no answer from the host,
   not even to a keepalive request, or a session reconnects. Over LTE each connection step may take 30 s.
+- Logs: on the SD card in `.local/state/tab5-ssh/log/`, a file a day (`YYYY-MM-DD-NN.log`, a new `NN` past `file_kb`), the
+  oldest deleted past `keep_mb` or `keep_days`; `log` and `timezone` (POSIX TZ, default `KST-9`) in the configuration.
+  The time comes from the RTC, then SNTP (`pool.ntp.org`), which sets the RTC.
 - Fonts: `build/shiroko-host/fonts/` (`*.shrf`, `NOTICE`, `LICENSES/`) to the SD card's `.local/share/tab5-ssh/fonts/`.
 
 ## Development

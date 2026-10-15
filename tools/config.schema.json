@@ -6,6 +6,53 @@
     "$schema": {
       "type": "string"
     },
+    "log": {
+      "additionalProperties": false,
+      "description": "Logs on the SD card in .local/state/tab5-ssh/log/, YYYY-MM-DD-NN.log",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "file_kb": {
+          "default": 1024,
+          "description": "A new file past this size",
+          "maximum": 65536,
+          "minimum": 16,
+          "type": "integer"
+        },
+        "keep_days": {
+          "default": 14,
+          "description": "Dated files older than this are deleted",
+          "maximum": 3650,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "keep_mb": {
+          "default": 32,
+          "description": "The oldest files are deleted past this total",
+          "maximum": 65536,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "session_level": {
+          "default": "info",
+          "description": "warn: only warnings and the control commands' replies while a session runs",
+          "enum": [
+            "info",
+            "warn"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "timezone": {
+      "default": "KST-9",
+      "description": "POSIX TZ, for log dates and times",
+      "maxLength": 47,
+      "minLength": 1,
+      "type": "string"
+    },
     "wifi": {
       "description": "Tried in this order; only networks a scan sees",
       "items": {
@@ -31,6 +78,6 @@
       "type": "array"
     }
   },
-  "title": "Tab5 SSH client Wi-Fi configuration",
+  "title": "Tab5 SSH client configuration",
   "type": "object"
 }

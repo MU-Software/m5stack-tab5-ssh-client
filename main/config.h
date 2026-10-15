@@ -12,6 +12,9 @@ typedef enum { HOST_UNKNOWN, HOST_KNOWN, HOST_CHANGED } host_state;
 // One allocation: free(*wifi)
 int config_wifi_networks(const cJSON* config, wifi_network** wifi);
 
+// The log settings and the time zone; absent ones keep what they hold
+int config_log(const cJSON* config, log_settings* log, char* timezone, size_t size);
+
 // One allocation: free(hosts)
 ssh_host* config_ssh_hosts(const char* text);
 

@@ -40,6 +40,14 @@ typedef struct {
     byte host_key_sha256[WC_SHA256_DIGEST_SIZE];
 } ssh_session;
 
+// Logs on the SD card, rotated daily and at file_kb, oldest deleted past keep_mb or keep_days
+typedef struct {
+    bool enabled;
+    int file_kb, keep_mb, keep_days;
+    // Only warnings and the control commands' replies while a session runs
+    bool quiet_sessions;
+} log_settings;
+
 typedef struct {
     wifi_network* wifi;
     ssh_host* hosts;
@@ -49,4 +57,7 @@ typedef struct {
     ssh_session* session;
     // Kept across boots: Wi-Fi stays off from boot, for LTE only
     bool wifi_off;
+    log_settings log;
+    // POSIX TZ
+    char timezone[48];
 } global_state;

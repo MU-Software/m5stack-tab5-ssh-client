@@ -19,6 +19,31 @@ static int copy(char* out, size_t size, const cJSON* item) {
     return 0;
 }
 
+static int number(int* out, const cJSON* item, int low, int high) {
+    if (item == NULL) return 0;
+    if (!cJSON_IsNumber(item) || item->valuedouble != (int)item->valuedouble || item->valueint < low || item->valueint > high) return -1;
+    *out = item->valueint;
+    return 0;
+}
+
+int config_log(const cJSON* config, log_settings* log, char* timezone, size_t size) {
+    const cJSON* l = cJSON_GetObjectItemCaseSensitive(config, "log");
+    const cJSON* enabled = cJSON_GetObjectItemCaseSensitive(l, "enabled");
+    const cJSON* level = cJSON_GetObjectItemCaseSensitive(l, "session_level");
+    log_settings out = *log;
+    if (!cJSON_IsObject(config) || (l != NULL && !cJSON_IsObject(l)) || (enabled != NULL && !cJSON_IsBool(enabled)) ||
+        (level != NULL && (!cJSON_IsString(level) || (strcmp(level->valuestring, "info") != 0 && strcmp(level->valuestring, "warn") != 0))) ||
+        number(&out.file_kb, cJSON_GetObjectItemCaseSensitive(l, "file_kb"), 16, 65536) != 0 ||
+        number(&out.keep_mb, cJSON_GetObjectItemCaseSensitive(l, "keep_mb"), 1, 65536) != 0 ||
+        number(&out.keep_days, cJSON_GetObjectItemCaseSensitive(l, "keep_days"), 1, 3650) != 0 ||
+        copy(timezone, size, cJSON_GetObjectItemCaseSensitive(config, "timezone")) != 0)
+        return -1;
+    if (enabled != NULL) out.enabled = cJSON_IsTrue(enabled);
+    if (level != NULL) out.quiet_sessions = strcmp(level->valuestring, "warn") == 0;
+    *log = out;
+    return 0;
+}
+
 int config_wifi_networks(const cJSON* config, wifi_network** wifi) {
     const cJSON* list = cJSON_GetObjectItemCaseSensitive(config, "wifi");
     int n = cJSON_GetArraySize(list), err = -1;

@@ -14,10 +14,12 @@
 
 #include "c6.h"
 #include "catm.h"
+#include "clock.h"
 #include "config.h"
 #include "keyboard_tab5.h"
 #include "keyboard_usb.h"
 #include "keys.h"
+#include "logs.h"
 #include "net.h"
 #include "power.h"
 #include "screen.h"
@@ -31,6 +33,8 @@ static ssh_session session;
 static global_state state = {
     .terminal_type = "xterm-256color",
     .terminal_size = {.columns = 106, .rows = 30, .width_pixels = 1272, .height_pixels = 720},
+    .log = {.enabled = true, .file_kb = 1024, .keep_mb = 32, .keep_days = 14},
+    .timezone = "KST-9",
 };
 
 static void message(const char* text) {
@@ -152,10 +156,12 @@ static session_end run(const ssh_host* h, const char* command, unsigned path, in
         net_keepalive(session.fd);
         screen_waiting(NULL, 0);
         ESP_LOGI(TAG, "connected to %s: %s", h->hostname, command != NULL ? command : "shell");
-        esp_log_level_set("*", ESP_LOG_WARN);
-        // They answer control commands
-        for (size_t i = 0; i < 5; i++)
-            esp_log_level_set((const char* const[]){"catm", "main", "net", "power", "wifi"}[i], ESP_LOG_INFO);
+        if (state.log.quiet_sessions) {
+            esp_log_level_set("*", ESP_LOG_WARN);
+            // They answer control commands
+            for (size_t i = 0; i < 5; i++)
+                esp_log_level_set((const char* const[]){"catm", "main", "net", "power", "wifi"}[i], ESP_LOG_INFO);
+        }
         end = bridge(path);
         screen_typed(NULL, 0);
         esp_log_level_set("*", ESP_LOG_INFO);
@@ -260,7 +266,11 @@ static void connect(void) {
         ESP_LOGE(TAG, "the configuration from %s is invalid", sources[source]);
     else
         ESP_LOGI(TAG, "configuration from %s", sources[source]);
+    if (config != NULL && config_log(config, &state.log, state.timezone, sizeof state.timezone) != 0)
+        ESP_LOGE(TAG, "the log settings or the time zone from %s are invalid", sources[source]);
     cJSON_Delete(config);
+    clock_timezone(state.timezone);
+    logs_configure(&state.log);
     char* text = storage_get_ssh_config();
     state.hosts = text != NULL ? config_ssh_hosts(text) : NULL;
     free(text);
@@ -358,6 +368,7 @@ static void run_session(void* arg) {
 }
 
 void app_main(void) {
+    if (logs_start() != ESP_OK) ESP_LOGE(TAG, "no log ring");
     if (power_start() != ESP_OK) ESP_LOGE(TAG, "charging left as it was");
     ESP_ERROR_CHECK(keys_start());
     esp_err_t keyboard = keyboard_usb_start();
@@ -369,6 +380,7 @@ void app_main(void) {
     if (usb_storage_boot()) return;
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    if (clock_start() != ESP_OK) ESP_LOGE(TAG, "no SNTP");
     if (catm_start() != ESP_OK) ESP_LOGE(TAG, "no PPP interface");
     ESP_ERROR_CHECK(terminal_start(&state.terminal_size));
     esp_err_t screen = screen_start(&state);
