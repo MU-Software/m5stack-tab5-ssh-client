@@ -24,5 +24,8 @@ target_link_libraries(config_test cjson wolf)
 
 add_executable(hangul_test hangul_test.c ${TOP}/main/hangul.c)
 
+add_executable(layout_test layout_test.c ${TOP}/main/layout.c)
+target_link_libraries(layout_test cjson)
+
 add_executable(ssh_test ssh_test.c ${TOP}/main/config.c ${TOP}/main/ssh.c)
 target_link_libraries(ssh_test cjson wolf)

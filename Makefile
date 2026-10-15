@@ -9,7 +9,7 @@ DEVICE  = uv run python $(CURDIR)/tools/device.py
 SHIROKO = build/shiroko-host
 GHOSTTY = build/ghostty
 
-.PHONY: help build reconfigure menuconfig size clean ide check test test-linux flash monitor erase-flash erase-config c6-update sd-on sd-off shiroko-host ghostty
+.PHONY: help build reconfigure menuconfig size clean ide check test test-linux flash monitor erase-flash erase-config c6-update sd-on sd-off shiroko-host ghostty sim
 
 help:                ## List the targets
 	@grep -hE '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -58,6 +58,11 @@ test:                ## Host tests under ASan+UBSan against a local sshd contain
 test-linux:          ## The same in Linux under ASan+UBSan+LSan, then MSan
 	tests/run.sh address,undefined linux
 	tests/run.sh memory linux
+
+sim: $(SHIROKO)/generated  ## The UI in an SDL3 window on this computer, the mouse as touch; main/ui.json is read again when saved
+	cmake -S sim -B build/sim -DCMAKE_BUILD_TYPE=RelWithDebInfo > /dev/null
+	cmake --build build/sim -j8
+	build/sim/tab5_sim main/ui.json $(SHIROKO)/fonts
 
 check:               ## Run every pre-commit hook (format, cppcheck, clang-tidy, ...) on all files
 	uv run pre-commit run --all-files

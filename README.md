@@ -52,7 +52,11 @@ uv sync && uv run pre-commit install   # once
 make ide                               # compile database for VS Code
 make check                             # pre-commit on all files
 make test test-linux                   # SSH tests against a local sshd under sanitizers
+make sim                               # the UI in an SDL3 window (vcpkg), the mouse as touch
 ```
+
+`make sim` draws `main/ui.json` as the Tab5 does, with made-up values and a stand-in terminal, and reads it again when
+it is saved; `build/sim/tab5_sim --shot FILE.bmp main/ui.json build/shiroko-host/fonts` saves the screen and quits.
 
 ## Licence
 
