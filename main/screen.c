@@ -25,7 +25,7 @@
 #include "terminal.h"
 
 static const char* TAG = "screen";
-enum { BADGE = 24 }; // cells
+enum { BADGE = 48 }; // cells
 static esp_lcd_panel_handle_t panel;
 static shr_surface framebuffer;
 static shr_framebuffer_driver software, driver;

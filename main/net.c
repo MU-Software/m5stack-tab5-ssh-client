@@ -48,6 +48,7 @@ static SemaphoreHandle_t lock, suspected;
 static atomic_uint generation;
 static atomic_int current;
 static atomic_bool wifi_enabled = true, lte_enabled = true, lte_reset, suspect, wifi_started;
+static _Atomic net_lte_state lte_now = NET_LTE_DIALING;
 // The manager's view of Wi-Fi: since when it has an address, whether the internet check passed
 static int64_t wifi_since, wifi_lost, wifi_checked, wifi_tried;
 static bool wifi_ok;
@@ -190,24 +191,28 @@ static void manage(void* arg) {
 }
 
 // Rules from the Stamp CAT-M research: the gate is read-only, so not-yet-registered retries every 90 s; a lost link waits
-// 120 s doubling to 960 s, six times; two dials refused before CONNECT, or no modem, stop LTE until lte on
+// 120 s doubling to 960 s. Unlike the research bench, LTE never gives up (owner, 10-15): a dial refused before CONNECT or a
+// modem that fell silent waits 960 s. Only one that never answered this boot stops, as no Stamp may sit on G6.
 static void run_lte(void* arg) {
     (void)arg;
-    int drops = 0, refusals = 0;
+    int drops = 0;
     for (;;) {
         if (lte_reset) {
             lte_reset = false;
-            drops = refusals = 0;
+            drops = 0;
         }
         if (!lte_enabled) {
+            lte_now = NET_LTE_OFF;
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             continue;
         }
+        lte_now = NET_LTE_DIALING;
         esp_err_t err = catm_connect();
         xTaskNotifyGive(manager);
         int64_t wait = 90 * SECOND;
+        lte_now = NET_LTE_REGISTERING;
         if (err == ESP_OK) {
-            refusals = 0;
+            lte_now = NET_LTE_UP;
             int64_t up = esp_timer_get_time();
             while (lte_enabled && catm_connected())
                 ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
@@ -216,14 +221,18 @@ static void run_lte(void* arg) {
                 continue;
             }
             if (esp_timer_get_time() - up >= 960 * SECOND) drops = 0;
-            wait = (120 * SECOND) << (drops < 3 ? drops : 3);
-            if (++drops > 6) lte_enabled = false;
-        } else if (err == ESP_ERR_NOT_FOUND || (err == ESP_FAIL && ++refusals >= 2)) {
-            lte_enabled = false;
-        }
-        if (!lte_enabled) {
-            ESP_LOGW(TAG, "LTE off until lte on");
+            wait = (120 * SECOND) << drops;
+            if (drops < 3) drops++;
+            lte_now = NET_LTE_WAITING;
+        } else if (err == ESP_ERR_NOT_FOUND && !catm_answered()) {
+            ESP_LOGW(TAG, "no modem: LTE waits for lte on");
+            lte_now = NET_LTE_NO_MODEM;
+            while (!lte_reset)
+                ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             continue;
+        } else if (err == ESP_ERR_NOT_FOUND || err == ESP_FAIL) {
+            wait = 960 * SECOND;
+            lte_now = NET_LTE_WAITING;
         }
         ESP_LOGI(TAG, "LTE again in %lld s", wait / SECOND);
         // Only lte on|off end it early: network events would redial within the research's 60 s of the last dial
@@ -258,9 +267,14 @@ esp_err_t net_start(const global_state* global) {
     return ESP_OK;
 }
 
-unsigned net_wait(void) {
-    xEventGroupWaitBits(paths, READY, pdFALSE, pdFALSE, portMAX_DELAY);
-    return generation;
+bool net_wait_for(int timeout_ms, unsigned* path) {
+    if (!(xEventGroupWaitBits(paths, READY, pdFALSE, pdFALSE, pdMS_TO_TICKS(timeout_ms)) & READY)) return false;
+    *path = generation;
+    return true;
+}
+
+net_lte_state net_lte(void) {
+    return lte_now;
 }
 
 unsigned net_generation(void) {

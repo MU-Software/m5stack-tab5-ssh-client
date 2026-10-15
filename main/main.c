@@ -209,11 +209,33 @@ static void wait_enter(void) {
     }
 }
 
+// Until there is a path, what LTE is doing; Enter tries LTE at once, the other keys are dropped
+static unsigned wait_path(void) {
+    static const char* const states[] = {
+        [NET_LTE_OFF] = "no network: LTE off, Enter turns it on",
+        [NET_LTE_NO_MODEM] = "no network: no LTE modem",
+        [NET_LTE_DIALING] = "no network: LTE dialing",
+        [NET_LTE_REGISTERING] = "no network: LTE not registered",
+        [NET_LTE_WAITING] = "no network: LTE waits, Enter retries",
+        [NET_LTE_UP] = "no network",
+    };
+    unsigned path;
+    TickType_t since = xTaskGetTickCount();
+    while (!net_wait_for(200, &path)) {
+        char in[64];
+        size_t n = keys_read(in, sizeof in);
+        if (n == 0) n = usb_terminal_read(in, sizeof in);
+        if (memchr(in, '\r', n) != NULL) net_command("lte on");
+        screen_waiting(states[net_lte()], since);
+    }
+    return path;
+}
+
 // Reconnects after a drop or a change of path at once (tmux keeps the screen), after a closed session on Enter
 static void sessions(const ssh_host* h) {
     int retry_ms = 1000;
     for (;;) {
-        session_end end = tmux(h, net_wait());
+        session_end end = tmux(h, wait_path());
         screen_waiting(end == SESSION_DROPPED || end == SESSION_MOVED ? "reconnecting" : NULL, xTaskGetTickCount());
         if (end == SESSION_CLOSED || end == SESSION_REFUSED) {
             message(end == SESSION_CLOSED ? "\r\n[Session closed. Enter connects again.]\r\n" : "\r\n[Not connected. Enter tries again.]\r\n");

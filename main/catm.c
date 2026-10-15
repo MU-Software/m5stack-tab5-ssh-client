@@ -40,6 +40,7 @@ static SemaphoreHandle_t lock;
 static atomic_bool dialing, data_mode;
 // When the modem last left a command unanswered: asking a quiet modem again keeps it quiet longer
 static int64_t unanswered = -90 * SECOND;
+static bool answered; // this boot
 
 static void reader(void* arg) {
     (void)arg;
@@ -162,8 +163,13 @@ static esp_err_t ready(void) {
         return ESP_ERR_NOT_FOUND;
     }
     unanswered = -90 * SECOND;
+    answered = true;
     at("AT+CGMR", "", NULL);
     return check();
+}
+
+bool catm_answered(void) {
+    return answered;
 }
 
 esp_err_t catm_status(void) {
