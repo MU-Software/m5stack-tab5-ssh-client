@@ -14,6 +14,6 @@ esp_err_t catm_connect(void);
 void catm_disconnect(void);
 // PPP is up with an address
 bool catm_connected(void);
-// A modem answered since boot: one that falls silent later is there still
+// A modem answered or spoke since boot: one that falls silent later is there still
 bool catm_answered(void);
 esp_netif_t* catm_netif(void);

@@ -34,7 +34,7 @@ The ROM loader needs a BOOT reset.
   overline, underline styles and colours, and kitty images as Unicode placeholders (`-T`); from tmux 3.3 the session's
   windows allow passthrough, for kitty images from programs in it. No tmux on the host: a plain shell.
 - Network: Wi-Fi while it reaches the SSH host, else LTE through a Stamp CAT-M (Tab5 TX G6, RX G46), kept connected
-  in the background; LTE keeps redialing (waits of 90-960 s) unless no modem answered since boot. Without a path the
+  in the background; LTE keeps redialing (waits of 90-960 s) unless no modem answered or spoke since boot. Without a path the
   top right says what LTE does, and Enter dials at once. A dropped or moved session reconnects to its tmux session; a
   closed one on Enter. Control commands: `wifi on|off` (`wifi off save`: also after restarts, until `wifi on` or
   `wifi connect`), `wifi connect SSID [PASSWORD]` (saved to the configuration in use), `wifi forget SSID`,

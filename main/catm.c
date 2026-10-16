@@ -41,7 +41,9 @@ static SemaphoreHandle_t lock;
 static atomic_bool dialing, data_mode;
 // When the modem last left a command unanswered: asking a quiet modem again keeps it quiet longer
 static int64_t unanswered = -90 * SECOND;
-static bool answered; // this boot
+static atomic_bool answered; // this boot
+// The modem spoke unasked, e.g. NO CARRIER once a PPP link of an earlier boot timed out: it can be asked again at once
+static atomic_bool heard;
 
 static void reader(void* arg) {
     (void)arg;
@@ -64,6 +66,9 @@ static void reader(void* arg) {
             n = 0;
             ESP_LOGI(TAG, "< %s", line);
             if (dialing && strncmp(line, "CONNECT", 7) == 0) data_mode = true;
+            // Only a modem sends these: noise on a pin without one would not
+            if (strcmp(line, "OK") == 0 || strcmp(line, "NO CARRIER") == 0 || strcmp(line, "RDY") == 0 || line[0] == '+' || line[0] == '$')
+                atomic_store(&heard, true), atomic_store(&answered, true);
             xQueueSend(lines, line, 0);
         }
     }
@@ -91,7 +96,7 @@ static bool at(const char* command, const char* prefix, char* reply) {
         if (strcmp(line, "OK") == 0) return true;
         if (strcmp(line, "ERROR") == 0 || strncmp(line, "+CME ERROR", 10) == 0) return false;
     }
-    unanswered = esp_timer_get_time();
+    unanswered = esp_timer_get_time(), atomic_store(&heard, false);
     return false;
 }
 
@@ -153,6 +158,7 @@ static esp_err_t ready(void) {
     char line[LINE];
     if (lines == NULL || data_mode) return ESP_ERR_INVALID_STATE;
     ESP_RETURN_ON_ERROR(open_uart(), TAG, "UART");
+    if (atomic_exchange(&heard, false)) unanswered = -90 * SECOND;
     if (esp_timer_get_time() - unanswered < 90 * SECOND) {
         ESP_LOGW(TAG, "the modem left a command unanswered: wait 90 s before asking again");
         return ESP_ERR_INVALID_STATE;
@@ -166,13 +172,13 @@ static esp_err_t ready(void) {
         return ESP_ERR_NOT_FOUND;
     }
     unanswered = -90 * SECOND;
-    answered = true;
+    atomic_store(&answered, true);
     at("AT+CGMR", "", NULL);
     return check();
 }
 
 bool catm_answered(void) {
-    return answered;
+    return atomic_load(&answered);
 }
 
 esp_err_t catm_status(void) {
@@ -205,7 +211,7 @@ static esp_err_t dial(void) {
         connected = strncmp(line, "CONNECT", 7) == 0;
     dialing = false;
     if (!connected) {
-        if (esp_timer_get_time() >= deadline) unanswered = esp_timer_get_time();
+        if (esp_timer_get_time() >= deadline) unanswered = esp_timer_get_time(), atomic_store(&heard, false);
         return ESP_FAIL;
     }
     esp_netif_action_start(netif, NULL, 0, NULL);

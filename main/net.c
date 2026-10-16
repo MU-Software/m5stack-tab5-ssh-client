@@ -193,7 +193,8 @@ static void manage(void* arg) {
 
 // Rules from the Stamp CAT-M research: the gate is read-only, so not-yet-registered retries every 90 s; a lost link waits
 // 120 s doubling to 960 s. Unlike the research bench, LTE never gives up (owner, 10-15): a dial refused before CONNECT or a
-// modem that fell silent waits 960 s. Only one that never answered this boot stops, as no Stamp may sit on G6.
+// modem that fell silent waits 960 s. Only one that never answered this boot stops, as no Stamp may sit on G6, until it
+// speaks unasked (a modem left in PPP by an earlier boot says NO CARRIER once that link times out).
 static void run_lte(void* arg) {
     (void)arg;
     int drops = 0;
@@ -226,10 +227,11 @@ static void run_lte(void* arg) {
             if (drops < 3) drops++;
             lte_now = NET_LTE_WAITING;
         } else if (err == ESP_ERR_NOT_FOUND && !catm_answered()) {
-            ESP_LOGW(TAG, "no modem: LTE waits for lte on");
+            ESP_LOGW(TAG, "no modem: LTE waits for lte on or for the modem to speak");
             lte_now = NET_LTE_NO_MODEM;
-            while (!lte_reset)
-                ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            while (!lte_reset && !catm_answered())
+                ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+            if (catm_answered()) ESP_LOGI(TAG, "the modem spoke: LTE again");
             continue;
         } else if (err == ESP_ERR_NOT_FOUND || err == ESP_FAIL) {
             wait = 960 * SECOND;
