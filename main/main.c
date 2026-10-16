@@ -327,7 +327,7 @@ static void refused(const char* name) {
     ESP_LOGE(TAG, "the configuration's %s is invalid", name);
 }
 
-// Before the screen starts, which draws the bars it sets
+// Before the screen and the network start: the bars, the networks and the host to check them against
 static void load_config(void) {
     static const char* const sources[] = {"nothing", "the SD card", "NVS"};
     config_source source;
@@ -340,19 +340,17 @@ static void load_config(void) {
     cJSON_Delete(config);
     clock_timezone(state.timezone);
     logs_configure(&state.log);
-}
-
-static void connect(void) {
     char* text = storage_get_ssh_config();
     state.hosts = text != NULL ? config_ssh_hosts(text) : NULL;
     free(text);
     state.current_host = state.hosts;
     state.wifi_off = storage_get_off("wifi");
     state.lte_off = storage_get_off("lte");
+}
+
+static void connect(void) {
     ESP_LOGI(TAG, "internal DMA RAM: %u free, %u in one block", heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
              heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
-    // Also without a host, for the control commands
-    if (net_start(&state) != ESP_OK) ESP_LOGE(TAG, "no network");
     const ssh_host* h = choose_host();
     if (h == NULL || !h->user[0]) {
         ESP_LOGE(TAG, "incomplete configuration: a Host with a User in the SD card's .ssh/config");
@@ -515,6 +513,9 @@ void app_main(void) {
     if (clock_start() != ESP_OK) ESP_LOGE(TAG, "no SNTP");
     if (catm_start() != ESP_OK) ESP_LOGE(TAG, "no PPP interface");
     load_config();
+    // Before the screen, which takes 2.7 s to start: the C6 restarts and Wi-Fi joins meanwhile. Also without a host, for the
+    // control commands
+    if (net_start(&state) != ESP_OK) ESP_LOGE(TAG, "no network");
     esp_err_t screen = screen_start(&state);
     if (screen == ESP_OK) screen_resized(&state.terminal_size);
     ESP_ERROR_CHECK(terminal_start(&state.terminal_size));
