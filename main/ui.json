@@ -131,16 +131,7 @@
                 {"height": 1, "text": ""},
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   위 바"}, {"width": 16, "toggle": "bars.top"}]},
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   아래 바"}, {"width": 16, "toggle": "bars.bottom"}]},
-                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   배터리 표시"}, {"width": 16, "choice": "bars.battery"}]},
-                {"height": 1, "text": ""},
-                {
-                  "height": 1,
-                  "columns": [
-                    {"width": 18, "style": "label", "text": "   화면 갱신"},
-                    {"width": 16, "choice": "screen.refresh"},
-                    {"style": "hint", "text": " 재시작 후"}
-                  ]
-                }
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   배터리 표시"}, {"width": 16, "choice": "bars.battery"}]}
               ]
             },
             {

@@ -323,7 +323,12 @@ static const ssh_host* choose_host(void) {
     return state.current_host;
 }
 
-static void connect(void) {
+static void refused(const char* name) {
+    ESP_LOGE(TAG, "the configuration's %s is invalid", name);
+}
+
+// Before the screen starts, which draws the bars it sets
+static void load_config(void) {
     static const char* const sources[] = {"nothing", "the SD card", "NVS"};
     config_source source;
     cJSON* config = storage_get_device_config(&source);
@@ -331,11 +336,13 @@ static void connect(void) {
         ESP_LOGE(TAG, "the configuration from %s is invalid", sources[source]);
     else
         ESP_LOGI(TAG, "configuration from %s", sources[source]);
-    if (config != NULL && config_log(config, &state.log, state.timezone, sizeof state.timezone) != 0)
-        ESP_LOGE(TAG, "the log settings or the time zone from %s are invalid", sources[source]);
+    settings_load(&state, config, refused);
     cJSON_Delete(config);
     clock_timezone(state.timezone);
     logs_configure(&state.log);
+}
+
+static void connect(void) {
     char* text = storage_get_ssh_config();
     state.hosts = text != NULL ? config_ssh_hosts(text) : NULL;
     free(text);
@@ -434,7 +441,7 @@ static bool command(const char* line) {
     return net_command(line);
 }
 
-// From the screen's task. The last bar stays: the screens open from it.
+// From the screen's task, whose stack in internal RAM lets it write NVS
 static void apply(const ui_event* e) {
     char text[80];
     if (e->kind == UI_ACTION && strcmp(e->name, "connect") == 0) {
@@ -454,14 +461,13 @@ static void apply(const ui_event* e) {
         ESP_LOGI(TAG, "%s: %s", e->name, command(e->name) ? "done" : "unknown");
         return;
     }
-    bool last_bar = e->value.number == 0 &&
-                    ((strcmp(e->name, "bars.top") == 0 && !state.bars.bottom) || (strcmp(e->name, "bars.bottom") == 0 && !state.bars.top));
     settings_text(e->setting, &e->value, text, sizeof text);
-    if (last_bar || !settings_set(&state, e->setting, &e->value)) {
+    if (!settings_set(&state, e->setting, &e->value)) {
         ESP_LOGW(TAG, "%s %s refused", e->name, text);
         return;
     }
-    ESP_LOGI(TAG, "%s %s", e->name, text);
+    bool saved = storage_set_config(e->name, settings_json(&state, e->setting)) == 0;
+    ESP_LOGI(TAG, "%s %s%s", e->name, text, saved ? "" : ", not saved");
     if (strncmp(e->name, "log.", 4) == 0) logs_configure(&state.log);
     if (strcmp(e->name, "timezone") == 0) clock_timezone(state.timezone);
 }
@@ -508,6 +514,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     if (clock_start() != ESP_OK) ESP_LOGE(TAG, "no SNTP");
     if (catm_start() != ESP_OK) ESP_LOGE(TAG, "no PPP interface");
+    load_config();
     esp_err_t screen = screen_start(&state);
     if (screen == ESP_OK) screen_resized(&state.terminal_size);
     ESP_ERROR_CHECK(terminal_start(&state.terminal_size));

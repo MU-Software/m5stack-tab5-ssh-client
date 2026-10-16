@@ -24,8 +24,8 @@ The ROM loader needs a BOOT reset.
 
 ## Configuration
 
-- Wi-Fi: `.config/tab5-ssh/config.json` on the SD card, else NVS (`tools/config.py write`, ROM loader).
-  Schema: `tools/config.schema.json`.
+- Wi-Fi and settings: `.config/tab5-ssh/config.json` on the SD card, else NVS (`tools/config.py write`, ROM loader).
+  Schema: `tools/config.schema.json`. The settings screen saves each change there, under the same keys.
 - SSH: the SD card's `.ssh/` as `~/.ssh/`: the non-pattern `Host`s in `config`, `known_hosts`, keys
   (`id_ed25519`, `id_ecdsa`, `id_rsa`). No key: password prompt. Unknown host: yes/no prompt. With two hosts or more a
   list opens at boot and connects to the last one after 10 s, unless touched or typed into first.

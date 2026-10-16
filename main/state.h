@@ -71,8 +71,8 @@ typedef struct {
     struct {
         bool top, bottom;
     } bars;
-    // Indexes of the "screen.refresh" and "bars.battery" settings' choices
-    int refresh, battery;
+    // Index of the "bars.battery" setting's choices
+    int battery;
     // Choosing a host at boot connects to the one chosen at this esp_timer time, 0 while nobody waits for it
     int64_t host_deadline_us;
 } global_state;

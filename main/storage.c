@@ -10,6 +10,8 @@
 #include <driver/sdmmc_host.h>
 #include <esp_log.h>
 #include <esp_rom_crc.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <nvs.h>
 #include <sd_pwr_ctrl_by_on_chip_ldo.h>
 #include <sdmmc_cmd.h>
@@ -17,6 +19,8 @@
 
 static const char* TAG = "storage";
 static sdmmc_card_t card;
+// The configuration is read, changed and written again by the control commands and the screen
+static SemaphoreHandle_t config_lock;
 
 char* storage_read_file_text(const char* path) {
     FILE* f = fopen(path, "rb");
@@ -33,6 +37,7 @@ char* storage_read_file_text(const char* path) {
 
 // FAT only: ESP-IDF builds FatFs without exFAT
 int storage_mount(int with_usb) {
+    config_lock = xSemaphoreCreateMutex();
     sd_pwr_ctrl_handle_t pwr;
     if (sd_pwr_ctrl_new_on_chip_ldo(&(sd_pwr_ctrl_ldo_config_t){.ldo_chan_id = 4}, &pwr) != ESP_OK) return -1;
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
@@ -85,7 +90,6 @@ cJSON* storage_get_device_config(config_source* source) {
     }
     if (config == NULL) {
         config = cJSON_CreateObject();
-        cJSON_AddArrayToObject(config, "wifi");
         *source = CONFIG_NONE;
     }
     return config;
@@ -187,23 +191,31 @@ void storage_set_last_host(const char* alias) {
     nvs_close(h);
 }
 
-static int save_config(const char* text, config_source source) {
-    if (source == CONFIG_SD) {
+// Indented on the SD card, where people edit it; the text holds Wi-Fi passwords, cleared before it is freed
+static int save_config(cJSON* config, config_source source) {
+    char* text = source == CONFIG_SD ? cJSON_Print(config) : cJSON_PrintUnformatted(config);
+    int err = text == NULL;
+    cJSON_Delete(config);
+    if (text != NULL && source == CONFIG_SD) {
         FILE* f = fopen(SD "/.config/tab5-ssh/config.json", "w");
-        int err = f == NULL || fputs(text, f) < 0;
+        err = f == NULL || fputs(text, f) < 0 || fputc('\n', f) < 0;
         if (f != NULL && fclose(f) != 0) err = 1;
-        return err ? -1 : 0;
+    } else if (text != NULL) {
+        nvs_handle_t h;
+        err = nvs_open("cfg", NVS_READWRITE, &h) != ESP_OK;
+        if (!err) {
+            err = nvs_set_str(h, "config", text) != ESP_OK || nvs_commit(h) != ESP_OK;
+            nvs_close(h);
+        }
     }
-    nvs_handle_t h;
-    if (nvs_open("cfg", NVS_READWRITE, &h) != ESP_OK) return -1;
-    esp_err_t err = nvs_set_str(h, "config", text);
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
-    return err == ESP_OK ? 0 : -1;
+    if (text != NULL) memset(text, 0, strlen(text));
+    free(text);
+    return err ? -1 : 0;
 }
 
 int storage_add_wifi(const char* ssid, const char* password) {
     config_source source;
+    xSemaphoreTake(config_lock, portMAX_DELAY);
     cJSON* config = storage_get_device_config(&source);
     cJSON* list = cJSON_GetObjectItemCaseSensitive(config, "wifi");
     if (!cJSON_IsArray(list)) {
@@ -220,10 +232,36 @@ int storage_add_wifi(const char* ssid, const char* password) {
         if (password[0]) cJSON_AddStringToObject(entry, "password", password);
         cJSON_InsertItemInArray(list, 0, entry);
     }
-    char* text = cJSON_PrintUnformatted(config);
-    cJSON_Delete(config);
-    int err = text != NULL ? save_config(text, source) : -1;
-    if (text != NULL) memset(text, 0, strlen(text));
-    free(text);
+    int err = save_config(config, source);
+    xSemaphoreGive(config_lock);
+    return err;
+}
+
+int storage_set_config(const char* name, cJSON* value) {
+    config_source source;
+    char key[32];
+    int err = -1;
+    xSemaphoreTake(config_lock, portMAX_DELAY);
+    cJSON *config = storage_get_device_config(&source), *parent = config;
+    for (const char* dot; cJSON_IsObject(parent) && (dot = strchr(name, '.')) != NULL; name = dot + 1) {
+        snprintf(key, sizeof key, "%.*s", (int)(dot - name), name);
+        cJSON* child = cJSON_GetObjectItemCaseSensitive(parent, key);
+        if (!cJSON_IsObject(child)) {
+            cJSON_DeleteItemFromObjectCaseSensitive(parent, key);
+            child = cJSON_AddObjectToObject(parent, key);
+        }
+        parent = child;
+    }
+    if (!cJSON_IsObject(parent)) {
+        cJSON_Delete(value);
+        cJSON_Delete(config);
+    } else {
+        if (cJSON_GetObjectItemCaseSensitive(parent, name) != NULL)
+            cJSON_ReplaceItemInObjectCaseSensitive(parent, name, value);
+        else
+            cJSON_AddItemToObject(parent, name, value);
+        err = save_config(config, source);
+    }
+    xSemaphoreGive(config_lock);
     return err;
 }

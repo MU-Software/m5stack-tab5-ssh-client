@@ -8,18 +8,16 @@
 #define FIELD(f) offsetof(global_state, f), sizeof(((global_state*)0)->f)
 
 static const char* const levels[] = {"info", "warn", NULL};
-static const char* const rates[] = {"57 Hz", "29 Hz", NULL};
-static const char* const batteries[] = {"전압", "퍼센트", NULL};
+static const char *const batteries[] = {"전압", "퍼센트", NULL}, *const battery_values[] = {"volts", "percent", NULL};
 
 static const setting table[] = {
     {"echo.enabled", SETTING_TOGGLE, .offset = FIELD(echo.enabled)},
     {"echo.delay_ms", SETTING_NUMBER, 0, 1000, 10, " ms", .offset = FIELD(echo.delay_ms)},
     {"bars.top", SETTING_TOGGLE, .offset = FIELD(bars.top)},
     {"bars.bottom", SETTING_TOGGLE, .offset = FIELD(bars.bottom)},
-    {"bars.battery", SETTING_CHOICE, .options = batteries, .offset = FIELD(battery)},
-    {"screen.refresh", SETTING_CHOICE, .options = rates, .offset = FIELD(refresh), .restart = true},
+    {"bars.battery", SETTING_CHOICE, .options = batteries, .values = battery_values, .offset = FIELD(battery)},
     {"log.enabled", SETTING_TOGGLE, .offset = FIELD(log.enabled)},
-    {"log.session_level", SETTING_CHOICE, .options = levels, .offset = FIELD(log.quiet_sessions)},
+    {"log.session_level", SETTING_CHOICE, .options = levels, .values = levels, .offset = FIELD(log.quiet_sessions)},
     {"log.file_kb", SETTING_NUMBER, 16, 65536, 0, " KB", .offset = FIELD(log.file_kb)},
     {"log.keep_mb", SETTING_NUMBER, 1, 65536, 0, " MB", .offset = FIELD(log.keep_mb)},
     {"log.keep_days", SETTING_NUMBER, 1, 3650, 1, "일", .offset = FIELD(log.keep_days)},
@@ -30,6 +28,10 @@ const setting* settings_find(const char* name) {
     for (size_t i = 0; i < sizeof table / sizeof table[0]; i++)
         if (strcmp(table[i].name, name) == 0) return &table[i];
     return NULL;
+}
+
+const setting* settings_at(size_t index) {
+    return index < sizeof table / sizeof table[0] ? &table[index] : NULL;
 }
 
 static int options(const setting* s) {
@@ -51,6 +53,10 @@ void settings_get(const global_state* state, const setting* s, setting_value* ou
 bool settings_set(global_state* state, const setting* s, const setting_value* value) {
     char* at = (char*)state + s->offset;
     int n = value->number;
+    // Without bars nothing opens the screens by touch
+    if (n == 0 && ((s->offset == offsetof(global_state, bars.top) && !state->bars.bottom) ||
+                   (s->offset == offsetof(global_state, bars.bottom) && !state->bars.top)))
+        return false;
     if (s->kind == SETTING_TEXT) {
         size_t length = strnlen(value->text, sizeof value->text);
         if (length == 0 || length >= s->size || length == sizeof value->text) return false;
@@ -89,4 +95,50 @@ void settings_text(const setting* s, const setting_value* value, char* out, size
         snprintf(out, size, "%s", value->number >= 0 && value->number < options(s) ? s->options[value->number] : "?");
     else
         snprintf(out, size, "%s", value->text);
+}
+
+// "log.file_kb" in {"log": {"file_kb": …}}; NULL when absent, *wrong when something on the way is not an object
+static const cJSON* lookup(const cJSON* config, const char* name, bool* wrong) {
+    char key[32];
+    const char* dot = strchr(name, '.');
+    *wrong = !cJSON_IsObject(config);
+    if (*wrong) return NULL;
+    if (dot == NULL) return cJSON_GetObjectItemCaseSensitive(config, name);
+    snprintf(key, sizeof key, "%.*s", (int)(dot - name), name);
+    const cJSON* parent = cJSON_GetObjectItemCaseSensitive(config, key);
+    return parent != NULL ? lookup(parent, dot + 1, wrong) : NULL;
+}
+
+static bool parse(const setting* s, const cJSON* item, setting_value* value) {
+    *value = (setting_value){0};
+    if (s->kind == SETTING_TOGGLE) {
+        value->number = cJSON_IsTrue(item);
+        return cJSON_IsBool(item);
+    }
+    if (s->kind == SETTING_NUMBER) {
+        value->number = item->valueint;
+        return cJSON_IsNumber(item) && item->valuedouble == item->valueint;
+    }
+    if (!cJSON_IsString(item)) return false;
+    if (s->kind == SETTING_TEXT) return snprintf(value->text, sizeof value->text, "%s", item->valuestring) < (int)sizeof value->text;
+    for (value->number = 0; s->values[value->number] != NULL; value->number++)
+        if (strcmp(s->values[value->number], item->valuestring) == 0) return true;
+    return false;
+}
+
+void settings_load(global_state* state, const cJSON* config, void (*refused)(const char* name)) {
+    setting_value value;
+    bool wrong;
+    for (const setting* s = table; s < table + sizeof table / sizeof table[0]; s++) {
+        const cJSON* item = lookup(config, s->name, &wrong);
+        if ((item != NULL || wrong) && (wrong || !parse(s, item, &value) || !settings_set(state, s, &value))) refused(s->name);
+    }
+}
+
+cJSON* settings_json(const global_state* state, const setting* s) {
+    setting_value value;
+    settings_get(state, s, &value);
+    if (s->kind == SETTING_TOGGLE) return cJSON_CreateBool(value.number);
+    if (s->kind == SETTING_NUMBER) return cJSON_CreateNumber(value.number);
+    return cJSON_CreateString(s->kind == SETTING_TEXT ? value.text : s->values[value.number]);
 }

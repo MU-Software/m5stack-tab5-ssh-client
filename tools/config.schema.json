@@ -6,6 +6,47 @@
     "$schema": {
       "type": "string"
     },
+    "bars": {
+      "additionalProperties": false,
+      "description": "Above and below the terminal; not both off",
+      "properties": {
+        "battery": {
+          "default": "volts",
+          "description": "The battery in the top bar",
+          "enum": [
+            "volts",
+            "percent"
+          ]
+        },
+        "bottom": {
+          "default": true,
+          "type": "boolean"
+        },
+        "top": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "echo": {
+      "additionalProperties": false,
+      "description": "Keys shown before the host echoes them",
+      "properties": {
+        "delay_ms": {
+          "default": 50,
+          "description": "Once this long without the echo",
+          "maximum": 1000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "log": {
       "additionalProperties": false,
       "description": "Logs on the SD card in .local/state/tab5-ssh/log/, YYYY-MM-DD-NN.log",
