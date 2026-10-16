@@ -261,6 +261,11 @@ void ssh_ping(const global_state* state) {
     SendGlobalRequest(state->session->ssh, (const unsigned char*)name, sizeof name - 1, 1, NULL);
 }
 
+void ssh_resize(const global_state* state) {
+    const terminal_size* size = &state->terminal_size;
+    wolfSSH_ChangeTerminalSize(state->session->ssh, size->columns, size->rows, size->width_pixels, size->height_pixels);
+}
+
 void ssh_wait(const global_state* state, int timeout_ms) {
     poll(&(struct pollfd){.fd = state->session->fd, .events = POLLIN}, 1, timeout_ms);
 }

@@ -1,0 +1,12 @@
+# The UI's buffers in PSRAM: internal RAM keeps room for the C6's 15.5 KiB SDIO buffers
+[scheme:main_psram_bss]
+entries:
+    bss -> extern_ram
+    common -> extern_ram
+
+[mapping:main]
+archive: libmain.a
+entries:
+    if SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY = y:
+        layout (main_psram_bss)
+        ui (main_psram_bss)

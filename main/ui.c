@@ -101,7 +101,10 @@ bool ui_open(const char* name) {
     for (size_t i = 0; screen != NULL && i < screen->count; i++) {
         const layout_node* n = &screen->nodes[i];
         chosen[i] = n->kind == LAYOUT_LIST && source->chosen != NULL ? source->chosen(source->user, n->name) : 0, first[i] = 0;
-        if (focus < 0 && focusable(n) && (n->kind != LAYOUT_BUTTON || strcmp(n->action, "close") != 0)) focus = (int)i;
+        // A list or an editor first, else a button that does more than close
+        if (focusable(n) && (focus < 0 || (screen->nodes[focus].kind == LAYOUT_BUTTON && n->kind != LAYOUT_BUTTON)) &&
+            (n->kind != LAYOUT_BUTTON || (focus < 0 && strcmp(n->action, "close") != 0)))
+            focus = (int)i;
     }
     lay_out();
     return true;

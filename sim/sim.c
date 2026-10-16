@@ -256,7 +256,7 @@ int main(int argc, char** argv) {
     layout_path = argv[a], fonts = argv[a + 1];
     for (size_t i = 0; i + 1 < sizeof hosts / sizeof hosts[0]; i++)
         hosts[i].next = &hosts[i + 1];
-    state.hosts = state.current_host = hosts;
+    state.hosts = hosts, state.current_host = hosts;
     SDL_Window* window;
     if (!SDL_Init(SDL_INIT_VIDEO) || !SDL_CreateWindowAndRenderer("tab5-ssh sim", WIDTH, HEIGHT, SDL_WINDOW_RESIZABLE, &window, &renderer) ||
         !SDL_SetRenderLogicalPresentation(renderer, WIDTH, HEIGHT, SDL_LOGICAL_PRESENTATION_LETTERBOX) ||

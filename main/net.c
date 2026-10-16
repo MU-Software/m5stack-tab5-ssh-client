@@ -253,6 +253,7 @@ static void on_event(void* arg, esp_event_base_t base, int32_t id, void* data) {
 esp_err_t net_start(const global_state* global) {
     state = global;
     wifi_enabled = !global->wifi_off;
+    lte_enabled = !global->lte_off;
     paths = xEventGroupCreate();
     lock = xSemaphoreCreateMutex();
     suspected = xSemaphoreCreateBinary();
@@ -335,6 +336,23 @@ static void status(void) {
     ESP_LOGI(TAG, "path %s (%u); Wi-Fi %s %s %s %s (C6 %s); LTE %s %s", path_names[current], generation, wifi_enabled ? "on" : "off",
              (const char*)ap.ssid, address, wifi_connected() ? (wifi_ok ? "reaches the host" : "not reaching the host yet") : "not joined", c6,
              lte_enabled ? "on" : "off", catm_connected() ? "connected" : "not connected");
+}
+
+void net_describe(net_info* out) {
+    esp_netif_ip_info_t ip = {0};
+    wifi_ap_record_t ap = {0};
+    *out = (net_info){.path = path_names[current],
+                      .wifi_on = wifi_enabled,
+                      .wifi_joined = wifi_connected(),
+                      .wifi_reaches = wifi_ok,
+                      .lte_on = lte_enabled,
+                      .lte = lte_now};
+    if (out->wifi_joined && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        memcpy(out->ssid, ap.ssid, sizeof out->ssid - 1);
+        out->rssi = ap.rssi;
+    }
+    if (out->wifi_joined && esp_netif_get_ip_info(wifi_netif(), &ip) == ESP_OK) esp_ip4addr_ntoa(&ip.ip, out->wifi_address, sizeof out->wifi_address);
+    if (catm_connected() && esp_netif_get_ip_info(catm_netif(), &ip) == ESP_OK) esp_ip4addr_ntoa(&ip.ip, out->lte_address, sizeof out->lte_address);
 }
 
 bool net_command(const char* line) {

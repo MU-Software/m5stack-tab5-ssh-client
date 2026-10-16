@@ -82,6 +82,7 @@ static bool korean, caps_lock;
 static int64_t caps_pressed;
 static hangul typing = HANGUL_EMPTY;
 static atomic_uint preedit;
+static atomic_bool diverted;
 
 static void repeat_key(void* arg) {
     (void)arg;
@@ -165,10 +166,25 @@ static size_t handle(const key_event* e, char* out, size_t size) {
     return n;
 }
 
+void keys_divert(bool on) {
+    atomic_store(&diverted, on);
+}
+
+bool keys_take(key_event* out, char* text) {
+    while (xQueueReceive(events, out, 0) == pdTRUE) {
+        key_info k = find(out->usage);
+        bool letter = k.text >= 'a' && k.text <= 'z', shift = out->modifiers & 0x22;
+        if (out->action == GHOSTTY_KEY_ACTION_RELEASE) continue;
+        *text = (out->modifiers & 0xdd) != 0 ? 0 : shift != (letter && caps_lock) ? k.shifted : k.text;
+        return true;
+    }
+    return false;
+}
+
 size_t keys_read(char* out, size_t size) {
     key_event e;
     size_t n = 0;
-    while (n == 0 && xQueueReceive(events, &e, 0) == pdTRUE)
+    while (n == 0 && !atomic_load(&diverted) && xQueueReceive(events, &e, 0) == pdTRUE)
         n = handle(&e, out, size);
     return n;
 }

@@ -51,8 +51,7 @@ esp_err_t terminal_start(const terminal_size* size) {
     GhosttyTerminalModeConfig graphemes = {GHOSTTY_MODE_GRAPHEME_CLUSTER, true};
     uint64_t image_bytes = 4 << 20;
     size_t command_bytes = 8 << 20; // instead of 65 MiB
-    ghostty_terminal_resize(terminal, (uint16_t)size->columns, (uint16_t)size->rows, size->width_pixels / size->columns,
-                            size->height_pixels / size->rows);
+    terminal_resize(size);
     // Without defaults, ?5h and OSC 10/11 do nothing
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &(GhosttyColorRgb){0xff, 0xff, 0xff});
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &(GhosttyColorRgb){0, 0, 0});
@@ -62,6 +61,13 @@ esp_err_t terminal_start(const terminal_size* size) {
     ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, (const void*)reply);
     ghostty_render_state_set(render, GHOSTTY_RENDER_STATE_OPTION_ROW_MOVES, &(bool){true});
     return ESP_OK;
+}
+
+void terminal_resize(const terminal_size* size) {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    ghostty_terminal_resize(terminal, (uint16_t)size->columns, (uint16_t)size->rows, size->width_pixels / size->columns,
+                            size->height_pixels / size->rows);
+    xSemaphoreGive(lock);
 }
 
 void terminal_write(const void* data, size_t size) {

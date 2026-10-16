@@ -38,7 +38,7 @@
           ]
         },
         {"height": 1, "style": "hint", "text": " ↑↓ 고르기 · Enter 접속 · Esc 닫기"},
-        {"height": 1, "text": ""},
+        {"height": 1, "style": "alert", "text": " {countdown}"},
         {"list": "hosts", "item": "  {alias:16}{user}@{hostname}:{port:7}{current}", "action": "connect"}
       ]
     },
@@ -63,7 +63,7 @@
             {"text": "{wifi.state}"},
             {"width": 10, "style": "button", "button": "wifi on", "text": "켜기"},
             {"width": 1, "text": ""},
-            {"width": 10, "style": "button", "button": "wifi off", "text": "끄기"},
+            {"width": 10, "style": "button", "button": "wifi off save", "text": "끄기"},
             {"width": 2, "text": ""}
           ]
         },
@@ -76,14 +76,34 @@
             {"text": "{lte.state}"},
             {"width": 10, "style": "button", "button": "lte on", "text": "켜기"},
             {"width": 1, "text": ""},
-            {"width": 10, "style": "button", "button": "lte off", "text": "끄기"},
+            {"width": 10, "style": "button", "button": "lte off save", "text": "끄기"},
             {"width": 2, "text": ""}
           ]
         },
         {"height": 1, "columns": [{"width": 12, "text": ""}, {"style": "hint", "text": "{lte.detail}"}]},
+        {"height": 1, "style": "hint", "text": " 켜고 끈 것은 재시작 뒤에도 그대로"},
         {"height": 1, "text": ""},
         {"height": 1, "style": "section", "text": " 저장된 Wi-Fi"},
         {"list": "wifi", "item": "   {ssid}"}
+      ]
+    },
+    "restart": {
+      "style": "panel",
+      "rows": [
+        {"height": "40%", "text": ""},
+        {"height": 1, "align": "center", "style": "title", "text": "Tab5를 다시 시작할까요?"},
+        {"height": 1, "align": "center", "style": "hint", "text": "SSH 세션은 끊기고, tmux 세션은 호스트에 남습니다"},
+        {"height": 1, "text": ""},
+        {
+          "height": 1,
+          "columns": [
+            {"text": ""},
+            {"width": 14, "style": "button", "button": "settings", "text": "취소"},
+            {"width": 2, "text": ""},
+            {"width": 14, "style": "button", "button": "reboot", "text": "재시작"},
+            {"text": ""}
+          ]
+        }
       ]
     },
     "settings": {
@@ -93,6 +113,8 @@
           "height": 1,
           "columns": [
             {"style": "title", "text": " 설정"},
+            {"width": 10, "style": "button", "button": "restart", "text": "재시작"},
+            {"width": 1, "text": ""},
             {"width": 10, "style": "button", "button": "close", "text": "닫기"}
           ]
         },
@@ -109,6 +131,7 @@
                 {"height": 1, "text": ""},
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   위 바"}, {"width": 16, "toggle": "bars.top"}]},
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   아래 바"}, {"width": 16, "toggle": "bars.bottom"}]},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   배터리 표시"}, {"width": 16, "choice": "bars.battery"}]},
                 {"height": 1, "text": ""},
                 {
                   "height": 1,

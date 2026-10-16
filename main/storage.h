@@ -20,6 +20,9 @@ int storage_add_wifi(const char* ssid, const char* password);
 // The tmux session kept in NVS for a host alias; NULL name forgets it
 esp_err_t storage_get_tmux_session(const char* alias, char* name, size_t size);
 void storage_set_tmux_session(const char* alias, const char* name);
-// Wi-Fi off from boot, kept in NVS
-bool storage_get_wifi_off(void);
-void storage_set_wifi_off(bool off);
+// "wifi" or "lte" off from boot, kept in NVS
+bool storage_get_off(const char* what);
+void storage_set_off(const char* what, bool off);
+// The host alias last connected to, "" for none
+void storage_get_last_host(char* alias, size_t size);
+void storage_set_last_host(const char* alias);

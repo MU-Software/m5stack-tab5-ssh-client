@@ -4,15 +4,19 @@
 #include <errno.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
 #include <bsp/m5stack_tab5.h>
+#include <bsp/touch.h>
 #include <driver/ppa.h>
 #include <esp_cache.h>
 #include <esp_check.h>
+#include <esp_heap_caps.h>
 #include <esp_lcd_mipi_dsi.h>
 #include <esp_lcd_panel_ops.h>
+#include <esp_lcd_touch.h>
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -23,9 +27,16 @@
 #include "keys.h"
 #include "storage.h"
 #include "terminal.h"
+#include "ui.h"
+#include "ui_values.h"
 
 static const char* TAG = "screen";
-enum { BADGE = 48 }; // cells
+// NOLINTNEXTLINE(bugprone-reserved-identifier): the linker names it
+extern const char _binary_ui_json_start[];
+
+enum { BADGE = 48, COLUMNS = BSP_LCD_V_RES / SHR_CELL_WIDTH, ROWS = BSP_LCD_H_RES / SHR_CELL_HEIGHT }; // cells
+static const global_state* state;
+static esp_lcd_touch_handle_t touch;
 static esp_lcd_panel_handle_t panel;
 static shr_surface framebuffer;
 static shr_framebuffer_driver software, driver;
@@ -34,7 +45,16 @@ static uint8_t band[BSP_LCD_V_RES * 2 * 16] __attribute__((aligned(CONFIG_CACHE_
 static shr_context* context;
 static shr_lyr *beneath, *grid, *pictures, *guesses, *cursor, *cursor_text, *composing, *badge;
 static shr_pl_res_bitmap_font* font;
-static int32_t rows_count, columns;
+// The terminal's cells and where they start
+static int32_t rows_count, columns, origin_x, origin_y;
+static terminal_size size;
+static bool resized;
+// The UI's events for screen_event, and what other tasks ask of it or learn from it
+static ui_event events[8];
+static size_t event_count;
+static _Atomic(const char*) open_request;
+static atomic_bool open_asked, panel_open, input_seen;
+static TickType_t fonts_again;
 static bool see_through; // the grid lets z < 0 images show under its default background
 static GhosttyKittyGraphicsPlacementIterator placements;
 
@@ -157,9 +177,18 @@ static uint64_t now_ns(void* user) {
     return (uint64_t)esp_timer_get_time() * 1000;
 }
 
+// Through internal RAM: the SD card's DMA cannot reach PSRAM pages, and its own bounce buffer for them is a whole
+// read's size, which fails while the C6 holds the internal RAM
 static shr_status read_package(void* user, uint64_t offset, uint32_t length, void* destination, uint64_t request) {
+    static uint8_t chunk[4096] __attribute__((aligned(64)));
     (void)request;
-    return fseek(user, (long)offset, SEEK_SET) == 0 && fread(destination, 1, length, user) == length ? SHR_OK : SHR_E_IO;
+    if (fseek(user, (long)offset, SEEK_SET) != 0) return SHR_E_IO;
+    for (uint32_t done = 0, n; done < length; done += n) {
+        n = length - done < sizeof chunk ? length - done : sizeof chunk;
+        if (fread(chunk, 1, n, user) != n) return SHR_E_IO;
+        memcpy((uint8_t*)destination + done, chunk, n);
+    }
+    return SHR_OK;
 }
 
 static void close_package(void* user) {
@@ -185,12 +214,60 @@ static shr_status open_package(void* user, const char* package, shr_asset_source
     return SHR_OK;
 }
 
+// Memory used every frame in internal RAM, the rest (font pages, images, layers' cells) in PSRAM: internal RAM keeps
+// room for the C6's SDIO buffers
+static void* allocate(void* user, size_t size, size_t align, shr_alloc_kind kind) {
+    (void)user;
+    uint32_t caps = (kind & ~SHR_ALLOC_HOT) == SHR_ALLOC_DMA ? MALLOC_CAP_DMA : (kind & SHR_ALLOC_HOT) != 0 ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM;
+    void* p = heap_caps_aligned_alloc(align, size, caps | MALLOC_CAP_8BIT);
+    return p != NULL || caps == MALLOC_CAP_DMA ? p : heap_caps_aligned_alloc(align, size, MALLOC_CAP_8BIT);
+}
+
+static void release(void* user, void* pointer, size_t size, size_t align, shr_alloc_kind kind) {
+    (void)user, (void)size, (void)align, (void)kind;
+    heap_caps_free(pointer);
+}
+
 static shr_status check(shr_status status, const char* what) {
     if (status != SHR_OK) ESP_LOGE(TAG, "%s: %s", what, shr_status_name(status));
     return status;
 }
 
-esp_err_t screen_start(const global_state* state) {
+// The layout from the SD card, else the one built in
+static void load_layout(void) {
+    char error[160];
+    char* text = storage_read_file_text(SD "/.config/tab5-ssh/ui.json");
+    bool loaded = text != NULL && ui_load(text, error, sizeof error);
+    if (loaded)
+        ESP_LOGI(TAG, "layout from the SD card");
+    else if (text != NULL)
+        ESP_LOGE(TAG, SD "/.config/tab5-ssh/ui.json: %s", error);
+    free(text);
+    if (!loaded && !ui_load(_binary_ui_json_start, error, sizeof error)) ESP_LOGE(TAG, "built-in layout: %s", error);
+}
+
+static layout_area terminal_area(void) {
+    layout_area a;
+    return ui_terminal(&a) && a.columns >= 2 && a.rows >= 1 ? a : (layout_area){0, 0, COLUMNS, ROWS};
+}
+
+// The terminal's layers where the layout puts it
+static void place_terminal(void) {
+    layout_area a = terminal_area();
+    columns = a.columns, rows_count = a.rows, origin_x = a.column * SHR_CELL_WIDTH, origin_y = a.row * SHR_CELL_HEIGHT;
+    shr_rect area = {origin_x, origin_y, origin_x + columns * SHR_CELL_WIDTH, origin_y + rows_count * SHR_CELL_HEIGHT};
+    shr_color background = SHR_RGB(0, 0, 0);
+    shr_lyr* layers[] = {beneath, grid, pictures, cursor};
+    for (size_t i = 0; i < sizeof layers / sizeof layers[0]; i++)
+        shr_lyr_set_rect(layers[i], area);
+    shr_pl_lyr_tilemap_resize(grid, font, rows_count, columns, see_through ? NULL : &background);
+    shr_pl_lyr_tilemap_resize(guesses, font, 1, columns, NULL);
+    size = (terminal_size){(uint32_t)columns, (uint32_t)rows_count, (uint32_t)(area.x1 - area.x0), (uint32_t)(area.y1 - area.y0)};
+    resized = true;
+}
+
+esp_err_t screen_start(const global_state* global) {
+    state = global;
     bsp_lcd_handles_t lcd;
     void* pixels;
     ESP_RETURN_ON_ERROR(bsp_display_new_with_handles(&(bsp_display_config_t){.dsi_bus.lane_bit_rate_mbps = BSP_LCD_MIPI_DSI_LANE_BITRATE_MBPS}, &lcd),
@@ -212,7 +289,8 @@ esp_err_t screen_start(const global_state* state) {
     output.flags = SHR_OUTPUT_RELEASE_ON_PRESENT | SHR_OUTPUT_PRESERVES_CONTENT;
     shr_context_desc cd;
     shr_context_desc_init(&cd);
-    cd.driver = &driver, cd.output = &output, cd.now_ns = now_ns;
+    static const shr_allocator allocator = {NULL, allocate, release, SHR_ALLOC_HOT};
+    cd.driver = &driver, cd.output = &output, cd.now_ns = now_ns, cd.allocator = &allocator;
     shr_screen_desc sd;
     shr_screen_desc_init(&sd);
     sd.width = BSP_LCD_V_RES, sd.height = BSP_LCD_H_RES, sd.rotation = SHR_ROTATE_90_CCW, sd.clear = SHR_RGB(0, 0, 0);
@@ -222,9 +300,7 @@ esp_err_t screen_start(const global_state* state) {
     shr_pl_res_bitmap_font_desc fd;
     shr_pl_res_bitmap_font_desc_init(&fd);
     fd.open = open_package, fd.locale = "ko";
-    const terminal_size* size = &state->terminal_size;
-    rows_count = (int32_t)size->rows, columns = (int32_t)size->columns;
-    shr_rect area = {0, 0, (int32_t)size->width_pixels, (int32_t)size->height_pixels};
+    shr_rect area = {0, 0, COLUMNS * SHR_CELL_WIDTH, ROWS * SHR_CELL_HEIGHT};
     shr_color background = SHR_RGB(0, 0, 0);
     ESP_RETURN_ON_ERROR(ppa_register_client(&(ppa_client_config_t){.oper_type = PPA_OPERATION_SRM}, &ppa), TAG, "PPA");
     if (check(shr_software_driver_create(NULL, 0, 0, 256, &software), "driver") != SHR_OK) return ESP_FAIL;
@@ -238,19 +314,23 @@ esp_err_t screen_start(const global_state* state) {
         check(shr_lyr_create(context, -1, area, &beneath), "beneath") != SHR_OK || check(shr_lyr_create(context, 0, area, &grid), "grid") != SHR_OK ||
         check(shr_lyr_create(context, 1, area, &pictures), "pictures") != SHR_OK ||
         check(shr_lyr_create(context, 2, (shr_rect){0, 0, area.x1, SHR_CELL_HEIGHT}, &guesses), "guesses") != SHR_OK ||
-        check(shr_pl_lyr_tilemap_resize(guesses, font, 1, (int32_t)size->columns, NULL), "guesses") != SHR_OK ||
+        check(shr_pl_lyr_tilemap_resize(guesses, font, 1, COLUMNS, NULL), "guesses") != SHR_OK ||
         check(shr_lyr_create(context, 3, area, &cursor), "cursor") != SHR_OK ||
         check(shr_lyr_create(context, 4, (shr_rect){0, 0, 2 * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &cursor_text), "cursor text") != SHR_OK ||
         check(shr_pl_lyr_tilemap_resize(cursor_text, font, 1, 2, NULL), "cursor text") != SHR_OK ||
         check(shr_lyr_create(context, 5, (shr_rect){0, 0, 2 * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &composing), "composing") != SHR_OK ||
         check(shr_pl_lyr_tilemap_resize(composing, font, 1, 2, NULL), "composing") != SHR_OK ||
-        check(shr_lyr_create(context, 6, (shr_rect){0, 0, BADGE * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &badge), "badge") != SHR_OK ||
+        check(shr_lyr_create(context, 7, (shr_rect){0, 0, BADGE * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &badge), "badge") != SHR_OK ||
         check(shr_pl_lyr_tilemap_resize(badge, font, 1, BADGE, NULL), "badge") != SHR_OK || (typed = xStreamBufferCreate(256, 1)) == NULL ||
-        check(shr_pl_lyr_tilemap_resize(grid, font, (int32_t)size->rows, (int32_t)size->columns, &background), "tilemap") != SHR_OK ||
+        check(shr_pl_lyr_tilemap_resize(grid, font, ROWS, COLUMNS, &background), "tilemap") != SHR_OK ||
+        check(ui_start(context, font, 6, COLUMNS, ROWS, BSP_LCD_V_RES, ui_values(state)), "ui") != SHR_OK ||
         ghostty_render_state_row_iterator_new(&terminal_allocator, &rows) != GHOSTTY_SUCCESS ||
         ghostty_render_state_row_cells_new(&terminal_allocator, &cells) != GHOSTTY_SUCCESS ||
         ghostty_kitty_graphics_placement_iterator_new(&terminal_allocator, &placements) != GHOSTTY_SUCCESS)
         return ESP_FAIL;
+    if (bsp_touch_new(NULL, &touch) != ESP_OK) ESP_LOGE(TAG, "no touch");
+    load_layout();
+    place_terminal();
     return ESP_OK;
 }
 
@@ -555,7 +635,9 @@ static bool draw_guesses(const GhosttyRenderStateColors* colors) {
     static char drawn_text[256];
     static size_t drawn_count;
     static int32_t drawn_row, drawn_col;
-    size_t count = guess.echoed && guess.count > 0 && xTaskGetTickCount() - guess.at[0] >= pdMS_TO_TICKS(50) ? guess.count : 0;
+    size_t count = state->echo.enabled && guess.echoed && guess.count > 0 && xTaskGetTickCount() - guess.at[0] >= pdMS_TO_TICKS(state->echo.delay_ms)
+                       ? guess.count
+                       : 0;
     if (count == drawn_count && (count == 0 || (guess.row == drawn_row && guess.col == drawn_col && memcmp(guess.text, drawn_text, count) == 0)))
         return count > 0;
     drawn_count = count, drawn_row = guess.row, drawn_col = guess.col;
@@ -563,7 +645,8 @@ static bool draw_guesses(const GhosttyRenderStateColors* colors) {
     shr_lyr_set_visible(guesses, count > 0);
     if (count == 0) return false;
     shr_text_style style = {rgb(colors->foreground), rgb(colors->background), 0};
-    shr_lyr_set_rect(guesses, (shr_rect){0, guess.row * SHR_CELL_HEIGHT, columns * SHR_CELL_WIDTH, (guess.row + 1) * SHR_CELL_HEIGHT});
+    shr_lyr_set_rect(guesses, (shr_rect){origin_x, origin_y + guess.row * SHR_CELL_HEIGHT, origin_x + columns * SHR_CELL_WIDTH,
+                                         origin_y + (guess.row + 1) * SHR_CELL_HEIGHT});
     shr_pl_lyr_tilemap_clear(guesses, 0, 0, 1, columns, (shr_text_style){0});
     for (size_t i = 0; i < count; i++)
         shr_pl_lyr_tilemap_set_cell(guesses, 0, guess.col + (int32_t)i, &guess.text[i], 1, 1, style);
@@ -572,19 +655,24 @@ static bool draw_guesses(const GhosttyRenderStateColors* colors) {
     return true;
 }
 
-// Top right: what the session waits for and for how long
-static void draw_badge(void) {
-    static char shown_text[BADGE + 1];
-    char text[BADGE + 1] = "";
+bool screen_status(char* out, size_t out_size) {
     const char* what = atomic_load(&waiting);
     TickType_t now = xTaskGetTickCount(), since = (TickType_t)atomic_load(&waiting_since);
-    if (what != NULL) snprintf(text, sizeof text, " %s %lu s ", what, (unsigned long)((now - since) / configTICK_RATE_HZ));
+    if (what != NULL) snprintf(out, out_size, "%s %lu s", what, (unsigned long)((now - since) / configTICK_RATE_HZ));
+    return what != NULL;
+}
+
+// Without the top bar, the terminal's top right: what the session waits for and for how long
+static void draw_badge(void) {
+    static char shown_text[BADGE + 1];
+    char text[BADGE + 1] = "", status[BADGE - 2];
+    if (!state->bars.top && screen_status(status, sizeof status)) snprintf(text, sizeof text, " %s ", status);
     if (strcmp(text, shown_text) == 0) return;
     memcpy(shown_text, text, sizeof text);
     shr_lyr_set_visible(badge, text[0] != 0);
     if (text[0] == 0) return;
-    int32_t n = (int32_t)strlen(text), right = columns * SHR_CELL_WIDTH;
-    shr_lyr_set_rect(badge, (shr_rect){right - n * SHR_CELL_WIDTH, 0, right, SHR_CELL_HEIGHT});
+    int32_t n = (int32_t)strlen(text), right = origin_x + columns * SHR_CELL_WIDTH;
+    shr_lyr_set_rect(badge, (shr_rect){right - n * SHR_CELL_WIDTH, origin_y, right, origin_y + SHR_CELL_HEIGHT});
     shr_pl_lyr_tilemap_clear(badge, 0, 0, 1, BADGE, (shr_text_style){0});
     shr_pl_lyr_tilemap_set_text(badge, 0, 0, text, (size_t)n, (shr_text_style){SHR_RGB(0, 0, 0), SHR_RGB(0xff, 0xcc, 0), SHR_STYLE_BOLD}, NULL, 0, 0,
                                 NULL);
@@ -636,7 +724,8 @@ static void draw_cursor(GhosttyRenderState render, const GhosttyRenderStateCurso
     add_lines(&l, 0, l.style.fg);
     for (size_t i = 0; i < lines.count; i++)
         lines.items[i].color = (lines.items[i].color & 0xff000000u) | text;
-    shr_lyr_set_rect(cursor_text, (shr_rect){x * SHR_CELL_WIDTH, y * SHR_CELL_HEIGHT, (x + 2) * SHR_CELL_WIDTH, (y + 1) * SHR_CELL_HEIGHT});
+    shr_lyr_set_rect(cursor_text, (shr_rect){origin_x + x * SHR_CELL_WIDTH, origin_y + y * SHR_CELL_HEIGHT, origin_x + (x + 2) * SHR_CELL_WIDTH,
+                                             origin_y + (y + 1) * SHR_CELL_HEIGHT});
     shr_pl_lyr_tilemap_set_cell(cursor_text, 0, 0, l.text, l.length, l.span, l.style);
     shr_pl_lyr_tilemap_set_lines(cursor_text, 0, lines.items, lines.count, NULL);
 }
@@ -646,7 +735,7 @@ static void draw_composing(const GhosttyRenderStateCursor* c, const GhosttyRende
     static uint32_t shown_text;
     static int32_t shown_x, shown_y;
     uint32_t p = keys_preedit();
-    int32_t x = c->viewport_x * SHR_CELL_WIDTH, y = c->viewport_y * SHR_CELL_HEIGHT;
+    int32_t x = origin_x + c->viewport_x * SHR_CELL_WIDTH, y = origin_y + c->viewport_y * SHR_CELL_HEIGHT;
     if (p == shown_text && (p == 0 || (x == shown_x && y == shown_y))) return;
     shown_text = p, shown_x = x, shown_y = y;
     shr_lyr_set_visible(composing, p != 0);
@@ -657,7 +746,102 @@ static void draw_composing(const GhosttyRenderStateCursor* c, const GhosttyRende
                                 (shr_text_style){.fg = rgb(colors->background), .bg = rgb(colors->foreground)});
 }
 
+static void push(ui_event e) {
+    if (e.kind != UI_NONE && event_count < sizeof events / sizeof events[0]) events[event_count++] = e;
+}
+
+// Panel cells: x runs up the portrait panel's height, y along its width
+static void poll_touch(void) {
+    static bool down;
+    static int32_t column, row;
+    esp_lcd_touch_point_data_t p = {0};
+    uint8_t n = 0;
+    if (touch == NULL || esp_lcd_touch_read_data(touch) != ESP_OK || esp_lcd_touch_get_data(touch, &p, &n, 1) != ESP_OK) n = 0;
+    if (n == 0 && !down) return;
+    ui_touch_phase phase = n == 0 ? UI_TOUCH_UP : down ? UI_TOUCH_MOVE : UI_TOUCH_DOWN;
+    if (n > 0) {
+        int32_t c = (BSP_LCD_V_RES - 1 - p.y) / SHR_CELL_WIDTH, r = p.x / SHR_CELL_HEIGHT;
+        if (phase == UI_TOUCH_MOVE && c == column && r == row) return;
+        column = c, row = r;
+    }
+    if (phase == UI_TOUCH_DOWN) {
+        atomic_store(&input_seen, true);
+        ESP_LOGD(TAG, "touch %u,%u: cell %ld,%ld", p.x, p.y, (long)column, (long)row);
+    }
+    down = n > 0;
+    push(ui_touch(phase, column, row));
+}
+
+// Keys go to an open panel; once it closes the rest go to the terminal
+static void take_ui_keys(void) {
+    static const struct {
+        uint8_t usage;
+        ui_key_code key;
+    } named[] = {{0x52, UI_KEY_UP},    {0x51, UI_KEY_DOWN},  {0x50, UI_KEY_LEFT},   {0x4f, UI_KEY_RIGHT},    {0x2b, UI_KEY_TAB},
+                 {0x28, UI_KEY_ENTER}, {0x58, UI_KEY_ENTER}, {0x29, UI_KEY_ESCAPE}, {0x2a, UI_KEY_BACKSPACE}};
+    key_event e;
+    char c;
+    keys_divert(ui_panel() != NULL);
+    while (ui_panel() != NULL && keys_take(&e, &c)) {
+        size_t i = 0;
+        while (i < sizeof named / sizeof named[0] && named[i].usage != e.usage)
+            i++;
+        atomic_store(&input_seen, true);
+        if (i < sizeof named / sizeof named[0])
+            push(ui_key(named[i].key == UI_KEY_TAB && (e.modifiers & 0x22) != 0 ? UI_KEY_BACKTAB : named[i].key, ""));
+        else if (c >= 0x20 && c < 0x7f)
+            push(ui_key(UI_KEY_TEXT, (char[]){c, 0}));
+    }
+    keys_divert(ui_panel() != NULL);
+}
+
+// The UI over the terminal, which moves and resizes with the layout
+static void draw_ui(void) {
+    if (atomic_exchange(&open_asked, false)) ui_open(atomic_load(&open_request));
+    poll_touch();
+    take_ui_keys();
+    ui_draw();
+    atomic_store(&panel_open, ui_panel() != NULL);
+    layout_area a = terminal_area();
+    if (a.columns == columns && a.rows == rows_count && a.column * SHR_CELL_WIDTH == origin_x && a.row * SHR_CELL_HEIGHT == origin_y) return;
+    place_terminal();
+    terminal_resize(&size);
+    forget_guesses(false);
+}
+
+bool screen_event(ui_event* out) {
+    if (event_count == 0) return false;
+    *out = events[0];
+    memmove(events, events + 1, --event_count * sizeof events[0]);
+    return true;
+}
+
+bool screen_resized(terminal_size* out) {
+    if (!resized) return false;
+    *out = size, resized = false;
+    return true;
+}
+
+void screen_open(const char* panel) {
+    atomic_store(&open_request, panel);
+    atomic_store(&open_asked, true);
+}
+
+bool screen_panel_open(void) {
+    return atomic_load(&panel_open) || atomic_load(&open_asked);
+}
+
+bool screen_input(void) {
+    return atomic_exchange(&input_seen, false);
+}
+
 void screen_draw(void) {
+    // A font that failed to load is tried again a second later, not only after Shiroko's three quick retries
+    if (fonts_again != 0 && (int32_t)(xTaskGetTickCount() - fonts_again) >= 0) {
+        fonts_again = 0;
+        shr_asset_ready(context);
+    }
+    draw_ui();
     GhosttyRenderState render = terminal_update(find_pictures);
     GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
     GhosttyRenderStateCursor now = GHOSTTY_INIT_SIZED(GhosttyRenderStateCursor);
@@ -693,8 +877,10 @@ void screen_draw(void) {
     for (shr_submit(context);;) {
         shr_pump(context);
         while (shr_poll_event(context, &event) == SHR_OK)
-            if (event.kind == SHR_EVENT_PRESENT_FAILED || event.kind == SHR_EVENT_RESOURCE_FAILED)
+            if (event.kind == SHR_EVENT_PRESENT_FAILED || event.kind == SHR_EVENT_RESOURCE_FAILED) {
                 ESP_LOGW(TAG, "event %d: %s", event.kind, shr_status_name(event.status));
+                if (event.kind == SHR_EVENT_RESOURCE_FAILED && fonts_again == 0) fonts_again = xTaskGetTickCount() + pdMS_TO_TICKS(1000);
+            }
         if (shr_next_deadline(context, &next) != SHR_OK || next.kind != SHR_DEADLINE_NOW) return;
     }
 }

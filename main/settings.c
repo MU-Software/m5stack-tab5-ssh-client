@@ -9,12 +9,14 @@
 
 static const char* const levels[] = {"info", "warn", NULL};
 static const char* const rates[] = {"57 Hz", "29 Hz", NULL};
+static const char* const batteries[] = {"전압", "퍼센트", NULL};
 
 static const setting table[] = {
     {"echo.enabled", SETTING_TOGGLE, .offset = FIELD(echo.enabled)},
     {"echo.delay_ms", SETTING_NUMBER, 0, 1000, 10, " ms", .offset = FIELD(echo.delay_ms)},
     {"bars.top", SETTING_TOGGLE, .offset = FIELD(bars.top)},
     {"bars.bottom", SETTING_TOGGLE, .offset = FIELD(bars.bottom)},
+    {"bars.battery", SETTING_CHOICE, .options = batteries, .offset = FIELD(battery)},
     {"screen.refresh", SETTING_CHOICE, .options = rates, .offset = FIELD(refresh), .restart = true},
     {"log.enabled", SETTING_TOGGLE, .offset = FIELD(log.enabled)},
     {"log.session_level", SETTING_CHOICE, .options = levels, .offset = FIELD(log.quiet_sessions)},

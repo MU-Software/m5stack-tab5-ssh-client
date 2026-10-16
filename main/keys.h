@@ -22,3 +22,7 @@ void keys_push(const key_event* event);
 size_t keys_read(char* out, size_t size);
 // The Korean syllable or jamo being typed, 0 for none
 uint32_t keys_preedit(void);
+// While on, keys_read leaves the keys to keys_take
+void keys_divert(bool on);
+// The next key pressed or repeated, with its ASCII character (Shift and CapsLock applied, 0 for none)
+bool keys_take(key_event* out, char* text);

@@ -57,12 +57,12 @@ typedef struct {
 typedef struct {
     wifi_network* wifi;
     ssh_host* hosts;
-    ssh_host* current_host;
+    const ssh_host* current_host;
     const char* terminal_type;
     terminal_size terminal_size;
     ssh_session* session;
-    // Kept across boots: Wi-Fi stays off from boot, for LTE only
-    bool wifi_off;
+    // Kept across boots: Wi-Fi or LTE stays off from boot
+    bool wifi_off, lte_off;
     log_settings log;
     // POSIX TZ
     char timezone[48];
@@ -71,6 +71,8 @@ typedef struct {
     struct {
         bool top, bottom;
     } bars;
-    // An index of the "screen.refresh" setting's choices
-    int refresh;
+    // Indexes of the "screen.refresh" and "bars.battery" settings' choices
+    int refresh, battery;
+    // Choosing a host at boot connects to the one chosen at this esp_timer time, 0 while nobody waits for it
+    int64_t host_deadline_us;
 } global_state;

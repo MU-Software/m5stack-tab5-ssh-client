@@ -148,21 +148,42 @@ void storage_set_tmux_session(const char* alias, const char* name) {
     nvs_close(h);
 }
 
-bool storage_get_wifi_off(void) {
+bool storage_get_off(const char* what) {
     nvs_handle_t h;
+    char key[16];
     uint8_t off = 0;
+    snprintf(key, sizeof key, "%s_off", what);
     if (nvs_open("net", NVS_READONLY, &h) != ESP_OK) return false;
-    nvs_get_u8(h, "wifi_off", &off);
+    nvs_get_u8(h, key, &off);
     nvs_close(h);
     return off != 0;
 }
 
-void storage_set_wifi_off(bool off) {
+void storage_set_off(const char* what, bool off) {
     nvs_handle_t h;
+    char key[16];
+    snprintf(key, sizeof key, "%s_off", what);
     if (nvs_open("net", NVS_READWRITE, &h) != ESP_OK) return;
-    esp_err_t err = off ? nvs_set_u8(h, "wifi_off", 1) : nvs_erase_key(h, "wifi_off");
+    esp_err_t err = off ? nvs_set_u8(h, key, 1) : nvs_erase_key(h, key);
     if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) err = nvs_commit(h);
-    if (err != ESP_OK) ESP_LOGW(TAG, "wifi_off: %s", esp_err_to_name(err));
+    if (err != ESP_OK) ESP_LOGW(TAG, "%s: %s", key, esp_err_to_name(err));
+    nvs_close(h);
+}
+
+void storage_get_last_host(char* alias, size_t size) {
+    nvs_handle_t h;
+    alias[0] = 0;
+    if (nvs_open("tmux", NVS_READONLY, &h) != ESP_OK) return;
+    if (nvs_get_str(h, "last", alias, &size) != ESP_OK) alias[0] = 0;
+    nvs_close(h);
+}
+
+void storage_set_last_host(const char* alias) {
+    nvs_handle_t h;
+    if (nvs_open("tmux", NVS_READWRITE, &h) != ESP_OK) return;
+    esp_err_t err = nvs_set_str(h, "last", alias);
+    if (err == ESP_OK) err = nvs_commit(h);
+    if (err != ESP_OK) ESP_LOGW(TAG, "last host: %s", esp_err_to_name(err));
     nvs_close(h);
 }
 

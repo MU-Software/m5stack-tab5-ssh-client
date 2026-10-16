@@ -9,6 +9,7 @@
 extern const GhosttyAllocator terminal_allocator;
 
 esp_err_t terminal_start(const terminal_size* size);
+void terminal_resize(const terminal_size* size);
 // From the SSH channel; one task only, with terminal_reply
 void terminal_write(const void* data, size_t size);
 // The terminal's answers to queries, for the SSH channel

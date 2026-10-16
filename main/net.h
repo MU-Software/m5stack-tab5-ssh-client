@@ -26,6 +26,17 @@ void net_keepalive(int fd);
 bool net_on_lte(void);
 // Joins network now
 esp_err_t net_join(const wifi_network* network);
+typedef struct {
+    // "none", "Wi-Fi" or "LTE"
+    const char* path;
+    bool wifi_on, wifi_joined, wifi_reaches, lte_on;
+    net_lte_state lte;
+    char ssid[33], wifi_address[16], lte_address[16];
+    int8_t rssi;
+} net_info;
+
+// What the screens show of the network; asks the C6 for the access point
+void net_describe(net_info* out);
 // wifi on|off, lte on|off|status, net status, net check HOST PORT
 bool net_command(const char* line);
 // Logs the default interface, the DNS servers, and how long resolving host and a TCP connection to port take

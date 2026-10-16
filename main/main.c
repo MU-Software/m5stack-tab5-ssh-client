@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include <cJSON.h>
 #include <esp_event.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_netif.h>
 #include <esp_random.h>
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <nvs_flash.h>
 #include <wolfssl/wolfcrypt/memory.h>
@@ -23,6 +27,7 @@
 #include "net.h"
 #include "power.h"
 #include "screen.h"
+#include "settings.h"
 #include "ssh.h"
 #include "storage.h"
 #include "terminal.h"
@@ -38,6 +43,10 @@ static global_state state = {
     .echo = {true, 50},
     .bars = {true, true},
 };
+
+// Bumped by each change of the terminal's size; the host chosen on the screen, NULL when none waits
+static atomic_uint resizes;
+static _Atomic(const ssh_host*) wanted_host;
 
 static void message(const char* text) {
     terminal_write(text, strlen(text));
@@ -81,7 +90,7 @@ int accept_new_host(const global_state* state, const char* name, const char* fin
     return 1;
 }
 
-typedef enum { SESSION_CLOSED, SESSION_REFUSED, SESSION_DROPPED, SESSION_MOVED } session_end;
+typedef enum { SESSION_CLOSED, SESSION_REFUSED, SESSION_DROPPED, SESSION_MOVED, SESSION_SWITCHED } session_end;
 
 // Typing that 1 s brings no output pings the host; no answer for another second shows as held until anything arrives
 static session_end bridge(unsigned path) {
@@ -89,9 +98,11 @@ static session_end bridge(unsigned path) {
     int pending = 0, off = 0;
     TickType_t typed_at = 0, pinged_at = 0;
     bool typed = false, pinged = false, held = false;
-    unsigned pongs = 0;
+    unsigned pongs = 0, size = atomic_load(&resizes);
     for (;;) {
         if (net_generation() != path) return SESSION_MOVED;
+        if (atomic_load(&wanted_host) != NULL) return SESSION_SWITCHED;
+        if (atomic_load(&resizes) != size) size = atomic_load(&resizes), ssh_resize(&state);
         if (pending == 0) {
             if ((pending = (int)terminal_reply(in, sizeof in)) == 0) {
                 if ((pending = (int)keys_read((char*)in, sizeof in)) == 0) pending = (int)usb_terminal_read(in, sizeof in);
@@ -168,7 +179,7 @@ static session_end run(const ssh_host* h, const char* command, unsigned path, in
         screen_typed(NULL, 0);
         esp_log_level_set("*", ESP_LOG_INFO);
         ssh_close(&state, exit_status);
-        ESP_LOGI(TAG, "session %s, exit status %d", (const char* const[]){"closed", "refused", "dropped", "moved"}[end], *exit_status);
+        ESP_LOGI(TAG, "session %s, exit status %d", (const char* const[]){"closed", "refused", "dropped", "moved", "switched"}[end], *exit_status);
     } else {
         ESP_LOGE(TAG, "ssh %s@%s:%u: %s", h->user, h->hostname, h->port, wolfSSH_ErrorToName(rc));
     }
@@ -207,8 +218,9 @@ static session_end tmux(const ssh_host* h, unsigned path) {
     }
 }
 
+// Or until another host is chosen
 static void wait_enter(void) {
-    for (;;) {
+    while (atomic_load(&wanted_host) == NULL) {
         char in[64];
         size_t n = keys_read(in, sizeof in);
         if (n == 0) n = usb_terminal_read(in, sizeof in);
@@ -239,11 +251,19 @@ static unsigned wait_path(void) {
     return path;
 }
 
-// Reconnects after a drop or a change of path at once (tmux keeps the screen), after a closed session on Enter
+// Reconnects after a drop or a change of path at once (tmux keeps the screen), after a closed session on Enter; another
+// host chosen on the screen ends the session
 static void sessions(const ssh_host* h) {
     int retry_ms = 1000;
     for (;;) {
+        const ssh_host* chosen = atomic_exchange(&wanted_host, NULL);
+        if (chosen != NULL) {
+            h = state.current_host = chosen;
+            storage_set_last_host(h->alias);
+            message("\x1b[2J\x1b[H");
+        }
         session_end end = tmux(h, wait_path());
+        if (end == SESSION_SWITCHED) continue;
         screen_waiting(end == SESSION_DROPPED || end == SESSION_MOVED ? "reconnecting" : NULL, xTaskGetTickCount());
         if (end == SESSION_CLOSED || end == SESSION_REFUSED) {
             message(end == SESSION_CLOSED ? "\r\n[Session closed. Enter connects again.]\r\n" : "\r\n[Not connected. Enter tries again.]\r\n");
@@ -258,6 +278,29 @@ static void sessions(const ssh_host* h) {
         }
         retry_ms = 1000;
     }
+}
+
+// The host last connected to; with more than one, the screen offers them all, and after 10 s untouched connects
+static const ssh_host* choose_host(void) {
+    char last[sizeof state.hosts->alias];
+    storage_get_last_host(last, sizeof last);
+    for (const ssh_host* h = state.hosts; h != NULL; h = h->next)
+        if (strcmp(h->alias, last) == 0) state.current_host = h;
+    if (state.hosts == NULL || state.hosts->next == NULL) return state.current_host;
+    screen_input();
+    state.host_deadline_us = esp_timer_get_time() + 10 * 1000000LL;
+    screen_open("hosts");
+    while (screen_panel_open() && atomic_load(&wanted_host) == NULL) {
+        if (state.host_deadline_us != 0 && screen_input()) state.host_deadline_us = 0;
+        if (state.host_deadline_us != 0 && esp_timer_get_time() >= state.host_deadline_us) break;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    state.host_deadline_us = 0;
+    const ssh_host* chosen = atomic_exchange(&wanted_host, NULL);
+    if (chosen != NULL) state.current_host = chosen;
+    if (state.current_host != NULL) storage_set_last_host(state.current_host->alias);
+    screen_open(NULL);
+    return state.current_host;
 }
 
 static void connect(void) {
@@ -277,10 +320,13 @@ static void connect(void) {
     state.hosts = text != NULL ? config_ssh_hosts(text) : NULL;
     free(text);
     state.current_host = state.hosts;
-    state.wifi_off = storage_get_wifi_off();
+    state.wifi_off = storage_get_off("wifi");
+    state.lte_off = storage_get_off("lte");
+    ESP_LOGI(TAG, "internal DMA RAM: %u free, %u in one block", heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+             heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
     // Also without a host, for the control commands
     if (net_start(&state) != ESP_OK) ESP_LOGE(TAG, "no network");
-    const ssh_host* h = state.current_host;
+    const ssh_host* h = choose_host();
     if (h == NULL || !h->user[0]) {
         ESP_LOGE(TAG, "incomplete configuration: a Host with a User in the SD card's .ssh/config");
         return;
@@ -305,7 +351,7 @@ static void wifi_connect_command(const char* arguments) {
         password++;
     strlcpy(network->password, password, sizeof network->password);
     // It turns Wi-Fi on, as wifi on does
-    if (state.wifi_off) storage_set_wifi_off(state.wifi_off = false);
+    if (state.wifi_off) storage_set_off("wifi", state.wifi_off = false);
     esp_err_t err = net_join(network);
     ESP_LOGI(TAG, "wifi connect %s: %s", network->ssid, esp_err_to_name(err));
     if (err == ESP_OK && storage_add_wifi(network->ssid, network->password) != 0) ESP_LOGW(TAG, "%s not saved", network->ssid);
@@ -347,11 +393,16 @@ static bool command(const char* line) {
         power_report();
         return true;
     }
-    // wifi off alone lasts the boot
+    // wifi off and lte off alone last the boot
     if (strcmp(line, "wifi off save") == 0 || strcmp(line, "wifi on") == 0) {
         state.wifi_off = strcmp(line, "wifi on") != 0;
-        storage_set_wifi_off(state.wifi_off);
+        storage_set_off("wifi", state.wifi_off);
         return net_command(state.wifi_off ? "wifi off" : "wifi on");
+    }
+    if (strcmp(line, "lte off save") == 0 || strcmp(line, "lte on") == 0) {
+        state.lte_off = strcmp(line, "lte on") != 0;
+        storage_set_off("lte", state.lte_off);
+        return net_command(state.lte_off ? "lte off" : "lte on");
     }
     if (strncmp(line, "wifi forget ", 12) == 0) {
         // Emptied, not unlinked, for the same reason
@@ -363,6 +414,57 @@ static bool command(const char* line) {
     return net_command(line);
 }
 
+// From the screen's task. The last bar stays: the screens open from it.
+static void apply(const ui_event* e) {
+    char text[80];
+    if (e->kind == UI_ACTION && strcmp(e->name, "connect") == 0) {
+        const ssh_host* h = state.hosts;
+        for (size_t i = 0; h != NULL && i < e->index; i++)
+            h = h->next;
+        if (h != NULL && h != state.current_host) atomic_store(&wanted_host, h);
+        if (h != NULL) screen_open(NULL);
+        return;
+    }
+    if (e->kind == UI_ACTION && strcmp(e->name, "reboot") == 0) {
+        ESP_LOGI(TAG, "restart from the screen");
+        vTaskDelay(pdMS_TO_TICKS(500)); // for the log writer
+        esp_restart();
+    }
+    if (e->kind == UI_ACTION) {
+        ESP_LOGI(TAG, "%s: %s", e->name, command(e->name) ? "done" : "unknown");
+        return;
+    }
+    bool last_bar = e->value.number == 0 &&
+                    ((strcmp(e->name, "bars.top") == 0 && !state.bars.bottom) || (strcmp(e->name, "bars.bottom") == 0 && !state.bars.top));
+    settings_text(e->setting, &e->value, text, sizeof text);
+    if (last_bar || !settings_set(&state, e->setting, &e->value)) {
+        ESP_LOGW(TAG, "%s %s refused", e->name, text);
+        return;
+    }
+    ESP_LOGI(TAG, "%s %s", e->name, text);
+    if (strncmp(e->name, "log.", 4) == 0) logs_configure(&state.log);
+    if (strcmp(e->name, "timezone") == 0) clock_timezone(state.timezone);
+}
+
+// JSON trees, such as the layout the screen keeps, are hundreds of small blocks: in internal RAM they would take the room the
+// C6's SDIO buffers need
+static void* psram_malloc(size_t size) {
+    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+}
+
+static void keep_image(void* arg) {
+    (void)arg;
+    usb_keep_image();
+}
+
+// Kept once it has run 10 s: an image that crashes while starting rolls back at the next restart
+static void keep_image_later(void) {
+    esp_timer_handle_t keep;
+    if (esp_timer_create(&(esp_timer_create_args_t){.callback = keep_image, .name = "keep image"}, &keep) != ESP_OK ||
+        esp_timer_start_once(keep, 10 * 1000000) != ESP_OK)
+        usb_keep_image();
+}
+
 static void run_session(void* arg) {
     (void)arg;
     connect();
@@ -370,6 +472,7 @@ static void run_session(void* arg) {
 }
 
 void app_main(void) {
+    cJSON_InitHooks(&(cJSON_Hooks){psram_malloc, free});
     if (logs_start() != ESP_OK) ESP_LOGE(TAG, "no log ring");
     if (power_start() != ESP_OK) ESP_LOGE(TAG, "charging left as it was");
     ESP_ERROR_CHECK(keys_start());
@@ -384,9 +487,10 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     if (clock_start() != ESP_OK) ESP_LOGE(TAG, "no SNTP");
     if (catm_start() != ESP_OK) ESP_LOGE(TAG, "no PPP interface");
-    ESP_ERROR_CHECK(terminal_start(&state.terminal_size));
     esp_err_t screen = screen_start(&state);
-    usb_keep_image();
+    if (screen == ESP_OK) screen_resized(&state.terminal_size);
+    ESP_ERROR_CHECK(terminal_start(&state.terminal_size));
+    keep_image_later();
     // Ghostty's measured stack is 27-33 KiB
     xTaskCreatePinnedToCore(run_session, "session", 48 * 1024, NULL, 5, NULL, 1);
     if (screen != ESP_OK) {
@@ -394,7 +498,15 @@ void app_main(void) {
         return;
     }
     for (;;) {
+        ui_event e;
+        terminal_size size;
         screen_draw();
+        while (screen_event(&e))
+            apply(&e);
+        if (screen_resized(&size)) {
+            state.terminal_size = size;
+            atomic_fetch_add(&resizes, 1);
+        }
         vTaskDelay(pdMS_TO_TICKS(30));
     }
 }
