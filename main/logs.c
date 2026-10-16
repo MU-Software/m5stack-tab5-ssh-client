@@ -167,7 +167,8 @@ esp_err_t logs_start(void) {
     if ((ring = heap_caps_malloc(RING, MALLOC_CAP_SPIRAM)) == NULL || (buffer = heap_caps_malloc(8192, MALLOC_CAP_SPIRAM)) == NULL)
         return ESP_ERR_NO_MEM;
     console = esp_log_set_vprintf(hook);
-    return xTaskCreatePinnedToCore(writer, "logs", 4096, NULL, 4, NULL, 1) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+    // Stack in PSRAM: a task there must never write flash
+    return xTaskCreatePinnedToCoreWithCaps(writer, "logs", 4096, NULL, 4, NULL, 1, MALLOC_CAP_SPIRAM) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 void logs_configure(const log_settings* s) {

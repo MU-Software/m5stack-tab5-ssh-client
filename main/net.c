@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/poll.h>
 
+#include <esp_heap_caps.h>
 #include <esp_event.h>
 #include <esp_log.h>
 #include <esp_netif.h>
@@ -262,8 +263,9 @@ esp_err_t net_start(const global_state* global) {
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL);
     esp_event_handler_register(IP_EVENT, IP_EVENT_PPP_GOT_IP, on_event, NULL);
     esp_event_handler_register(NETIF_PPP_STATUS, NETIF_PPP_PHASE_DEAD, on_event, NULL);
-    if (xTaskCreatePinnedToCore(manage, "net", 6144, NULL, 5, &manager, 1) != pdPASS ||
-        xTaskCreatePinnedToCore(run_lte, "lte", 4096, NULL, 5, &lte, 1) != pdPASS)
+    // Stack in PSRAM: a task there must never write flash
+    if (xTaskCreatePinnedToCoreWithCaps(manage, "net", 6144, NULL, 5, &manager, 1, MALLOC_CAP_SPIRAM) != pdPASS ||
+        xTaskCreatePinnedToCoreWithCaps(run_lte, "lte", 4096, NULL, 5, &lte, 1, MALLOC_CAP_SPIRAM) != pdPASS)
         return ESP_ERR_NO_MEM;
     return ESP_OK;
 }

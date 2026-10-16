@@ -2,11 +2,13 @@
 #include "screen.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <bsp/m5stack_tab5.h>
 #include <bsp/touch.h>
@@ -14,6 +16,7 @@
 #include <esp_cache.h>
 #include <esp_check.h>
 #include <esp_heap_caps.h>
+#include <esp_memory_utils.h>
 #include <esp_lcd_mipi_dsi.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_touch.h>
@@ -177,54 +180,82 @@ static uint64_t now_ns(void* user) {
     return (uint64_t)esp_timer_get_time() * 1000;
 }
 
-// Through internal RAM: the SD card's DMA cannot reach PSRAM pages, and its own bounce buffer for them is a whole
-// read's size, which fails while the C6 holds the internal RAM
-static shr_status read_package(void* user, uint64_t offset, uint32_t length, void* destination, uint64_t request) {
-    static uint8_t chunk[4096] __attribute__((aligned(64)));
-    (void)request;
-    if (fseek(user, (long)offset, SEEK_SET) != 0) return SHR_E_IO;
-    for (uint32_t done = 0, n; done < length; done += n) {
-        n = length - done < sizeof chunk ? length - done : sizeof chunk;
-        if (fread(chunk, 1, n, user) != n) return SHR_E_IO;
-        memcpy((uint8_t*)destination + done, chunk, n);
+typedef struct {
+    int file;
+    char path[96];
+} package;
+
+// Whole sectors into a buffer on a cache line: the SD card's DMA fills it in PSRAM, without a bounce buffer in internal RAM
+EXT_RAM_BSS_ATTR static uint8_t chunk[16384] __attribute__((aligned(64)));
+
+static bool read_at(const package* p, uint64_t offset, uint32_t length, uint8_t* destination) {
+    for (uint64_t at = offset & ~(uint64_t)511; at < offset + length; at += sizeof chunk) {
+        ssize_t got = pread(p->file, chunk, sizeof chunk, (off_t)at);
+        uint64_t from = at > offset ? at : offset, to = got > 0 ? at + (uint64_t)got : at;
+        if (to > offset + length) to = offset + length;
+        if (to <= from) return false;
+        memcpy(destination + (from - offset), chunk + (from - at), to - from);
     }
-    return SHR_OK;
+    return true;
+}
+
+static shr_status read_package(void* user, uint64_t offset, uint32_t length, void* destination, uint64_t request) {
+    package* p = user;
+    (void)request;
+    if (read_at(p, offset, length, destination)) return SHR_OK;
+    // FatFS keeps failing a file after one disk error: once more, opened again
+    close(p->file);
+    p->file = open(p->path, O_RDONLY);
+    return p->file >= 0 && read_at(p, offset, length, destination) ? SHR_OK : SHR_E_IO;
 }
 
 static void close_package(void* user) {
-    fclose(user);
+    package* p = user;
+    if (p->file >= 0) close(p->file);
+    free(p);
 }
 
-static shr_status open_package(void* user, const char* package, shr_asset_source* out) {
-    (void)user;
-    char path[96];
-    snprintf(path, sizeof path, SD "/.local/share/tab5-ssh/fonts/%s", package);
-    FILE* f = fopen(path, "rb");
-    if (f == NULL) return errno == ENOENT ? SHR_E_NOT_FOUND : SHR_E_IO;
+static shr_status open_package(void* user, const char* name, shr_asset_source* out) {
+    package* p = heap_caps_calloc(1, sizeof *p, MALLOC_CAP_SPIRAM);
     struct stat st;
-    if (fstat(fileno(f), &st) != 0) {
-        fclose(f);
-        return SHR_E_IO;
+    (void)user;
+    if (p == NULL) return SHR_E_NO_MEMORY;
+    snprintf(p->path, sizeof p->path, SD "/.local/share/tab5-ssh/fonts/%s", name);
+    if ((p->file = open(p->path, O_RDONLY)) < 0 || fstat(p->file, &st) != 0) {
+        shr_status status = errno == ENOENT ? SHR_E_NOT_FOUND : SHR_E_IO;
+        close_package(p);
+        return status;
     }
     shr_asset_source_init(out);
-    out->user = f;
+    out->user = p;
     out->size = (uint64_t)st.st_size;
     out->read = read_package;
     out->close = close_package;
     return SHR_OK;
 }
 
-// Memory used every frame in internal RAM, the rest (font pages, images, layers' cells) in PSRAM: internal RAM keeps
-// room for the C6's SDIO buffers
+// As in Shiroko's Tab5 example: memory used every frame in internal RAM while it fits in 64 KiB, the rest of it, all other
+// memory and DMA memory (whole cache lines) in PSRAM; internal RAM stays with Wi-Fi, PPP and the C6's SDIO buffers
+#define HOT_BUDGET (64 << 10)
+static size_t hot_used;
+
+static bool budgeted(shr_alloc_kind kind) {
+    return (kind & SHR_ALLOC_HOT) != 0 && (kind & ~SHR_ALLOC_HOT) != SHR_ALLOC_DMA;
+}
+
 static void* allocate(void* user, size_t size, size_t align, shr_alloc_kind kind) {
+    void* p = NULL;
     (void)user;
-    uint32_t caps = (kind & ~SHR_ALLOC_HOT) == SHR_ALLOC_DMA ? MALLOC_CAP_DMA : (kind & SHR_ALLOC_HOT) != 0 ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM;
-    void* p = heap_caps_aligned_alloc(align, size, caps | MALLOC_CAP_8BIT);
-    return p != NULL || caps == MALLOC_CAP_DMA ? p : heap_caps_aligned_alloc(align, size, MALLOC_CAP_8BIT);
+    if ((kind & ~SHR_ALLOC_HOT) == SHR_ALLOC_DMA)
+        return heap_caps_aligned_alloc(align, (size + align - 1) / align * align, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+    if (budgeted(kind) && hot_used + size <= HOT_BUDGET && (p = heap_caps_aligned_alloc(align, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) != NULL)
+        hot_used += size;
+    return p != NULL ? p : heap_caps_aligned_alloc(align, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 }
 
 static void release(void* user, void* pointer, size_t size, size_t align, shr_alloc_kind kind) {
-    (void)user, (void)size, (void)align, (void)kind;
+    (void)user, (void)align;
+    if (budgeted(kind) && esp_ptr_internal(pointer)) hot_used -= size;
     heap_caps_free(pointer);
 }
 
@@ -303,7 +334,7 @@ esp_err_t screen_start(const global_state* global) {
     shr_rect area = {0, 0, COLUMNS * SHR_CELL_WIDTH, ROWS * SHR_CELL_HEIGHT};
     shr_color background = SHR_RGB(0, 0, 0);
     ESP_RETURN_ON_ERROR(ppa_register_client(&(ppa_client_config_t){.oper_type = PPA_OPERATION_SRM}, &ppa), TAG, "PPA");
-    if (check(shr_software_driver_create(NULL, 0, 0, 256, &software), "driver") != SHR_OK) return ESP_FAIL;
+    if (check(shr_software_driver_create(&allocator, 0, 0, 256, &software), "driver") != SHR_OK) return ESP_FAIL;
     // Translucent images: 8 bytes a pixel in planes, 8 MiB by default
     shr_software_driver_image_planes(&software, 2 << 20);
     driver = software, driver.execute = execute;

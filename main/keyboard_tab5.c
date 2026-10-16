@@ -2,6 +2,7 @@
 #include "keyboard_tab5.h"
 
 #include <driver/i2c_master.h>
+#include <esp_heap_caps.h>
 #include <esp_check.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
@@ -82,5 +83,6 @@ esp_err_t keyboard_tab5_start(void) {
                         TAG, "I2C");
     ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(bus, &(i2c_device_config_t){.device_address = ADDRESS, .scl_speed_hz = 100000}, &device), TAG,
                         "device");
-    return xTaskCreatePinnedToCore(poll, "tab5 keyboard", 3072, bus, 5, NULL, 1) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+    // Stack in PSRAM: a task there must never write flash
+    return xTaskCreatePinnedToCoreWithCaps(poll, "tab5 keyboard", 3072, bus, 5, NULL, 1, MALLOC_CAP_SPIRAM) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }

@@ -24,6 +24,7 @@
 #include "keyboard_usb.h"
 #include "keys.h"
 #include "logs.h"
+#include "memory_log.h"
 #include "net.h"
 #include "power.h"
 #include "screen.h"
@@ -187,6 +188,25 @@ static session_end run(const ssh_host* h, const char* command, unsigned path, in
     return end;
 }
 
+// NVS writes from the session task, whose stack is in PSRAM: writing flash needs an internal stack, main's loop does them
+typedef struct {
+    const ssh_host* host;
+    bool tmux;
+    char name[16];
+} save;
+static QueueHandle_t saves;
+
+static void save_tmux(const ssh_host* h, const char* name) {
+    save s = {h, true, ""};
+    if (name != NULL) snprintf(s.name, sizeof s.name, "%s", name);
+    xQueueSend(saves, &s, portMAX_DELAY);
+}
+
+static void save_last_host(const ssh_host* h) {
+    save s = {h, false, ""};
+    xQueueSend(saves, &s, portMAX_DELAY);
+}
+
 // Attaches to the host's tmux session kept in NVS, or starts one when there is none or it has gone
 static session_end tmux(const ssh_host* h, unsigned path) {
     char name[16], command[400];
@@ -194,7 +214,7 @@ static session_end tmux(const ssh_host* h, unsigned path) {
     for (;;) {
         if (!attach) {
             snprintf(name, sizeof name, "tab5-%08" PRIx32, esp_random());
-            storage_set_tmux_session(h->alias, name);
+            save_tmux(h, name);
         }
         // -T (tmux 3.2) declares what the screen draws beyond xterm-256color's terminfo. allow-passthrough (tmux 3.3) lets
         // kitty images reach the screen, for this session's windows only. '=': an exact name, not a prefix (set-hook takes none).
@@ -208,12 +228,12 @@ static session_end tmux(const ssh_host* h, unsigned path) {
         session_end end = run(h, command, path, &exit_status);
         if (end != SESSION_CLOSED) return end;
         if (exit_status == 127) {
-            storage_set_tmux_session(h->alias, NULL);
+            save_tmux(h, NULL);
             message("\r\n\x1b[33mNo tmux on this host: a plain shell, lost when the connection drops\x1b[m\r\n");
             return run(h, NULL, path, &exit_status);
         }
         if (!attach || exit_status == 0) return end;
-        storage_set_tmux_session(h->alias, NULL);
+        save_tmux(h, NULL);
         attach = false;
     }
 }
@@ -259,7 +279,7 @@ static void sessions(const ssh_host* h) {
         const ssh_host* chosen = atomic_exchange(&wanted_host, NULL);
         if (chosen != NULL) {
             h = state.current_host = chosen;
-            storage_set_last_host(h->alias);
+            save_last_host(h);
             message("\x1b[2J\x1b[H");
         }
         session_end end = tmux(h, wait_path());
@@ -298,7 +318,7 @@ static const ssh_host* choose_host(void) {
     state.host_deadline_us = 0;
     const ssh_host* chosen = atomic_exchange(&wanted_host, NULL);
     if (chosen != NULL) state.current_host = chosen;
-    if (state.current_host != NULL) storage_set_last_host(state.current_host->alias);
+    if (state.current_host != NULL) save_last_host(state.current_host);
     screen_open(NULL);
     return state.current_host;
 }
@@ -468,11 +488,12 @@ static void keep_image_later(void) {
 static void run_session(void* arg) {
     (void)arg;
     connect();
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 void app_main(void) {
     cJSON_InitHooks(&(cJSON_Hooks){psram_malloc, free});
+    memory_log_start();
     if (logs_start() != ESP_OK) ESP_LOGE(TAG, "no log ring");
     if (power_start() != ESP_OK) ESP_LOGE(TAG, "charging left as it was");
     ESP_ERROR_CHECK(keys_start());
@@ -491,21 +512,26 @@ void app_main(void) {
     if (screen == ESP_OK) screen_resized(&state.terminal_size);
     ESP_ERROR_CHECK(terminal_start(&state.terminal_size));
     keep_image_later();
-    // Ghostty's measured stack is 27-33 KiB
-    xTaskCreatePinnedToCore(run_session, "session", 48 * 1024, NULL, 5, NULL, 1);
-    if (screen != ESP_OK) {
-        ESP_LOGE(TAG, "no screen");
-        return;
-    }
+    saves = xQueueCreate(4, sizeof(save));
+    // Ghostty's measured stack is 27-33 KiB, as fast in PSRAM; flash writes go through saves
+    if (saves == NULL || xTaskCreatePinnedToCoreWithCaps(run_session, "session", 48 * 1024, NULL, 5, NULL, 1, MALLOC_CAP_SPIRAM) != pdPASS)
+        ESP_LOGE(TAG, "no session");
+    if (screen != ESP_OK) ESP_LOGE(TAG, "no screen");
     for (;;) {
         ui_event e;
         terminal_size size;
-        screen_draw();
-        while (screen_event(&e))
-            apply(&e);
-        if (screen_resized(&size)) {
-            state.terminal_size = size;
-            atomic_fetch_add(&resizes, 1);
+        save s;
+        while (saves != NULL && xQueueReceive(saves, &s, 0))
+            s.tmux ? storage_set_tmux_session(s.host->alias, s.name[0] != 0 ? s.name : NULL) : storage_set_last_host(s.host->alias);
+        memory_log();
+        if (screen == ESP_OK) {
+            screen_draw();
+            while (screen_event(&e))
+                apply(&e);
+            if (screen_resized(&size)) {
+                state.terminal_size = size;
+                atomic_fetch_add(&resizes, 1);
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(30));
     }

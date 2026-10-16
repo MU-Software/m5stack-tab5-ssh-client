@@ -48,3 +48,6 @@ CONFIG_TINYUSB_CDC_RX_BUFSIZE=4096
 CONFIG_TINYUSB_MSC_ENABLED=y
 # Log lines carry the time of day once the RTC or SNTP set it
 CONFIG_LOG_TIMESTAMP_SOURCE_SYSTEM=y
+
+# esp_hosted's SDIO transport buffers in PSRAM (the SDMMC DMA reaches it): Wi-Fi as fast, about 28 KB more internal RAM
+CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM=y

@@ -8,6 +8,7 @@
 
 #include <driver/gpio.h>
 #include <driver/uart.h>
+#include <esp_heap_caps.h>
 #include <esp_check.h>
 #include <esp_event.h>
 #include <esp_log.h>
@@ -140,7 +141,9 @@ static esp_err_t open_uart(void) {
     ESP_RETURN_ON_ERROR(uart_set_pin(UART, TX, RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE), TAG, "pins");
     // Without a module, silence rather than framing errors
     ESP_RETURN_ON_ERROR(gpio_pullup_en(RX), TAG, "pull-up");
-    ESP_RETURN_ON_FALSE(xTaskCreatePinnedToCore(reader, "catm", 4096, NULL, 6, NULL, 1) == pdPASS, ESP_ERR_NO_MEM, TAG, "reader");
+    // Stack in PSRAM: a task there must never write flash
+    ESP_RETURN_ON_FALSE(xTaskCreatePinnedToCoreWithCaps(reader, "catm", 4096, NULL, 6, NULL, 1, MALLOC_CAP_SPIRAM) == pdPASS, ESP_ERR_NO_MEM, TAG,
+                        "reader");
     open = true;
     return ESP_OK;
 }

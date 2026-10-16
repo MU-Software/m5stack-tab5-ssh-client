@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include <bsp/m5stack_tab5.h>
+#include <esp_heap_caps.h>
 #include <esp_check.h>
 #include <esp_log.h>
 #include <esp_netif_sntp.h>
@@ -98,8 +99,9 @@ static void synced(struct timeval* tv) {
 }
 
 esp_err_t clock_start(void) {
+    // Stack in PSRAM: a task there must never write flash
     if (i2c_master_bus_add_device(bsp_i2c_get_handle(), &(i2c_device_config_t){.device_address = RX8130, .scl_speed_hz = 400000}, &rtc) != ESP_OK ||
-        xTaskCreatePinnedToCore(to_rtc, "clock", 3072, NULL, 3, &saver, 1) != pdPASS) {
+        xTaskCreatePinnedToCoreWithCaps(to_rtc, "clock", 3072, NULL, 3, &saver, 1, MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "no RTC");
         rtc = NULL;
     } else {
