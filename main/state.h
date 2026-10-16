@@ -48,6 +48,12 @@ typedef struct {
     bool quiet_sessions;
 } log_settings;
 
+// Keys shown before the host echoes them, once delay_ms passed without the echo
+typedef struct {
+    bool enabled;
+    int delay_ms;
+} echo_settings;
+
 typedef struct {
     wifi_network* wifi;
     ssh_host* hosts;
@@ -60,4 +66,11 @@ typedef struct {
     log_settings log;
     // POSIX TZ
     char timezone[48];
+    echo_settings echo;
+    // Above and below the terminal
+    struct {
+        bool top, bottom;
+    } bars;
+    // An index of the "screen.refresh" setting's choices
+    int refresh;
 } global_state;

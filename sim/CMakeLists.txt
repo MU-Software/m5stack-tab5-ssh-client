@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # The UI in an SDL3 window (make sim): Shiroko as the firmware builds it, from the host build's generated sources
 cmake_minimum_required(VERSION 3.21)
-set(top ${CMAKE_CURRENT_LIST_DIR}/..)
+get_filename_component(top ${CMAKE_CURRENT_LIST_DIR}/.. ABSOLUTE)
 set(host ${top}/build/shiroko-host)
 if(NOT EXISTS ${host}/generated/shr_gen_builtin_package.c)
   message(FATAL_ERROR "No Shiroko host build in ${host}: run make shiroko-host")
@@ -29,7 +29,11 @@ add_library(cjson STATIC ${top}/third_party/cjson/cJSON.c)
 target_include_directories(cjson PUBLIC ${top}/third_party/cjson)
 target_compile_options(cjson PRIVATE -w)
 
-add_executable(tab5_sim sim.c ${top}/main/layout.c ${top}/main/ui.c)
+# state.h's wolfSSH types, headers only
+include(${top}/cmake/wolf.cmake)
+add_executable(tab5_sim sim.c ${top}/main/layout.c ${top}/main/settings.c ${top}/main/ui.c)
 target_include_directories(tab5_sim PRIVATE ${top}/main)
+target_include_directories(tab5_sim SYSTEM PRIVATE ${top}/components/wolfssl/include ${WOLFSSL_DIR} ${WOLFSSH_DIR})
+target_compile_definitions(tab5_sim PRIVATE WOLFSSL_USER_SETTINGS)
 target_compile_options(tab5_sim PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(tab5_sim shiroko cjson SDL3::SDL3)

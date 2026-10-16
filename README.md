@@ -56,7 +56,14 @@ make sim                               # the UI in an SDL3 window (vcpkg), the m
 ```
 
 `make sim` draws `main/ui.json` as the Tab5 does, with made-up values and a stand-in terminal, and reads it again when
-it is saved; `build/sim/tab5_sim --shot FILE.bmp main/ui.json build/shiroko-host/fonts` saves the screen and quits.
+it is saved. `build/sim/tab5_sim [--input STEPS] [--shot FILE.bmp] main/ui.json build/shiroko-host/fonts` runs touches
+and keys first (`tap:COLUMN,ROW key:tab text:abc`, see `sim/sim.c`) and saves the screen and quits.
+
+`main/ui.json` lays the screens out in cells: `rows` stack their children by `height`, `columns` set them side by side
+by `width`, each a number of cells, `"N%"` or `"Nfr"` (a share of the rest; the default), `"when": SETTING` hides one
+while that setting is off. Leaves are `text` (`{name}` for a value, `{name:N}` padded to N cells), `button` (another
+screen's name opens it over the terminal), `terminal`, `list` and the settings' editors `toggle`, `number`, `choice` and
+`field` (`main/settings.c` lists the settings).
 
 ## Licence
 

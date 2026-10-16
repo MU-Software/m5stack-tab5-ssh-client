@@ -4,12 +4,27 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <cJSON.h>
+
 // A screen in cells from JSON. "rows" stacks its children, each sized by "height"; "columns" sets them side by side,
 // each sized by "width". A size is cells (a number), "N%" of the parent or "Nfr", a share of what the others leave
-// (absent: "1fr"). Leaves: "text" (may hold {name}), "button" (an action, labelled by "text") and "terminal".
+// (absent: "1fr"); "when": SETTING hides a node while that setting is off. Leaves: "text" (may hold {name}), "button"
+// (an action, labelled by "text"), "terminal", "list" (a list's items, one a row, each as "item" with {field}s, and
+// "action" for the chosen one) and the settings' editors "toggle", "number", "choice" and "field".
 enum { LAYOUT_MAX_NODES = 256 };
 
-typedef enum { LAYOUT_ROWS, LAYOUT_COLUMNS, LAYOUT_TEXT, LAYOUT_BUTTON, LAYOUT_TERMINAL } layout_kind;
+typedef enum {
+    LAYOUT_ROWS,
+    LAYOUT_COLUMNS,
+    LAYOUT_TEXT,
+    LAYOUT_BUTTON,
+    LAYOUT_TERMINAL,
+    LAYOUT_LIST,
+    LAYOUT_TOGGLE,
+    LAYOUT_NUMBER,
+    LAYOUT_CHOICE,
+    LAYOUT_FIELD
+} layout_kind;
 typedef enum { LAYOUT_LEFT, LAYOUT_CENTER, LAYOUT_RIGHT } layout_align;
 typedef enum { LAYOUT_SHARE, LAYOUT_CELLS, LAYOUT_PERCENT } layout_unit;
 
@@ -25,7 +40,8 @@ typedef struct {
 
 typedef struct {
     layout_kind kind;
-    const char *text, *action;
+    // name: the list or the setting; item: a list's item
+    const char *text, *action, *name, *item, *when;
     layout_style style;
     layout_align align;
     bool border;
@@ -33,22 +49,23 @@ typedef struct {
     int32_t size;
     // Children are nodes[first .. first + children - 1]
     uint16_t first, children;
-    // area minus the border
+    // area minus the border; empty while hidden
     layout_area area, inner;
 } layout_node;
 
 typedef struct {
-    void* json; // holds the strings
     size_t count;
     layout_node nodes[]; // nodes[0] is the screen
 } layout;
 
-// Screen `name` of {"styles": {NAME: {"foreground", "background": "#RRGGBB", "bold"}}, "screens": {NAME: node}};
-// NULL with the reason in `error`. Free with layout_free.
-layout* layout_parse(const char* text, const char* name, char* error, size_t size);
-void layout_free(layout* screen);
-// Sets every node's area within columns x rows cells
-void layout_place(layout* screen, int32_t columns, int32_t rows);
+// Whether setting `name` is on
+typedef bool (*layout_shown)(void* user, const char* name);
+
+// Screen `name` of {"styles": {NAME: {"foreground", "background": "#RRGGBB", "bold"}}, "screens": {NAME: node}}, its
+// strings in `json`; NULL with the reason in `error`. Free with free().
+layout* layout_parse(const cJSON* json, const char* name, char* error, size_t size);
+// Sets every node's area within `area`
+void layout_place(layout* screen, layout_area area, layout_shown shown, void* user);
 // The innermost node over cell (column, row), NULL outside the screen
 const layout_node* layout_at(const layout* screen, int32_t column, int32_t row);
 // The first node of `kind`, NULL if none

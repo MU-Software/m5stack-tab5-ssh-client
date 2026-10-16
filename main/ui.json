@@ -4,11 +4,12 @@
       "rows": [
         {
           "height": 1,
+          "when": "bars.top",
           "style": "bar",
           "columns": [
             {"text": " {host}"},
-            {"width": 24, "align": "right", "text": "{status}"},
-            {"width": 28, "align": "right", "text": "{network}"},
+            {"width": 22, "align": "right", "style": "alert", "text": "{status}"},
+            {"width": 30, "align": "right", "text": "{network}"},
             {"width": 7, "align": "right", "text": "{battery}"},
             {"width": 7, "align": "right", "text": "{time} "}
           ]
@@ -16,6 +17,7 @@
         {"terminal": {}},
         {
           "height": 1,
+          "when": "bars.bottom",
           "style": "bar",
           "columns": [
             {"button": "hosts", "text": "호스트"},
@@ -24,9 +26,126 @@
           ]
         }
       ]
+    },
+    "hosts": {
+      "style": "panel",
+      "rows": [
+        {
+          "height": 1,
+          "columns": [
+            {"style": "title", "text": " 호스트"},
+            {"width": 10, "style": "button", "button": "close", "text": "닫기"}
+          ]
+        },
+        {"height": 1, "style": "hint", "text": " ↑↓ 고르기 · Enter 접속 · Esc 닫기"},
+        {"height": 1, "text": ""},
+        {"list": "hosts", "item": "  {alias:16}{user}@{hostname}:{port:7}{current}", "action": "connect"}
+      ]
+    },
+    "network": {
+      "style": "panel",
+      "rows": [
+        {
+          "height": 1,
+          "columns": [
+            {"style": "title", "text": " 망"},
+            {"width": 10, "style": "button", "button": "close", "text": "닫기"}
+          ]
+        },
+        {"height": 1, "style": "hint", "text": " Tab 이동 · Enter 누르기 · Esc 닫기"},
+        {"height": 1, "text": ""},
+        {"height": 1, "columns": [{"width": 12, "style": "label", "text": " 경로"}, {"text": "{path}"}]},
+        {"height": 1, "text": ""},
+        {
+          "height": 1,
+          "columns": [
+            {"width": 12, "style": "label", "text": " Wi-Fi"},
+            {"text": "{wifi.state}"},
+            {"width": 10, "style": "button", "button": "wifi on", "text": "켜기"},
+            {"width": 1, "text": ""},
+            {"width": 10, "style": "button", "button": "wifi off", "text": "끄기"},
+            {"width": 2, "text": ""}
+          ]
+        },
+        {"height": 1, "columns": [{"width": 12, "text": ""}, {"style": "hint", "text": "{wifi.detail}"}]},
+        {"height": 1, "text": ""},
+        {
+          "height": 1,
+          "columns": [
+            {"width": 12, "style": "label", "text": " LTE"},
+            {"text": "{lte.state}"},
+            {"width": 10, "style": "button", "button": "lte on", "text": "켜기"},
+            {"width": 1, "text": ""},
+            {"width": 10, "style": "button", "button": "lte off", "text": "끄기"},
+            {"width": 2, "text": ""}
+          ]
+        },
+        {"height": 1, "columns": [{"width": 12, "text": ""}, {"style": "hint", "text": "{lte.detail}"}]},
+        {"height": 1, "text": ""},
+        {"height": 1, "style": "section", "text": " 저장된 Wi-Fi"},
+        {"list": "wifi", "item": "   {ssid}"}
+      ]
+    },
+    "settings": {
+      "style": "panel",
+      "rows": [
+        {
+          "height": 1,
+          "columns": [
+            {"style": "title", "text": " 설정"},
+            {"width": 10, "style": "button", "button": "close", "text": "닫기"}
+          ]
+        },
+        {"height": 1, "style": "hint", "text": " Tab·↑↓ 이동 · ←→ 바꾸기 · Enter 바꾸기·입력 · Esc 닫기"},
+        {"height": 1, "text": ""},
+        {
+          "columns": [
+            {
+              "rows": [
+                {"height": 1, "style": "section", "text": " 화면·입력"},
+                {"height": 1, "text": ""},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   예측 에코"}, {"width": 16, "toggle": "echo.enabled"}]},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   에코 지연"}, {"width": 16, "number": "echo.delay_ms"}]},
+                {"height": 1, "text": ""},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   위 바"}, {"width": 16, "toggle": "bars.top"}]},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   아래 바"}, {"width": 16, "toggle": "bars.bottom"}]},
+                {"height": 1, "text": ""},
+                {
+                  "height": 1,
+                  "columns": [
+                    {"width": 18, "style": "label", "text": "   화면 갱신"},
+                    {"width": 16, "choice": "screen.refresh"},
+                    {"style": "hint", "text": " 재시작 후"}
+                  ]
+                }
+              ]
+            },
+            {
+              "rows": [
+                {"height": 1, "style": "section", "text": " 로그·시간"},
+                {"height": 1, "text": ""},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   SD 로그"}, {"width": 16, "toggle": "log.enabled"}]},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   세션 중 수준"}, {"width": 16, "choice": "log.session_level"}]},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   파일 크기"}, {"width": 16, "number": "log.file_kb"}]},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   보관 용량"}, {"width": 16, "number": "log.keep_mb"}]},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   보관 일수"}, {"width": 16, "number": "log.keep_days"}]},
+                {"height": 1, "text": ""},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   시간대"}, {"width": 24, "field": "timezone"}]}
+              ]
+            }
+          ]
+        }
+      ]
     }
   },
   "styles": {
-    "bar": {"background": "#2a2a2e", "foreground": "#d8d8d8"}
+    "bar": {"background": "#2a2a2e", "foreground": "#d8d8d8"},
+    "alert": {"foreground": "#ffcc00", "bold": true},
+    "panel": {"background": "#14161a", "foreground": "#e0e0e0"},
+    "title": {"foreground": "#ffffff", "bold": true},
+    "section": {"foreground": "#7fb4ff", "bold": true},
+    "label": {"foreground": "#a8a8a8"},
+    "hint": {"foreground": "#707478"},
+    "button": {"background": "#3a3d44", "foreground": "#ffffff"}
   }
 }

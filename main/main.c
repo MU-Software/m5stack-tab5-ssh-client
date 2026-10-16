@@ -35,6 +35,8 @@ static global_state state = {
     .terminal_size = {.columns = 106, .rows = 30, .width_pixels = 1272, .height_pixels = 720},
     .log = {.enabled = true, .file_kb = 1024, .keep_mb = 32, .keep_days = 14},
     .timezone = "KST-9",
+    .echo = {true, 50},
+    .bars = {true, true},
 };
 
 static void message(const char* text) {

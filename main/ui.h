@@ -3,17 +3,61 @@
 #include <shiroko/shiroko.h>
 
 #include "layout.h"
+#include "settings.h"
 
 typedef enum { UI_TOUCH_DOWN, UI_TOUCH_MOVE, UI_TOUCH_UP } ui_touch_phase;
+typedef enum {
+    UI_KEY_UP,
+    UI_KEY_DOWN,
+    UI_KEY_LEFT,
+    UI_KEY_RIGHT,
+    UI_KEY_TAB,
+    UI_KEY_BACKTAB,
+    UI_KEY_ENTER,
+    UI_KEY_ESCAPE,
+    UI_KEY_BACKSPACE,
+    UI_KEY_TEXT
+} ui_key_code;
 
-// The text for {name}, NULL for none
-typedef const char* (*ui_value)(const char* name, void* user);
+// What the screens show
+typedef struct {
+    // The text for {name}, NULL for none
+    const char* (*text)(void* user, const char* name);
+    // List `name`: its length, {field} of item `index`, and the item chosen when a panel opens
+    size_t (*count)(void* user, const char* name);
+    const char* (*item)(void* user, const char* name, size_t index, const char* field);
+    size_t (*chosen)(void* user, const char* name);
+    void (*get)(void* user, const setting* s, setting_value* out);
+    void* user;
+} ui_source;
 
-// A tilemap layer at z over columns x rows cells, transparent where the screen has no background
-shr_status ui_start(shr_context* context, shr_pl_res_bitmap_font* font, int32_t z, int32_t columns, int32_t rows);
-// Lays out `screen` (kept by the caller, NULL for none) and draws it whole at the next ui_draw
-void ui_show(layout* screen);
-// Draws the texts that changed
-void ui_draw(ui_value value, void* user);
-// A touch on cell (column, row); lifted over the button it went down on, that button's action
-const char* ui_touch(ui_touch_phase phase, int32_t column, int32_t row);
+typedef enum { UI_NONE, UI_ACTION, UI_SET } ui_event_kind;
+
+// An action with the index of its list's chosen item (0 for a button), or a setting's new value
+typedef struct {
+    ui_event_kind kind;
+    const char* name;
+    size_t index;
+    const setting* setting;
+    setting_value value;
+} ui_event;
+
+// A tilemap layer at z over columns x rows cells, transparent where the screen has no background, on a screen
+// `width` pixels wide (the cells' background goes on to its edge); `source` is kept
+shr_status ui_start(shr_context* context, shr_pl_res_bitmap_font* font, int32_t z, int32_t columns, int32_t rows, int32_t width,
+                    const ui_source* source);
+// The screens of a layout file: "main", and panels over the terminal that buttons named after them open and close
+// ("close" closes); on error the screens stay as they were
+bool ui_load(const char* text, char* error, size_t size);
+// Draws what changed; lays the screens out again when a "when" changed
+void ui_draw(void);
+// Opens panel `name` (NULL closes); false if there is none
+bool ui_open(const char* name);
+// The open panel, NULL for none: keys then go to it
+const char* ui_panel(void);
+// The terminal's cells; false without one
+bool ui_terminal(layout_area* out);
+// A touch on cell (column, row)
+ui_event ui_touch(ui_touch_phase phase, int32_t column, int32_t row);
+// A key for the open panel: arrows and Tab move, Enter chooses, Escape closes; `text` (UTF-8) for UI_KEY_TEXT
+ui_event ui_key(ui_key_code key, const char* text);

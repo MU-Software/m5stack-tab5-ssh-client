@@ -24,7 +24,7 @@ echo "$name $(cut -d' ' -f2- "$work/host")" > "$work/known_hosts"
 echo "$name $(cut -d' ' -f1-2 "$work/unknown.pub")" > "$work/changed_hosts"
 args="$target tester $work/key $work/unknown tab5-test-password $work/known_hosts $work/changed_hosts $fp"
 
-run="cmake -S tests -B $build -DSANITIZE=$san > /dev/null && cmake --build $build -j8 > /dev/null && $build/config_test && $build/hangul_test && $build/layout_test && $build/ssh_test $args"
+run="cmake -S tests -B $build -DSANITIZE=$san > /dev/null && cmake --build $build -j8 > /dev/null && $build/config_test && $build/hangul_test && $build/layout_test && $build/settings_test && $build/ssh_test $args"
 if [ "$where" = linux ]; then
     docker compose --progress quiet --profile test run --rm --no-deps --build sanitize sh -c "$run"
 else

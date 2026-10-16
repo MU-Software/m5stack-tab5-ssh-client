@@ -69,75 +69,82 @@ static bool size(parser* p, const cJSON* item, layout_node* n) {
     return true;
 }
 
+// `key` as a string into `out`, which keeps its value when the key is absent
+static bool string(parser* p, const cJSON* item, const char* key, const char** out) {
+    const cJSON* v = field(item, key);
+    if (v != NULL && !cJSON_IsString(v)) return fail(p, "%s: not a string", key);
+    if (v != NULL) *out = v->valuestring;
+    return true;
+}
+
+static const struct {
+    const char* key;
+    layout_kind kind;
+} keys[] = {{"rows", LAYOUT_ROWS},     {"columns", LAYOUT_COLUMNS}, {"button", LAYOUT_BUTTON}, {"terminal", LAYOUT_TERMINAL}, {"list", LAYOUT_LIST},
+            {"toggle", LAYOUT_TOGGLE}, {"number", LAYOUT_NUMBER},   {"choice", LAYOUT_CHOICE}, {"field", LAYOUT_FIELD}};
+
 static bool node(parser* p, layout_node* n, const cJSON* item, const layout_style* inherited, const char* size_key, int depth) {
     if (!cJSON_IsObject(item)) return fail(p, "a node is not an object");
     if (depth > MAX_DEPTH) return fail(p, "nodes nested deeper than %d", MAX_DEPTH);
-    const cJSON *rows = field(item, "rows"), *columns = field(item, "columns"), *text = field(item, "text"), *button = field(item, "button"),
-                *align = field(item, "align");
-    n->style = *inherited;
-    if (!style(p, item, &n->style) || !size(p, size_key != NULL ? field(item, size_key) : NULL, n)) return false;
+    const cJSON* list = NULL;
+    const char* align = NULL;
+    int kinds = 0;
+    size_t found = 0;
+    n->kind = LAYOUT_TEXT, n->text = NULL, n->item = "", n->style = *inherited;
+    for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++)
+        if (field(item, keys[i].key) != NULL) found = i, n->kind = keys[i].kind, kinds++;
+    if (kinds > 1) return fail(p, "a node with more than one of rows, columns, button, terminal, list, toggle, number, choice and field");
+    if (!style(p, item, &n->style) || !size(p, size_key != NULL ? field(item, size_key) : NULL, n) || !string(p, item, "text", &n->text) ||
+        !string(p, item, "when", &n->when) || !string(p, item, "align", &align) || !string(p, item, "item", &n->item) ||
+        !string(p, item, "action", &n->action))
+        return false;
     n->border = cJSON_IsTrue(field(item, "border"));
-    if (text != NULL && !cJSON_IsString(text)) return fail(p, "text: not a string");
-    n->text = text != NULL ? text->valuestring : "";
-    if ((rows != NULL) + (columns != NULL) + (button != NULL) + (field(item, "terminal") != NULL) > 1)
-        return fail(p, "a node with more than one of rows, columns, button and terminal");
-    if (button != NULL) {
-        if (!cJSON_IsString(button)) return fail(p, "button: not a string");
-        n->kind = LAYOUT_BUTTON, n->action = button->valuestring, n->align = LAYOUT_CENTER;
-    } else if (field(item, "terminal") != NULL) {
-        n->kind = LAYOUT_TERMINAL;
-    } else if (rows == NULL && columns == NULL) {
-        if (text == NULL) return fail(p, "a node without rows, columns, text, button or terminal");
-        n->kind = LAYOUT_TEXT;
-    }
+    if (kinds == 0 && n->text == NULL) return fail(p, "a node without rows, columns, text or a widget");
+    if (n->text == NULL) n->text = "";
+    if (n->kind != LAYOUT_TEXT && n->kind != LAYOUT_LIST && n->kind != LAYOUT_FIELD) n->align = LAYOUT_CENTER;
     if (align != NULL) {
-        const char* a = cJSON_IsString(align) ? align->valuestring : "";
-        if (strcmp(a, "left") != 0 && strcmp(a, "center") != 0 && strcmp(a, "right") != 0) return fail(p, "align %s: not left, center or right", a);
-        n->align = a[0] == 'l' ? LAYOUT_LEFT : a[0] == 'c' ? LAYOUT_CENTER : LAYOUT_RIGHT;
+        if (strcmp(align, "left") != 0 && strcmp(align, "center") != 0 && strcmp(align, "right") != 0)
+            return fail(p, "align %s: not left, center or right", align);
+        n->align = align[0] == 'l' ? LAYOUT_LEFT : align[0] == 'c' ? LAYOUT_CENTER : LAYOUT_RIGHT;
     }
-    if (rows == NULL && columns == NULL) return true;
-    const cJSON* list = rows != NULL ? rows : columns;
-    if (!cJSON_IsArray(list)) return fail(p, "%s: not a list", rows != NULL ? "rows" : "columns");
+    if (n->kind != LAYOUT_ROWS && n->kind != LAYOUT_COLUMNS) {
+        list = n->kind == LAYOUT_TEXT || n->kind == LAYOUT_TERMINAL ? NULL : field(item, keys[found].key);
+        if (list != NULL && !cJSON_IsString(list)) return fail(p, "%s: not a string", keys[found].key);
+        if (n->kind == LAYOUT_BUTTON)
+            n->action = list->valuestring;
+        else if (list != NULL)
+            n->name = list->valuestring;
+        return true;
+    }
+    list = field(item, keys[found].key);
+    if (!cJSON_IsArray(list)) return fail(p, "%s: not a list", keys[found].key);
     int count = cJSON_GetArraySize(list);
     if (p->screen->count + (size_t)count > LAYOUT_MAX_NODES) return fail(p, "more than %d nodes", LAYOUT_MAX_NODES);
-    n->kind = rows != NULL ? LAYOUT_ROWS : LAYOUT_COLUMNS;
     n->first = (uint16_t)p->screen->count, n->children = (uint16_t)count;
     p->screen->count += (size_t)count;
     for (int i = 0; i < count; i++)
-        if (!node(p, &p->screen->nodes[n->first + i], cJSON_GetArrayItem(list, i), &n->style, rows != NULL ? "height" : "width", depth + 1))
+        if (!node(p, &p->screen->nodes[n->first + i], cJSON_GetArrayItem(list, i), &n->style, n->kind == LAYOUT_ROWS ? "height" : "width", depth + 1))
             return false;
     return true;
 }
 
-layout* layout_parse(const char* text, const char* name, char* error, size_t size) {
-    parser p = {calloc(1, sizeof(layout) + LAYOUT_MAX_NODES * sizeof(layout_node)), NULL, error, size};
-    cJSON* json = cJSON_Parse(text);
-    if (p.screen == NULL || json == NULL) {
-        if (p.screen == NULL)
-            fail(&p, "no memory");
-        else
-            fail(&p, "not JSON, near byte %zu", (size_t)(cJSON_GetErrorPtr() - text));
-        free(p.screen);
-        cJSON_Delete(json);
-        return NULL;
-    }
-    p.screen->json = json, p.screen->count = 1, p.styles = field(json, "styles");
+layout* layout_parse(const cJSON* json, const char* name, char* error, size_t size) {
+    parser p = {calloc(1, sizeof(layout) + LAYOUT_MAX_NODES * sizeof(layout_node)), field(json, "styles"), error, size};
     const cJSON* screen = field(field(json, "screens"), name);
     layout_style none = {-1, -1, false};
+    if (p.screen == NULL) {
+        fail(&p, "no memory");
+        return NULL;
+    }
+    p.screen->count = 1;
     if (!(screen != NULL ? node(&p, &p.screen->nodes[0], screen, &none, NULL, 0) : fail(&p, "no screen %s", name))) {
-        layout_free(p.screen);
+        free(p.screen);
         return NULL;
     }
     return p.screen;
 }
 
-void layout_free(layout* screen) {
-    if (screen == NULL) return;
-    cJSON_Delete(screen->json);
-    free(screen);
-}
-
-static void place(layout* screen, layout_node* n, layout_area area) {
+static void place(layout* screen, layout_node* n, layout_area area, layout_shown shown, void* user) {
     static int32_t lengths[LAYOUT_MAX_NODES];
     n->area = n->inner = area;
     if (n->border && area.columns >= 2 && area.rows >= 2) n->inner = (layout_area){area.column + 1, area.row + 1, area.columns - 2, area.rows - 2};
@@ -147,24 +154,26 @@ static void place(layout* screen, layout_node* n, layout_area area) {
     layout_node* c = &screen->nodes[n->first];
     int32_t* l = &lengths[n->first];
     for (int i = 0; i < n->children; i++) {
-        l[i] = c[i].unit == LAYOUT_CELLS ? c[i].size : c[i].unit == LAYOUT_PERCENT ? length * c[i].size / 100 : 0;
+        bool hidden = c[i].when != NULL && !shown(user, c[i].when);
+        l[i] = hidden ? 0 : c[i].unit == LAYOUT_CELLS ? c[i].size : c[i].unit == LAYOUT_PERCENT ? length * c[i].size / 100 : -1;
         if (l[i] > length - used) l[i] = length - used;
-        used += l[i];
-        if (c[i].unit == LAYOUT_SHARE) shares += c[i].size;
+        if (l[i] >= 0) used += l[i];
+        if (l[i] < 0) shares += c[i].size;
     }
     int32_t rest = length - used, left = rest;
     for (int i = 0; i < n->children; i++)
-        if (c[i].unit == LAYOUT_SHARE && shares > 0) left -= l[i] = (int32_t)((int64_t)rest * c[i].size / shares);
+        if (l[i] < 0 && shares > 0) left -= l[i] = (int32_t)((int64_t)rest * c[i].size / shares);
     for (int i = 0; i < n->children && left > 0; i++)
-        if (c[i].unit == LAYOUT_SHARE) l[i]++, left--;
+        if (c[i].unit == LAYOUT_SHARE && (c[i].when == NULL || shown(user, c[i].when))) l[i]++, left--;
     int32_t at = across ? n->inner.column : n->inner.row;
     for (int i = 0; i < n->children; at += l[i], i++)
         place(screen, &c[i],
-              across ? (layout_area){at, n->inner.row, l[i], n->inner.rows} : (layout_area){n->inner.column, at, n->inner.columns, l[i]});
+              across ? (layout_area){at, n->inner.row, l[i], n->inner.rows} : (layout_area){n->inner.column, at, n->inner.columns, l[i]}, shown,
+              user);
 }
 
-void layout_place(layout* screen, int32_t columns, int32_t rows) {
-    place(screen, &screen->nodes[0], (layout_area){0, 0, columns, rows});
+void layout_place(layout* screen, layout_area area, layout_shown shown, void* user) {
+    place(screen, &screen->nodes[0], area, shown, user);
 }
 
 static bool inside(const layout_area* a, int32_t column, int32_t row) {
