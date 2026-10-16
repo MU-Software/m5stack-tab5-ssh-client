@@ -14,13 +14,16 @@ static const char* TAG = "power";
 static i2c_master_dev_handle_t monitor;
 
 esp_err_t power_start(void) {
-    // The expander at 0x44 comes out of every boot reset as inputs, which leaves both undriven
+    // The expander at 0x44 comes out of every reset with its pins high-impedance and pulled down: charging off
     esp_io_expander_handle_t expander = bsp_io_expander1_init();
     ESP_RETURN_ON_FALSE(expander != NULL, ESP_ERR_NOT_FOUND, TAG, "IO expander");
     ESP_RETURN_ON_ERROR(esp_io_expander_set_dir(expander, CHG_EN | NCHG_QC_EN, IO_EXPANDER_OUTPUT), TAG, "direction");
+    ESP_RETURN_ON_ERROR(esp_io_expander_set_output_mode(expander, CHG_EN | NCHG_QC_EN, IO_EXPANDER_OUTPUT_MODE_PUSH_PULL), TAG, "output mode");
     if (i2c_master_bus_add_device(bsp_i2c_get_handle(), &(i2c_device_config_t){.device_address = INA226, .scl_speed_hz = 100000}, &monitor) != ESP_OK)
         ESP_LOGW(TAG, "no INA226");
-    return esp_io_expander_set_level(expander, CHG_EN | NCHG_QC_EN, 1);
+    // NCHG_QC_EN high adds a resistor on the IP2326's NTC pin that reads as a warm battery, which halves the charge current
+    ESP_RETURN_ON_ERROR(esp_io_expander_set_level(expander, NCHG_QC_EN, 0), TAG, "full current");
+    return esp_io_expander_set_level(expander, CHG_EN, 1);
 }
 
 static esp_err_t read16(uint8_t reg, int16_t* value) {
