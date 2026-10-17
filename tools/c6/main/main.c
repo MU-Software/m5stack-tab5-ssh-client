@@ -103,6 +103,12 @@ static void IRAM_ATTR from_host(uint8_t event) {
     portYIELD_FROM_ISR(woken);
 }
 
+// The driver's credits for its send queue. Its reset hands a send in flight back to its sender but not the credit (in
+// send_flush_data the step that ends the flush returns the descriptors without counting them): one lost for each restart of
+// the P4 in the middle of a transfer, and once all are gone the next send waits for good
+static SemaphoreHandle_t send_credits;
+static UBaseType_t send_queue_size;
+
 // After each card init (components/c6/c6.c). esp_hosted restarts the counters within the interrupt, where it takes back the
 // send that its sdio_send task waits for, which then holds the transmit lock for good
 static void reset_sdio(void* arg) {
@@ -114,6 +120,8 @@ static void reset_sdio(void* arg) {
         for (int i = 0; i < 3; i++) {
             sdio_slave_stop();
             sdio_slave_reset();
+            // Nothing is queued now, and the senders run below this task
+            while (send_credits != NULL && xSemaphoreGive(send_credits) == pdTRUE) {}
             sdio_slave_set_host_intena(SDIO_SLAVE_HOSTINT_SEND_NEW_PACKET | SDIO_SLAVE_HOSTINT_BIT0 | SDIO_SLAVE_HOSTINT_BIT1 |
                                        SDIO_SLAVE_HOSTINT_BIT2 | SDIO_SLAVE_HOSTINT_BIT3 | SDIO_SLAVE_HOSTINT_BIT4 | SDIO_SLAVE_HOSTINT_BIT5 |
                                        SDIO_SLAVE_HOSTINT_BIT6 | SDIO_SLAVE_HOSTINT_BIT7);
@@ -126,13 +134,23 @@ static void reset_sdio(void* arg) {
 }
 
 // NOLINTBEGIN(bugprone-reserved-identifier): --wrap names them
+QueueHandle_t __real_xQueueCreateCountingSemaphore(UBaseType_t max, UBaseType_t initial);
+QueueHandle_t __wrap_xQueueCreateCountingSemaphore(UBaseType_t max, UBaseType_t initial) {
+    QueueHandle_t semaphore = __real_xQueueCreateCountingSemaphore(max, initial);
+    if (send_queue_size != 0 && max == send_queue_size && initial == max) send_credits = semaphore;
+    return semaphore;
+}
+
 esp_err_t __real_sdio_slave_initialize(sdio_slave_config_t* config);
 esp_err_t __wrap_sdio_slave_initialize(sdio_slave_config_t* config) {
     // Above esp_hosted's tasks (21), so a round runs whole
     if (resetter == NULL && xTaskCreate(reset_sdio, "reset sdio", 3072, NULL, 22, &resetter) != pdPASS) return ESP_ERR_NO_MEM;
     esp_hosted_event = config->event_cb;
     config->event_cb = from_host;
-    return __real_sdio_slave_initialize(config);
+    send_queue_size = config->send_queue_size;
+    esp_err_t err = __real_sdio_slave_initialize(config);
+    send_queue_size = 0;
+    return err;
 }
 // NOLINTEND(bugprone-reserved-identifier)
 
