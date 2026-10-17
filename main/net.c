@@ -48,7 +48,7 @@ static EventGroupHandle_t paths;
 static SemaphoreHandle_t lock, suspected;
 static atomic_uint generation;
 static atomic_int current;
-static atomic_bool wifi_enabled = true, lte_enabled = true, lte_reset, suspect, wifi_started;
+static atomic_bool wifi_enabled = true, lte_enabled = true, lte_reset, suspect, wifi_started, got_ip;
 static _Atomic net_lte_state lte_now = NET_LTE_DIALING;
 // The manager's view of Wi-Fi: since when it has an address, whether the internet check passed
 static int64_t wifi_since, wifi_lost, wifi_checked, wifi_tried;
@@ -86,11 +86,11 @@ static int reach(const char* host, uint16_t port, const esp_ip4_addr_t* local, i
 void net_check(const char* host, uint16_t port) {
     esp_netif_t* netif = esp_netif_get_default_netif();
     esp_netif_ip_info_t ip = {0};
-    char local[16], address[16] = "?";
+    char local[16], address[16] = "?", dns[2][IPADDR_STRLEN_MAX];
     if (netif != NULL) esp_netif_get_ip_info(netif, &ip);
     esp_ip4addr_ntoa(&ip.ip, local, sizeof local);
-    ESP_LOGI(TAG, "default %s %s, DNS %s %s", netif != NULL ? esp_netif_get_desc(netif) : "none", local, ipaddr_ntoa(dns_getserver(0)),
-             ipaddr_ntoa(dns_getserver(1)));
+    ESP_LOGI(TAG, "default %s %s, DNS %s %s", netif != NULL ? esp_netif_get_desc(netif) : "none", local,
+             ipaddr_ntoa_r(dns_getserver(0), dns[0], sizeof dns[0]), ipaddr_ntoa_r(dns_getserver(1), dns[1], sizeof dns[1]));
     int64_t start = esp_timer_get_time();
     int rc = reach(host, port, NULL, 20000, address);
     ESP_LOGI(TAG, "%s (%s) port %u: %s after %lld ms", host, address, port, rc == 0 ? "connected" : strerror(rc), since(start));
@@ -183,8 +183,9 @@ static void manage(void* arg) {
         }
         path want = up && wifi_ok ? PATH_WIFI : catm_connected() ? PATH_LTE : PATH_NONE;
         if (!(current == PATH_WIFI && wifi_enabled && !up && now - wifi_lost < WIFI_GRACE)) choose(want);
-        if (current != PATH_NONE && esp_netif_get_default_netif() != netif_of(current)) {
-            ESP_LOGW(TAG, "default interface was changed: %s again", path_names[current]);
+        // A redial or a lease keeps its DNS servers on its interface: only setting the default hands them to lwIP
+        if (current != PATH_NONE && (atomic_exchange(&got_ip, false) || esp_netif_get_default_netif() != netif_of(current))) {
+            if (esp_netif_get_default_netif() != netif_of(current)) ESP_LOGW(TAG, "default interface was changed: %s again", path_names[current]);
             esp_netif_set_default_netif(netif_of(current));
         }
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
@@ -245,10 +246,8 @@ static void run_lte(void* arg) {
 }
 
 static void on_event(void* arg, esp_event_base_t base, int32_t id, void* data) {
-    (void)arg;
-    (void)base;
-    (void)id;
-    (void)data;
+    (void)arg, (void)id, (void)data;
+    if (base == IP_EVENT) got_ip = true;
     if (manager != NULL) xTaskNotifyGive(manager);
     if (lte != NULL) xTaskNotifyGive(lte);
 }

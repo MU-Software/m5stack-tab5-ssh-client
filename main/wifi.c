@@ -79,6 +79,11 @@ esp_err_t wifi_start(void) {
 }
 
 esp_err_t wifi_join(const wifi_network* networks, const char* except, int timeout_ms) {
+    // A network out of reach is retried at each disconnect, and the scan fails while it is
+    if (!(xEventGroupGetBits(events) & GOT_IP)) {
+        joined = false;
+        esp_wifi_disconnect();
+    }
     ESP_RETURN_ON_ERROR(esp_wifi_scan_start(NULL, true), TAG, "scan");
     uint16_t n = 0;
     esp_wifi_scan_get_ap_num(&n);
