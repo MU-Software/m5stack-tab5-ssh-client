@@ -14,7 +14,7 @@
 #define C6_POWER   0x01
 #define USB_A_5V   0x08
 #define NCHG_QC_EN 0x20
-#define CHG_STAT   0x40
+#define USB_C_IN   0x40
 #define CHG_EN     0x80
 #define INA226     0x41
 
@@ -38,7 +38,8 @@ esp_err_t power_start(void) {
         ESP_LOGW(TAG, "no INA226");
     // NCHG_QC_EN high adds a resistor on the IP2326's NTC pin that reads as a warm battery, which halves the charge current
     ESP_RETURN_ON_ERROR(update(OUTPUT, pins, C6_POWER | USB_A_5V | CHG_EN), TAG, "levels");
-    ESP_RETURN_ON_ERROR(update(DIRECTION, pins, pins), TAG, "directions");
+    // USB_C_IN back to an input, which the BSP's driver made an output that reads 0
+    ESP_RETURN_ON_ERROR(update(DIRECTION, pins | USB_C_IN, pins), TAG, "directions");
     return update(HIGH_Z, pins, 0);
 }
 
@@ -54,8 +55,9 @@ void power_report(void) {
     uint8_t reg = INPUT, stat = 0;
     if (monitor == NULL || read16(0x01, &shunt) != ESP_OK || read16(0x02, &bus) != ESP_OK) return;
     if (expander != NULL) i2c_master_transmit_receive(expander, &reg, 1, &stat, 1, 50);
-    // Shunt 2.5 uV per bit across 5 mOhm, bus 1.25 mV per bit
-    ESP_LOGI(TAG, "pack %d mV, %d mA, CHG_STAT %d", bus * 5 / 4, shunt / 2, (stat & CHG_STAT) != 0);
+    // Shunt 2.5 uV per bit across 5 mOhm, bus 1.25 mV per bit; charging past the monitor's noise of a few mA
+    int milliamps = shunt / 2;
+    ESP_LOGI(TAG, "pack %d mV, %d mA%s, USB-C %s", bus * 5 / 4, milliamps, milliamps < -10 ? " charging" : "", stat & USB_C_IN ? "in" : "out");
 }
 
 bool power_battery(int* millivolts) {
