@@ -1118,7 +1118,7 @@ static bool woken(void) {
 // The battery's draw step by step, each the INA226's average over 8.5 s before the step ends. Only on battery: USB-C power
 // cuts the pack off.
 static void power_profile(bool lit) {
-    static const char* const steps[] = {"screen on", "backlight off", "panel asleep", "USB-A off", "light sleep"};
+    static const char* const steps[] = {"keyboard LEDs at 100%", "screen on", "backlight off", "panel asleep", "USB-A off", "light sleep"};
     if (!lit) screen_sleep(false), screen_draw();
     sleeping.lit_at = esp_timer_get_time();
     ESP_LOGI(TAG, "power profile: unplug USB-C within a minute");
@@ -1131,14 +1131,15 @@ static void power_profile(bool lit) {
     }
     power_average(true);
     for (size_t i = 0; i < sizeof steps / sizeof steps[0]; i++) {
-        if (i == 1) screen_backlight(false);
-        if (i == 2) screen_sleep(true);
-        if (i == 3) power_usb_a(false);
+        if (i <= 1) keyboard_tab5_lights(i == 0 ? 100 : 0);
+        if (i == 2) screen_backlight(false);
+        if (i == 3) screen_sleep(true);
+        if (i == 4) power_usb_a(false);
         // A sleep is refused while a wake source is pending
         sleep_wake wake = SLEEP_FAILED;
-        for (int tries = 0; i == 4 && wake == SLEEP_FAILED && tries < 5; tries++)
+        for (int tries = 0; i == 5 && wake == SLEEP_FAILED && tries < 5; tries++)
             if ((wake = sleep_light(40000, false)) == SLEEP_FAILED) vTaskDelay(pdMS_TO_TICKS(200));
-        if (i == 4)
+        if (i == 5)
             ESP_LOGI(TAG, "power profile: woken by %s", wakes[wake]);
         else
             vTaskDelay(pdMS_TO_TICKS(18000));

@@ -12,6 +12,7 @@
 
 #include <bsp/m5stack_tab5.h>
 #include <bsp/touch.h>
+#include <driver/gpio.h>
 #include <driver/ppa.h>
 #include <esp_cache.h>
 #include <esp_check.h>
@@ -403,6 +404,8 @@ esp_err_t screen_start(const global_state* global) {
         ghostty_kitty_graphics_placement_iterator_new(&terminal_allocator, &placements) != GHOSTTY_SUCCESS)
         return ESP_FAIL;
     if (bsp_touch_new(NULL, &touch) != ESP_OK) ESP_LOGE(TAG, "no touch");
+    // Read by polling: an edge interrupt nothing clears would stay pending and refuse every light sleep
+    if (touch != NULL && touch->config.int_gpio_num != GPIO_NUM_NC) gpio_set_intr_type(touch->config.int_gpio_num, GPIO_INTR_DISABLE);
     dpi = dpi_config();
     load_layout();
     place_terminal();

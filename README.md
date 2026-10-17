@@ -3,7 +3,7 @@
 SSH client for the M5Stack Tab5 (ESP32-P4) on wolfSSH, drawn on the panel through Ghostty and Shiroko. Work in progress:
 keys from M5Stack's Keyboard for Tab5, a USB keyboard on the USB-A port (boot protocol, no hubs) or the USB terminal
 port. Korean (Dubeolsik): LANG1, or a short press of CapsLock (Aa on the Tab5 keyboard); a long press locks
-capitals. Sym with 1…0, - and + on the Tab5 keyboard: F1–F12.
+capitals. Sym with 1…0, - and + on the Tab5 keyboard: F1–F12. The Tab5 keyboard's LEDs stay off.
 
 ## Build and flash
 
@@ -98,7 +98,8 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
   Tab5 then light-sleeps in 5 s steps, awake 0.1 s between them for the network and the sessions; only the Tab5 keyboard
   and a computer on USB-C wake it, with `sleep.wifi_wake` (experimental) also the C6's traffic. USB-A has no power
   meanwhile unless `sleep.usb_a` (잘 때 USB-A): a USB keyboard cannot wake it. `power profile`: once USB-C is unplugged,
-  the battery's draw with the screen on, the backlight off, the panel asleep, USB-A off and in light sleep, to the log.
+  the battery's draw with the Tab5 keyboard's LEDs at 100%, the screen on, the backlight off, the panel asleep, USB-A
+  off and in light sleep, to the log.
 - Fonts: `build/shiroko-host/fonts/` (`*.shrf`, `NOTICE`, `LICENSES/`) to the SD card's `.local/share/tab5-ssh/fonts/`.
 
 ## Development

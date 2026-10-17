@@ -57,8 +57,10 @@ static void poll(void* bus) {
     for (;;) {
         uint8_t event = 0xff;
         if (!attached) {
-            // Normal mode (register 0x10), with what was queued before flushed (0x02)
-            attached = i2c_master_probe(bus, ADDRESS, 50) == ESP_OK && write(0x10, 0) == ESP_OK && write(0x02, 0) == ESP_OK;
+            // Normal mode (register 0x10), with what was queued before flushed (0x02); the LEDs off until there is a use for
+            // them: our colours (0x11) at brightness 0 (0x03)
+            attached = i2c_master_probe(bus, ADDRESS, 50) == ESP_OK && write(0x10, 0) == ESP_OK && write(0x02, 0) == ESP_OK &&
+                       write(0x11, 1) == ESP_OK && write(0x03, 0) == ESP_OK;
             if (attached) ESP_LOGI(TAG, "Tab5 keyboard attached");
         } else if (i2c_master_transmit_receive(device, (uint8_t[]){0x20}, 1, &event, 1, 50) != ESP_OK) {
             attached = sym = false;
@@ -73,6 +75,13 @@ static void poll(void* bus) {
         if (attached && gpio_get_level(KEYBOARD_TAB5_INTERRUPT) == 0) write(0x01, 0);
         vTaskDelay(pdMS_TO_TICKS(attached ? 20 : 1000));
     }
+}
+
+esp_err_t keyboard_tab5_lights(uint8_t percent) {
+    // Blue, green and red of each LED from 0x60 and 0x64
+    for (uint8_t reg = 0x60; percent > 0 && reg < 0x67; reg++)
+        if (reg != 0x63) ESP_RETURN_ON_ERROR(write(reg, 255), TAG, "colour");
+    return write(0x03, percent);
 }
 
 esp_err_t keyboard_tab5_start(void) {
