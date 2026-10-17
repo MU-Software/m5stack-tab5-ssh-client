@@ -208,6 +208,9 @@ static void manage(void* arg) {
         if (atomic_exchange(&list_changed, false) && wifi_started && c6_protocol() >= 4) send_list();
         int64_t now = esp_timer_get_time();
         bool up = wifi_started && wifi_enabled && wifi_connected();
+        // Without a path the check of Wi-Fi needs its DNS servers, which lwIP gets only from the default interface
+        if (current == PATH_NONE && up && (atomic_exchange(&got_ip, false) || esp_netif_get_default_netif() != wifi_netif()))
+            esp_netif_set_default_netif(wifi_netif());
         if (up && !was_up) {
             wifi_since = now;
             wifi_checked = 0;
