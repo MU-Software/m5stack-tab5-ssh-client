@@ -24,6 +24,7 @@
 #include <lwip/sockets.h>
 
 #include "c6.h"
+#include "c6_protocol.h"
 #include "catm.h"
 #include "wifi.h"
 
@@ -57,7 +58,7 @@ static int64_t wifi_since, wifi_lost, wifi_checked, wifi_tried;
 static bool wifi_ok;
 static int wifi_failures;
 // The screens read the last scan while the manager makes the next
-static atomic_bool scan_wanted;
+static atomic_bool scan_wanted, list_changed;
 static _Atomic net_scan_state scan_state;
 static net_visible_network visible[MAX_VISIBLE];
 static size_t visible_count;
@@ -177,15 +178,34 @@ static void scan(void) {
     if (!was_up) wifi_tried = 0;
 }
 
+// The C6 keeps its own copy of the known networks
+static void send_list(void) {
+    uint8_t message[3 + C6_NETWORKS * (2 + sizeof state->wifi->ssid + sizeof state->wifi->password)];
+    size_t size = 3;
+    message[0] = P4_WIFI_LIST, message[1] = !state->wifi_off, message[2] = 0;
+    for (const wifi_network* w = state->wifi; w != NULL && message[2] < C6_NETWORKS; w = w->next) {
+        if (!w->ssid[0]) continue;
+        message[size++] = (uint8_t)strlen(w->ssid);
+        size += strlcpy((char*)message + size, w->ssid, sizeof w->ssid);
+        message[size++] = (uint8_t)strlen(w->password);
+        size += strlcpy((char*)message + size, w->password, sizeof w->password);
+        message[2]++;
+    }
+    if (c6_send(message, size) != ESP_OK) ESP_LOGW(TAG, "known networks not sent to the C6");
+    memset(message, 0, sizeof message);
+}
+
 static void manage(void* arg) {
     (void)arg;
     wifi_started = wifi_start() == ESP_OK;
     if (!wifi_started) ESP_LOGE(TAG, "no Wi-Fi");
     if (wifi_started && !wifi_enabled) wifi_off();
+    if (wifi_started && c6_protocol() >= 4) send_list();
     // LTE waits for the first try, so a boot does not connect over LTE only to move to Wi-Fi
     if (wifi_started) join_known(NULL, portMAX_DELAY);
     bool was_up = false;
     for (;;) {
+        if (atomic_exchange(&list_changed, false) && wifi_started && c6_protocol() >= 4) send_list();
         int64_t now = esp_timer_get_time();
         bool up = wifi_started && wifi_enabled && wifi_connected();
         if (up && !was_up) {
@@ -448,4 +468,9 @@ bool net_command(const char* line) {
         return false;
     }
     return true;
+}
+
+void net_wifi_changed(void) {
+    list_changed = true;
+    if (manager != NULL) xTaskNotifyGive(manager);
 }

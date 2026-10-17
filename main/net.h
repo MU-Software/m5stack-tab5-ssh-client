@@ -27,6 +27,8 @@ void net_keepalive(int fd);
 bool net_on_lte(void);
 // Joins network now
 esp_err_t net_join(const wifi_network* network);
+// After the known networks or their saved off state changed
+void net_wifi_changed(void);
 typedef enum { NET_SCAN_NONE, NET_SCAN_RUNNING, NET_SCAN_DONE, NET_SCAN_FAILED } net_scan_state;
 typedef struct {
     char ssid[33];

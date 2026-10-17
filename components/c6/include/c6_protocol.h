@@ -3,7 +3,7 @@
 // the kind
 #pragma once
 
-#define C6_PROTOCOL 3
+#define C6_PROTOCOL 4
 
 #define C6_TO_P4 0x54354336u // "T5C6"
 // After P4_KEEP: the C6's protocol version
@@ -14,6 +14,10 @@
 #define P4_TO_C6 0x54355034u // "T5P4"
 // The P4 reached the C6 through esp_hosted: an image the C6 has not kept yet becomes its own
 #define P4_KEEP 1
+// The known Wi-Fi networks, as the P4's configuration keeps them: [saved on][count], then for each in the order they are tried
+// [SSID length][SSID][password length][password]
+#define P4_WIFI_LIST 2
+#define C6_NETWORKS  16
 
 // After each SDIO card init the P4 raises esp_hosted's ESP_RESET (C6_SDIO_RESET) in HOST_TO_SLAVE_INTR: the C6, which may have
 // run on through the P4's restart, closes the data path, restarts its SDIO counters and writes C6_RESET_DONE to its scratch

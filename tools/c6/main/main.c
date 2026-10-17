@@ -10,8 +10,10 @@
 #include <esp_event.h>
 #include <esp_log.h>
 #include <esp_ota_ops.h>
+#include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <nvs.h>
 #include <nvs_flash.h>
 
 #include "c6_protocol.h"
@@ -127,8 +129,38 @@ static bool unchecked(void) {
 
 // The C6 can only be reflashed through the back-cover pads: an image is kept once the P4 reached it through esp_hosted, which
 // any later update needs
+// Count of networks in a P4_WIFI_LIST body, or -1 when it does not parse
+static int networks(const uint8_t* list, size_t size) {
+    size_t at = 2;
+    if (size < 2 || list[1] > C6_NETWORKS) return -1;
+    for (int i = 0; i < list[1]; i++)
+        for (int field = 0, longest = 32; field < 2; field++, longest = 64) {
+            if (at >= size || list[at] > longest || at + 1 + list[at] > size) return -1;
+            at += 1 + list[at];
+        }
+    return at == size ? list[1] : -1;
+}
+
+static void keep_list(const uint8_t* list, size_t size) {
+    static uint8_t kept[2 + C6_NETWORKS * 98];
+    size_t length = sizeof kept;
+    nvs_handle_t nvs;
+    int count = networks(list, size);
+    if (count < 0 || nvs_open("tab5", NVS_READWRITE, &nvs) != ESP_OK) {
+        ESP_LOGW(TAG, "known networks refused");
+        return;
+    }
+    bool same = nvs_get_blob(nvs, "wifi", kept, &length) == ESP_OK && length == size && memcmp(kept, list, size) == 0;
+    esp_err_t err = same ? ESP_OK : nvs_set_blob(nvs, "wifi", list, size);
+    if (err == ESP_OK && !same) err = nvs_commit(nvs);
+    nvs_close(nvs);
+    memset(kept, 0, sizeof kept);
+    ESP_LOGI(TAG, "%d known networks, Wi-Fi %s: %s", count, list[0] ? "on" : "off", same ? "unchanged" : esp_err_to_name(err));
+}
+
 static void from_p4(uint32_t id, const uint8_t* data, size_t size, void* context) {
     (void)id, (void)context;
+    if (size >= 1 && data[0] == P4_WIFI_LIST) keep_list(data + 1, size - 1);
     if (size < 1 || data[0] != P4_KEEP) return;
     if (unchecked() && esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) ESP_LOGI(TAG, "image kept");
     eh_cp_feat_peer_data_send(C6_TO_P4, (const uint8_t[]){C6_HELLO, C6_PROTOCOL}, 2);
@@ -166,6 +198,10 @@ void app_main(void) {
     esp_ota_get_state_partition(running, &state);
     ESP_LOGI(TAG, "running %s, state %d, boot %s, next %s, reset reason %d", running->label, state, esp_ota_get_boot_partition()->label,
              esp_ota_get_next_update_partition(NULL)->label, esp_reset_reason());
+    nvs_stats_t stats;
+    if (nvs_get_stats(NULL, &stats) == ESP_OK)
+        ESP_LOGI(TAG, "NVS %u of %u entries free, heap %u free", (unsigned)stats.free_entries, (unsigned)stats.total_entries,
+                 (unsigned)esp_get_free_heap_size());
     if (state != ESP_OTA_IMG_VALID) xTaskCreate(await_p4, "await P4", 3072, NULL, 2, NULL);
     ESP_ERROR_CHECK(eh_cp_feat_peer_data_init());
     ESP_ERROR_CHECK(eh_cp_feat_peer_data_register_callback(P4_TO_C6, from_p4, NULL));

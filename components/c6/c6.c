@@ -23,6 +23,7 @@
 
 static const char* TAG = "c6";
 static void* bus;
+static volatile unsigned protocol;
 // The C6 was reset this boot, so its SDIO counters start from zero
 static bool reset_done;
 // Set by the restart that follows a C6 that did not come up, so one that stays silent is reset only once
@@ -41,7 +42,7 @@ bool c6_version(char* version, size_t size) {
 static void from_c6(uint32_t id, const uint8_t* data, size_t size, void* context) {
     (void)id, (void)context;
     const char *line = (const char*)data + 1, *end = (const char*)data + size, *eol;
-    if (size >= 2 && data[0] == C6_HELLO) ESP_LOGI(TAG, "protocol %u", data[1]);
+    if (size >= 2 && data[0] == C6_HELLO) ESP_LOGI(TAG, "protocol %u", protocol = data[1]);
     for (; size >= 1 && data[0] == C6_LOG && line < end; line = eol + 1) {
         eol = memchr(line, '\n', (size_t)(end - line));
         if (eol == NULL) eol = end;
@@ -105,9 +106,22 @@ esp_err_t c6_start(void) {
     else
         ESP_LOGW(TAG, "firmware %s, host %d.x: make c6-update", version, ESP_HOSTED_VERSION_MAJOR_1);
     // The C6 keeps a new image only once this reaches it
-    if (eh_host_peer_data_register(C6_TO_P4, from_c6, NULL) != ESP_OK || eh_host_peer_data_send(P4_TO_C6, (const uint8_t[]){P4_KEEP}, 1) != ESP_OK)
+    if (eh_host_peer_data_register(C6_TO_P4, from_c6, NULL) != ESP_OK || eh_host_peer_data_send(P4_TO_C6, (const uint8_t[]){P4_KEEP}, 1) != ESP_OK) {
         ESP_LOGW(TAG, "a C6 firmware without tools/c6's messages: make c6-update");
+        return ESP_OK;
+    }
+    // Its answer comes on its own
+    for (int i = 0; i < 50 && protocol == 0; i++)
+        vTaskDelay(pdMS_TO_TICKS(10));
     return ESP_OK;
+}
+
+unsigned c6_protocol(void) {
+    return protocol;
+}
+
+esp_err_t c6_send(const uint8_t* message, size_t size) {
+    return eh_host_peer_data_send(P4_TO_C6, message, size);
 }
 
 esp_err_t c6_update(const uint8_t* image, size_t size) {

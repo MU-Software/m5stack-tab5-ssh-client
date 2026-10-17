@@ -58,3 +58,11 @@ CONFIG_ESP_HOSTED_HOST_FEAT_PEER_DATA=y
 # The C6 runs on through restarts of the P4, which restarts its SDIO counters after card init (components/c6) and resets it
 # only when the card does not come up
 CONFIG_ESP_HOSTED_HOST_CP_RESET_STRATEGY_ONLY_IF_NECESSARY=y
+
+# The Wi-Fi buffers the C6 initialises with (tools/c6/sdkconfig.defaults): the C6 keeps Wi-Fi up through the P4's boots only
+# while the P4 asks for the same
+CONFIG_WIFI_RMT_STATIC_RX_BUFFER_NUM=20
+CONFIG_WIFI_RMT_DYNAMIC_RX_BUFFER_NUM=64
+CONFIG_WIFI_RMT_DYNAMIC_TX_BUFFER_NUM=64
+CONFIG_WIFI_RMT_TX_BA_WIN=32
+CONFIG_WIFI_RMT_RX_BA_WIN=32

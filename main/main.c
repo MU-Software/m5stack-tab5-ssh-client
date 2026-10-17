@@ -389,6 +389,7 @@ static void wifi_connect_command(const char* arguments) {
     // Prepended and never freed: the network task may be walking the list
     network->next = state.wifi;
     state.wifi = network;
+    net_wifi_changed();
 }
 
 // The Wi-Fi screen's join takes seconds: on its own task, and saved by the main loop once joined
@@ -412,7 +413,7 @@ static void join_wifi(void* arg) {
 static bool save_wifi(const char* ssid, const wifi_network* network, int move) {
     wifi_network* networks;
     bool saved = storage_set_wifi(ssid, network, move, &networks) == 0;
-    if (saved) state.wifi = networks;
+    if (saved) state.wifi = networks, net_wifi_changed();
     ESP_LOGI(TAG, "wifi %s %s%s",
              network == NULL ? "delete"
              : move != 0     ? "up"
@@ -591,6 +592,7 @@ static bool command(const char* line) {
     if (strcmp(line, "wifi off save") == 0 || strcmp(line, "wifi on") == 0) {
         state.wifi_off = strcmp(line, "wifi on") != 0;
         storage_set_off("wifi", state.wifi_off);
+        net_wifi_changed();
         return net_command(state.wifi_off ? "wifi off" : "wifi on");
     }
     if (strcmp(line, "lte off save") == 0 || strcmp(line, "lte on") == 0) {
@@ -603,6 +605,7 @@ static bool command(const char* line) {
         for (wifi_network* w = state.wifi; w != NULL; w = w->next)
             if (strcmp(w->ssid, line + 12) == 0) w->ssid[0] = 0;
         ESP_LOGI(TAG, "wifi forget %s: %s", line + 12, storage_add_wifi(line + 12, NULL) == 0 ? "done" : "not saved");
+        net_wifi_changed();
         return true;
     }
     return net_command(line);
