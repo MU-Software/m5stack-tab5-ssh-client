@@ -1062,7 +1062,7 @@ static struct {
     unsigned wakes[SLEEP_OTHER + 1];
     bool usb_a_off;
 } sleeping;
-static const char* const wakes[] = {"failed", "timer", "keyboard", "USB", "Wi-Fi", "other"};
+static const char* const wakes[] = {"failed", "busy", "timer", "keyboard", "USB", "Wi-Fi", "other"};
 
 // Once asked, or without a key or a touch for the idle time
 static bool idle(void) {
@@ -1108,10 +1108,10 @@ static bool woken(void) {
     while (keys_take(&e, &c))
         ;
     sleeping.lit_at = esp_timer_get_time();
-    ESP_LOGI(TAG, "screen on in %lld ms: %s; off %lld s, asleep %lld s, woken by the timer %u, USB %u, Wi-Fi %u, other %u, failed %u",
+    ESP_LOGI(TAG, "screen on in %lld ms: %s; off %lld s, asleep %lld s, woken by the timer %u, USB %u, Wi-Fi %u, other %u, failed %u, busy %u",
              (sleeping.lit_at - start) / 1000, esp_err_to_name(err), (sleeping.lit_at - sleeping.off_at) / 1000000, sleeping.asleep_us / 1000000,
              sleeping.wakes[SLEEP_TIMER], sleeping.wakes[SLEEP_USB], sleeping.wakes[SLEEP_WIFI], sleeping.wakes[SLEEP_OTHER],
-             sleeping.wakes[SLEEP_FAILED]);
+             sleeping.wakes[SLEEP_FAILED], sleeping.wakes[SLEEP_BUSY]);
     return true;
 }
 
@@ -1137,8 +1137,8 @@ static void power_profile(bool lit) {
         if (i == 4) power_usb_a(false);
         // A sleep is refused while a wake source is pending
         sleep_wake wake = SLEEP_FAILED;
-        for (int tries = 0; i == 5 && wake == SLEEP_FAILED && tries < 5; tries++)
-            if ((wake = sleep_light(40000, false)) == SLEEP_FAILED) vTaskDelay(pdMS_TO_TICKS(200));
+        for (int tries = 0; i == 5 && wake <= SLEEP_BUSY && tries < 5; tries++)
+            if ((wake = sleep_light(40000, false)) <= SLEEP_BUSY) vTaskDelay(pdMS_TO_TICKS(200));
         if (i == 5)
             ESP_LOGI(TAG, "power profile: woken by %s", wakes[wake]);
         else

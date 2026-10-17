@@ -12,6 +12,7 @@
 #include <freertos/task.h>
 #include <hal/pmu_ll.h>
 
+#include "c6.h"
 #include "keyboard_tab5.h"
 
 static const char* TAG = "sleep";
@@ -31,6 +32,7 @@ static const struct {
 sleep_wake sleep_light(uint32_t milliseconds, bool wifi) {
     enum { COUNT = sizeof sources / sizeof sources[0] };
     bool armed[COUNT];
+    if (!c6_hold_transfers(5)) return SLEEP_BUSY;
     // A line low already would wake at once: what it has waits for the next time awake. No CPU interrupt: a level one
     // would fire on and on once awake. USB's pads read as GPIOs only with their input enabled, which USB does not mind. Each
     // pad keeps its awake setting asleep: its sleep one has the input off, which reads low and refuses every sleep.
@@ -56,6 +58,8 @@ sleep_wake sleep_light(uint32_t milliseconds, bool wifi) {
             gpio_wakeup_disable(sources[i].pin);
             gpio_set_intr_type(sources[i].pin, GPIO_INTR_DISABLE);
         }
+    // After reading D1: the read that follows takes the C6's interrupt off it
+    c6_release_transfers();
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     // Once for a run of the same failure
     static esp_err_t reported;

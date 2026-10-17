@@ -89,8 +89,37 @@ static void from_c6(uint32_t id, const uint8_t* data, size_t size, void* context
     }
 }
 
+// Each SDIO transfer, or c6_hold_transfers: light sleep stops the SDMMC clock under a transfer, which then times out
+static StaticSemaphore_t transfer_lock_memory;
+static SemaphoreHandle_t transfer_lock;
+
+// Before any task, so no transfer goes past it
+__attribute__((constructor)) static void make_transfer_lock(void) {
+    transfer_lock = xSemaphoreCreateMutexStatic(&transfer_lock_memory);
+}
+
+bool c6_hold_transfers(uint32_t milliseconds) {
+    return xSemaphoreTake(transfer_lock, pdMS_TO_TICKS(milliseconds)) == pdTRUE;
+}
+
+void c6_release_transfers(void) {
+    xSemaphoreGive(transfer_lock);
+}
+
 // esp_hosted's port layer; its headers are private
 // NOLINTBEGIN(bugprone-reserved-identifier): --wrap names them
+#define LOCKED(name)                                                                               \
+    int __real_##name(void* ctx, uint32_t reg, uint8_t* data, uint16_t size, bool lock_required);  \
+    int __wrap_##name(void* ctx, uint32_t reg, uint8_t* data, uint16_t size, bool lock_required) { \
+        xSemaphoreTake(transfer_lock, portMAX_DELAY);                                              \
+        int err = __real_##name(ctx, reg, data, size, lock_required);                              \
+        xSemaphoreGive(transfer_lock);                                                             \
+        return err;                                                                                \
+    }
+LOCKED(eh_host_port_sdio_read_reg)
+LOCKED(eh_host_port_sdio_write_reg)
+LOCKED(eh_host_port_sdio_read_block)
+LOCKED(eh_host_port_sdio_write_block)
 int __real_eh_host_port_sdio_card_init(void* ctx, bool show_config);
 int eh_host_port_sdio_read_reg(void* ctx, uint32_t reg, uint8_t* data, uint16_t size, bool lock_required);
 int eh_host_port_sdio_write_reg(void* ctx, uint32_t reg, uint8_t* data, uint16_t size, bool lock_required);
