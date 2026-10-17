@@ -61,8 +61,9 @@ static atomic_uint resizes;
 typedef enum { JOB_CREATE, JOB_CONNECT, JOB_DELETE } session_job;
 
 // Session number n is sessions[n - 1]: a record while used, in sessions.json once saved (its tmux session made). While
-// running it has a task for one job, which ends once the job is done or it is asked to end. Its terminal stays until the
-// main loop finds it ended and off the screen. Under sessions_lock but for the atomics.
+// running it has a task for one job, which ends once the job is done or it is asked to end. The main loop makes its
+// terminal before starting the task, and frees it once the task ended and it is off the screen. Under sessions_lock but for
+// the atomics.
 typedef struct {
     session_job job;
     // Its last task, and the last one that ended
@@ -75,6 +76,8 @@ typedef struct {
     atomic_uint waiting_since;
     ssh_session connection;
     bool used, saved, running;
+    // Its task waits for the main loop
+    bool starting;
     // Whether the last task that ended failed
     atomic_bool failed;
     // Asked to end; to delete its tmux session and record once it has
@@ -480,20 +483,6 @@ static void run_session(void* arg) {
     session* s = arg;
     const ssh_host* h = host_named(s->alias);
     bool failed = h == NULL || !h->user[0], deleting;
-    // Ghostty needs a stack as deep as this task's
-    lock();
-    if (s->terminal == NULL) s->terminal = terminal_new(&state.terminal_size);
-    bool terminal = s->terminal != NULL;
-    unlock();
-    if (!terminal) {
-        if (s->job == JOB_CREATE) forget(s);
-        report(number(s), true, "메모리 부족", "no memory for a terminal");
-        lock();
-        finish(s, true);
-        unlock();
-        vTaskDeleteWithCaps(NULL);
-        return;
-    }
     if (failed && s->job != JOB_DELETE)
         report(number(s), true, "호스트가 .ssh/config에 없음", "no Host %s with a User in the SD card's .ssh/config", s->alias);
     if (failed && s->job == JOB_CREATE)
@@ -516,20 +505,32 @@ static void run_session(void* arg) {
     vTaskDeleteWithCaps(NULL);
 }
 
-// Under the lock: a task for job, which keeps the terminal s has while it is still there; false when memory is short
-static bool start_task(session* s, session_job job) {
+// Under the lock: job for s, whose task the main loop starts
+static void start_job(session* s, session_job job) {
     static unsigned started;
-    char name[24];
-    s->job = job, s->id = ++started, s->running = true;
+    s->job = job, s->id = ++started, s->running = s->starting = true;
     atomic_store(&s->end, false);
     atomic_store(&s->deleting, job == JOB_DELETE);
     atomic_store(&s->status, job == JOB_DELETE ? SESSION_DELETING : SESSION_CONNECTING);
-    snprintf(name, sizeof name, "session %d", number(s));
-    // Ghostty's measured stack is 27-33 KiB, as fast in PSRAM; such a task never writes flash
-    if (xTaskCreatePinnedToCoreWithCaps(run_session, name, 48 * 1024, s, 5, NULL, 1, MALLOC_CAP_SPIRAM) == pdPASS) return true;
-    s->running = false;
-    atomic_store(&s->status, SESSION_DISCONNECTED);
-    return false;
+}
+
+// Under the lock, the main loop's: the jobs asked for, each with a terminal it keeps while it is still there. Ghostty
+// needs a deeper stack to make one than a command's task has.
+static void start_tasks(void) {
+    char name[24];
+    for (size_t i = 0; i < MAX_SESSIONS; i++) {
+        session* s = &sessions[i];
+        if (!s->starting) continue;
+        s->starting = false;
+        if (s->terminal == NULL) s->terminal = terminal_new(&state.terminal_size);
+        snprintf(name, sizeof name, "session %d", number(s));
+        // Ghostty's measured stack is 27-33 KiB, as fast in PSRAM; such a task never writes flash
+        if (s->terminal != NULL && xTaskCreatePinnedToCoreWithCaps(run_session, name, 48 * 1024, s, 5, NULL, 1, MALLOC_CAP_SPIRAM) == pdPASS)
+            continue;
+        if (s->job == JOB_CREATE) forget(s);
+        report(number(s), true, "메모리 부족", "no memory for its %s", s->terminal == NULL ? "terminal" : "task");
+        finish(s, true);
+    }
 }
 
 // For a command that waits: until task `id` of s ends, asks on the screen or, with `connect`, connects or retries, for up
@@ -573,11 +574,9 @@ static int session_create(const ssh_host* h, bool wait) {
     }
     snprintf(s->alias, sizeof s->alias, "%s", h->alias);
     s->used = true, s->saved = false;
-    bool started = start_task(s, JOB_CREATE);
-    s->used = started;
+    start_job(s, JOB_CREATE);
     unsigned id = s->id;
     unlock();
-    if (!started) return report(number(s), true, "메모리 부족", "not created: no memory");
     ESP_LOGI(TAG, "session %d: creating tmux session %s on %s", number(s), s->tmux, h->alias);
     return wait ? wait_for(s, id, false) : 0;
 }
@@ -591,7 +590,7 @@ static int connect_session(int n, bool wait, bool show) {
                           : s->running && s->job == JOB_CREATE && !show                       ? "being created"
                                                                                               : NULL;
     bool started = refusal == NULL && !s->running;
-    if (started && !start_task(s, JOB_CONNECT)) refusal = "no memory";
+    if (started) start_job(s, JOB_CONNECT);
     if (refusal == NULL && show) ask_show(s);
     unsigned id = refusal == NULL ? s->id : 0;
     bool connecting = refusal == NULL && s->job == JOB_CONNECT;
@@ -607,18 +606,6 @@ static int session_open(int n, bool wait) {
 
 static int session_connect(int n, bool wait) {
     return connect_session(n, wait, false);
-}
-
-// Hidden only
-static int session_close(int n, bool wait) {
-    (void)wait;
-    lock();
-    const session* s = numbered(n);
-    bool was = s != NULL && showing(s);
-    if (was) ask_show(NULL);
-    unlock();
-    if (s == NULL) return report(n, true, "없음", "no such session");
-    return report(n, false, was ? "숨김" : "보이지 않음", was ? "hidden" : "not shown");
 }
 
 static int session_disconnect(int n, bool wait) {
@@ -644,8 +631,8 @@ static int session_delete(int n, bool wait) {
         atomic_store(&s->deleting, true);
         atomic_store(&s->status, SESSION_DELETING);
         atomic_store(&s->end, true);
-    } else if (refusal == NULL && !start_task(s, JOB_DELETE)) {
-        refusal = "no memory";
+    } else if (refusal == NULL) {
+        start_job(s, JOB_DELETE);
     }
     unsigned id = refusal == NULL ? s->id : 0;
     unlock();
@@ -669,10 +656,10 @@ static int session_list(void) {
     return 0;
 }
 
-static int (*const session_actions[])(int n, bool wait) = {session_open, session_close, session_connect, session_disconnect, session_delete};
-static const char* const session_verbs[] = {"open", "close", "connect", "disconnect", "delete"};
+static int (*const session_actions[])(int n, bool wait) = {session_open, session_connect, session_disconnect, session_delete};
+static const char* const session_verbs[] = {"open", "connect", "disconnect", "delete"};
 
-// session list|create HOST|open N|close N|connect N|disconnect N|delete N; -1 for none of these
+// session list|create HOST|open N|connect N|disconnect N|delete N; -1 for none of these
 static int session_command(const char* arguments) {
     char verb[12];
     int n;
@@ -702,10 +689,11 @@ static void show(session* s) {
     if (h != NULL) state.current_host = h;
 }
 
-// Shows what was asked, takes an ended session off the screen, frees the terminals of ended ones off it, and tells the
-// screens
+// Starts the jobs asked for, shows what was asked, takes an ended session off the screen, frees the terminals of ended
+// ones off it, and tells the screens
 static void tend_sessions(void) {
     lock();
+    start_tasks();
     // Once its task made its terminal
     if (show_asked && (to_show == NULL || to_show->terminal != NULL || !to_show->running)) {
         show(to_show != NULL && to_show->terminal != NULL ? to_show : NULL);
@@ -1197,8 +1185,8 @@ static void apply(const ui_event* e) {
     if (e->kind == UI_ACTION && sscanf(e->name, "session %d", &n) == 1) {
         if (n >= 1 && n <= MAX_SESSIONS && is_shown(&sessions[n - 1]))
             screen_open("sessions");
-        else
-            session_open(n, false);
+        else if (session_open(n, false) == 0)
+            screen_open(NULL);
         return;
     }
     if (e->kind == UI_ACTION && strcmp(e->name, "reboot") == 0) {
@@ -1274,7 +1262,8 @@ void app_main(void) {
     screen_show(blank);
     load_sessions();
     if (screen != ESP_OK) ESP_LOGE(TAG, "no screen");
-    bool lit = true;
+    // The sessions screen is open: it stands for no session shown
+    bool lit = true, listing = false;
     for (;;) {
         ui_event e;
         terminal_size size;
@@ -1284,6 +1273,7 @@ void app_main(void) {
         if (screen == ESP_OK && atomic_exchange(&profile_asked, false)) power_profile(lit), lit = true;
         if (screen == ESP_OK && !lit) lit = woken();
         // With no session shown the sessions screen stays open, and what is typed goes nowhere
+        if (screen == ESP_OK) ui_home(atomic_load(&shown) == NULL ? "sessions" : NULL);
         if (lit && atomic_load(&shown) == NULL) {
             char dropped[64];
             if (screen == ESP_OK && !screen_panel_open()) screen_open("sessions");
@@ -1301,6 +1291,16 @@ void app_main(void) {
             while (screen_event(&e))
                 apply(&e);
             memset(&e, 0, sizeof e);
+            // Opened, it takes the shown session off the screen; a session a command shows closes it
+            bool list = (panel = ui_panel()) != NULL && strcmp(panel, "sessions") == 0;
+            lock();
+            const session* on = atomic_load(&shown);
+            if (list && !listing)
+                ask_show(NULL);
+            else if (list && on != NULL && showing(on))
+                screen_open(NULL);
+            unlock();
+            listing = list;
             if (screen_resized(&size)) {
                 state.terminal_size = size;
                 lock();

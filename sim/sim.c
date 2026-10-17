@@ -192,7 +192,6 @@ static const char* item(void* user, const char* name, size_t index, const char* 
     const session_info* s = strcmp(name, "sessions") == 0 ? &state.sessions[index] : NULL;
     if (s != NULL && strcmp(field, "number") == 0) return snprintf(number, sizeof number, "%d", s->number), number;
     if (s != NULL && strcmp(field, "status") == 0) return session_states[s->status];
-    if (s != NULL && strcmp(field, "current") == 0) return s->shown ? "← 보는 중" : NULL;
     if (s != NULL && strcmp(field, "alias") == 0) return s->alias;
     if (s != NULL && strcmp(field, "tmux") == 0) return s->tmux;
     if (s != NULL) return NULL;
@@ -288,9 +287,8 @@ static void sessions(const ui_event* e) {
     bool tab = sscanf(e->name, "session %d", &number) == 1;
     for (size_t i = 0; tab && i < state.session_count; i++)
         if (state.sessions[i].number == number) s = &state.sessions[i];
-    if (s == NULL ||
-        (!tab && strcmp(e->name, "session open") != 0 && strcmp(e->name, "session close") != 0 && strcmp(e->name, "session connect") != 0 &&
-         strcmp(e->name, "session disconnect") != 0 && strcmp(e->name, "session delete") != 0))
+    if (s == NULL || (!tab && strcmp(e->name, "session open") != 0 && strcmp(e->name, "session connect") != 0 &&
+                      strcmp(e->name, "session disconnect") != 0 && strcmp(e->name, "session delete") != 0))
         return;
     if (tab && s->shown) {
         ui_open("sessions");
@@ -307,7 +305,7 @@ static void sessions(const ui_event* e) {
         return;
     }
     bool open = tab || strcmp(e->name, "session open") == 0;
-    if (open || strcmp(e->name, "session close") == 0 || strcmp(e->name, "session disconnect") == 0)
+    if (open || strcmp(e->name, "session disconnect") == 0)
         for (size_t i = 0; i < state.session_count; i++)
             state.sessions[i].shown = open && &state.sessions[i] == s;
     if (open || strcmp(e->name, "session connect") == 0) s->status = SESSION_CONNECTED;
@@ -381,6 +379,20 @@ static void key(const SDL_KeyboardEvent* k) {
         }
 }
 
+// As main.c's main loop: the sessions screen stands for no session shown
+static void tend(void) {
+    static bool listing = true;
+    bool seen = false;
+    for (size_t i = 0; i < state.session_count; i++)
+        seen |= state.sessions[i].shown;
+    ui_home(seen ? NULL : "sessions");
+    const char* panel = ui_panel();
+    bool list = panel != NULL && strcmp(panel, "sessions") == 0;
+    for (size_t i = 0; list && !listing && i < state.session_count; i++)
+        state.sessions[i].shown = false;
+    listing = list;
+}
+
 static void run_input(const char* script) {
     char copy[1024];
     snprintf(copy, sizeof copy, "%s", script);
@@ -404,6 +416,7 @@ static void run_input(const char* script) {
             e = ui_key(keys[i].key, "");
         }
         handle(&e);
+        tend();
         ui_draw();
     }
 }
@@ -461,6 +474,7 @@ int main(int argc, char** argv) {
     reload();
     // As at boot
     ui_open("sessions");
+    tend();
     if (input != NULL) run_input(input);
     layout_area shown_terminal = {0};
     for (bool running = true; running;) {
@@ -478,6 +492,7 @@ int main(int argc, char** argv) {
                 handle(&done);
             }
         reload();
+        tend();
         ui_draw();
         layout_area now;
         if (ui_terminal(&now) && memcmp(&now, &shown_terminal, sizeof now) != 0) shown_terminal = now, draw_terminal();

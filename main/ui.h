@@ -52,8 +52,10 @@ shr_status ui_start(shr_context* context, shr_pl_res_bitmap_font* font, int32_t 
 bool ui_load(const char* text, char* error, size_t size);
 // Draws what changed; lays the screens out again when a "when" changed
 void ui_draw(void);
-// Opens panel `name` (NULL closes); false if there is none
+// Opens panel `name` (NULL closes, opening the home panel if there is one); false if there is none
 bool ui_open(const char* name);
+// The panel that closing opens instead, NULL for none
+void ui_home(const char* name);
 // The open panel, NULL for none: keys then go to it
 const char* ui_panel(void);
 // The terminal's cells; false without one

@@ -23,6 +23,8 @@ static struct {
 static size_t screen_count;
 static shown_screen main_screen, panel;
 static char panel_name[32];
+// Opened when a panel closes, empty for none
+static char home[sizeof panel_name];
 static bool whole;
 static uint32_t laid_out; // hash of the "when"s
 // The node a touch went down on, and whether it is still over it
@@ -107,6 +109,9 @@ static void move_focus(int direction) {
 }
 
 bool ui_open(const char* name) {
+    // Closing the home panel leaves it open
+    if (name == NULL && home[0] != 0 && panel.screen != NULL && strcmp(panel_name, home) == 0) return true;
+    if (name == NULL && home[0] != 0 && find(home) != NULL) name = home;
     layout* screen = name != NULL ? find(name) : NULL;
     if (name != NULL && screen == NULL) return false;
     panel.screen = screen, focus = -1, editing = false, pressed = NULL;
@@ -122,6 +127,10 @@ bool ui_open(const char* name) {
             focus = (int)i;
     }
     return true;
+}
+
+void ui_home(const char* name) {
+    snprintf(home, sizeof home, "%s", name != NULL ? name : "");
 }
 
 const char* ui_panel(void) {

@@ -62,11 +62,12 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
   sessions on that host that no record names, unattached and older than a minute. From tmux 3.2 the client declares
   truecolor, strikethrough, overline, underline styles and colours, and kitty images as Unicode placeholders (`-T`); from
   tmux 3.3 the session's windows allow passthrough, for kitty images; its `mouse` is on, for touch.
-- The sessions screen (세션 on the bottom bar; open whenever no session is shown) lists them with 보기, 숨기기, 연결, 끊기
-  and 삭제 (pressed twice) for the chosen one, and creates one on a host from its list. Each also has a tab on the top
-  bar, which shows it, or opens the sessions screen when it is shown (`×` disconnected, `…` connecting, `?` waiting for
-  an answer). Control command `session list|create HOST|open N|close N|connect N|disconnect N|delete N` waits up to 90 s
-  for what it starts; one that needs a password or host key says to answer it on the screen (`session open N`).
+- The sessions screen (세션 on the bottom bar) shows no session: opening it takes the shown one off the screen, and it
+  stays open until a session is shown. It lists them with 보기, 연결, 끊기 and 삭제 (pressed twice) for the chosen one, and
+  creates one on a host from its list. Each also has a tab on the top bar, which shows it, or opens the sessions screen
+  when it is shown (`●` shown, `×` disconnected, `…` connecting, `?` waiting for an answer). Control command
+  `session list|create HOST|open N|connect N|disconnect N|delete N` waits up to 90 s for what it starts; one that needs
+  a password or host key says to answer it on the screen (`session open N`).
 - Network: Wi-Fi while it reaches the SSH host (the shown session's), else LTE through a Stamp CAT-M (Tab5 TX G6, RX G46), kept connected
   in the background; LTE keeps redialing (waits of 90-960 s) unless no modem answered or spoke since boot. Without a path the
   top right says what LTE does, and Enter dials at once. Control commands: `wifi on|off` (for this boot; with `save` also `network.wifi.enabled`, as the

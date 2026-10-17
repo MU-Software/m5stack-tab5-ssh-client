@@ -254,7 +254,6 @@ static const char* item(void* user, const char* name, size_t index, const char* 
         return text;
     }
     if (s != NULL && strcmp(field, "status") == 0) return session_states[s->status];
-    if (s != NULL && strcmp(field, "current") == 0) return s->shown ? "← 보는 중" : NULL;
     if (s != NULL && strcmp(field, "alias") == 0) return s->alias;
     if (s != NULL && strcmp(field, "tmux") == 0) return s->tmux;
     const ssh_host* h = strcmp(name, "hosts") == 0 ? host(index) : NULL;
