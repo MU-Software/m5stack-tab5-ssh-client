@@ -6,6 +6,8 @@
 
 #include <esp_err.h>
 
+#include "c6_lease.h"
+
 esp_err_t c6_start(void);
 // The C6's esp_hosted version; false when unknown or of another major version than the host's
 bool c6_version(char* version, size_t size);
@@ -27,3 +29,7 @@ typedef struct {
 unsigned c6_wifi_state(c6_wifi_status* status);
 // Called from esp_hosted's task after each C6_WIFI_STATE
 void c6_on_wifi_state(void (*listener)(void));
+// From C6_NW_SPLIT_SINCE: called from the default event loop with each lease the C6 reports, address 0 when it has none
+void c6_on_lease(void (*listener)(const c6_lease* lease));
+// The C6's lease now, through esp_hosted's own handler and the listener
+esp_err_t c6_ask_lease(void);

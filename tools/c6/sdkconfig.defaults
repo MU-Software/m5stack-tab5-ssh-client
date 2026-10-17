@@ -32,3 +32,12 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # The P4 and this firmware talk through it (components/c6/include/c6_protocol.h)
 CONFIG_ESP_HOSTED_CP_FEAT_PEER_DATA=y
+# Network Split: this chip runs DHCP and answers ARP and ping for the P4's address; the P4 takes its ports (49152-61439) and
+# TCP 22. 22 is no source port, or the answers to this chip's own SSH checks would go to the P4
+CONFIG_ESP_HOSTED_CP_FEAT_NW_SPLIT=y
+CONFIG_ESP_HOSTED_DEFAULT_NETWORK_STACK_DHCP_COPROCESSOR=y
+CONFIG_ESP_HOSTED_HOST_TCP_DST_PORTS="22"
+# join_known picks the network
+CONFIG_ESP_HOSTED_CP_FEAT_NW_SPLIT_WIFI_AUTO_CONNECT_ON_STA_START=n
+# Until a P4 sends its own (P4_HOSTNAME)
+CONFIG_LWIP_LOCAL_HOSTNAME="tab5"

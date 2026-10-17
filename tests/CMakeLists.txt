@@ -19,6 +19,9 @@ add_library(cjson STATIC ${TOP}/third_party/cjson/cJSON.c)
 target_include_directories(cjson PUBLIC ${TOP}/third_party/cjson)
 target_compile_options(cjson PRIVATE -w)
 
+add_executable(c6_lease_test c6_lease_test.c ${TOP}/components/c6/c6_lease.c)
+target_include_directories(c6_lease_test PRIVATE ${TOP}/components/c6/include)
+
 add_executable(c6_nvs_test c6_nvs_test.c ${TOP}/main/c6_nvs.c ${TOP}/main/control.c)
 target_include_directories(c6_nvs_test PRIVATE ${TOP}/components/c6/include)
 

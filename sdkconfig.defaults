@@ -60,6 +60,11 @@ CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM=y
 # The C6 firmware of tools/c6 talks through it (components/c6/include/c6_protocol.h)
 CONFIG_ESP_HOSTED_HOST_FEAT_PEER_DATA=y
 
+# Network Split (C6_NW_SPLIT_SINCE): the C6 runs DHCP and this chip's Wi-Fi interface takes its address; this chip's ports are
+# 49152-61439. Without a DHCP client of its own (wifi.c starts one for an older C6), so a lease never clears lwIP's DNS servers
+CONFIG_ESP_HOSTED_HOST_FEAT_NW_SPLIT=y
+CONFIG_ESP_HOSTED_HOST_FEAT_NW_SPLIT_NETIF_INTERNAL_STATIC=y
+
 # The C6 runs on through restarts of the P4, which restarts its SDIO counters after card init (components/c6) and resets it
 # only when the card does not come up
 CONFIG_ESP_HOSTED_HOST_CP_RESET_STRATEGY_ONLY_IF_NECESSARY=y

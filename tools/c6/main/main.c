@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
 #include <driver/sdio_slave.h>
 #include <eh_cp_core.h>
+#include <eh_cp_feat_nw_split.h>
 #include <eh_cp_feat_peer_data.h>
 #include <eh_cp_feat_wifi.h>
 #include <eh_transport_cp.h>
 #include <esp_attr.h>
 #include <esp_event.h>
 #include <esp_log.h>
+#include <esp_netif.h>
 #include <esp_ota_ops.h>
 #include <esp_system.h>
 #include <esp_timer.h>
@@ -24,6 +27,10 @@
 
 #include "c6_nvs_server.h"
 #include "c6_protocol.h"
+
+#if !EH_CP_FEAT_NW_SPLIT_READY
+#error "C6_NW_SPLIT_SINCE: the P4 takes this protocol for Network Split (sdkconfig.defaults; an old build/c6/sdkconfig?)"
+#endif
 
 #define RING 4096
 
@@ -238,11 +245,40 @@ static void keep_list(const uint8_t* list, size_t size) {
     ESP_LOGI(TAG, "%d known networks, Wi-Fi %s: %s", count, list[0] ? "on" : "off", same ? "unchanged" : esp_err_to_name(err));
 }
 
+// The P4's (P4_HOSTNAME), else CONFIG_LWIP_LOCAL_HOSTNAME
+static char hostname[C6_HOSTNAME + 1];
+
+static void use_hostname(void) {
+    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (hostname[0] && netif != NULL) esp_netif_set_hostname(netif, hostname);
+}
+
+static void keep_hostname(const uint8_t* name, size_t size) {
+    nvs_handle_t nvs;
+    esp_err_t err = ESP_OK;
+    if (size == 0 || size > C6_HOSTNAME) return;
+    for (size_t i = 0; i < size; i++)
+        if (!isalnum(name[i]) && name[i] != '-') return;
+    bool same = strlen(hostname) == size && memcmp(hostname, name, size) == 0;
+    if (!same) {
+        memcpy(hostname, name, size);
+        hostname[size] = 0;
+        use_hostname();
+        if ((err = nvs_open("tab5", NVS_READWRITE, &nvs)) == ESP_OK) {
+            if ((err = nvs_set_str(nvs, "hostname", hostname)) == ESP_OK) err = nvs_commit(nvs);
+            nvs_close(nvs);
+        }
+    }
+    ESP_LOGI(TAG, "hostname %s: %s", hostname, same ? "unchanged" : esp_err_to_name(err));
+}
+
 static void load_list(void) {
     nvs_handle_t nvs;
     size_t size = sizeof known;
     if (nvs_open("tab5", NVS_READONLY, &nvs) != ESP_OK) return;
     if (nvs_get_blob(nvs, "wifi", known, &size) == ESP_OK && networks(known, size) >= 0) known_size = size;
+    size = sizeof hostname;
+    if (nvs_get_str(nvs, "hostname", hostname, &size) != ESP_OK) hostname[0] = 0;
     nvs_close(nvs);
 }
 
@@ -396,6 +432,11 @@ static void join_known(void* arg) {
     while (g_auto_feat_init_done_eg == NULL)
         vTaskDelay(pdMS_TO_TICKS(10));
     xEventGroupWaitBits(g_auto_feat_init_done_eg, EH_CP_FEAT_INIT_DONE_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+    // Network Split's init raises them to debug
+    esp_log_level_set("esp_netif_lwip", ESP_LOG_INFO);
+    esp_log_level_set("esp_netif_handlers", ESP_LOG_INFO);
+    // Before the first lease
+    use_hostname();
     // The P4's esp_wifi_init then finds the same parameters (CONFIG_WIFI_RMT_* equal to these)
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     // The P4's own over RPC may be under way, which refuses this one until it is done
@@ -491,6 +532,7 @@ static void nvs_request(uint8_t sequence, uint8_t operation, const uint8_t* body
 static void from_p4(uint32_t id, const uint8_t* data, size_t size, void* context) {
     (void)id, (void)context;
     if (size >= 3 && data[0] == P4_NVS) nvs_request(data[1], data[2], data + 3, size - 3);
+    if (size >= 1 && data[0] == P4_HOSTNAME) keep_hostname(data + 1, size - 1);
     if (size >= 1 && data[0] == P4_WIFI_LIST) keep_list(data + 1, size - 1);
     if (size >= 2 && data[0] == P4_WIFI_HOLD) {
         held_until = esp_timer_get_time() + HOLD_MS * 1000LL;
@@ -503,6 +545,7 @@ static void from_p4(uint32_t id, const uint8_t* data, size_t size, void* context
         held = false;
         xEventGroupSetBits(radio, HOLD);
         eh_cp_feat_wifi_replay_connected_event_if_needed();
+        eh_cp_feat_nw_split_replay_status_if_needed();
         portENTER_CRITICAL(&state_lock);
         memcpy(message, state_message, length = state_size);
         portEXIT_CRITICAL(&state_lock);

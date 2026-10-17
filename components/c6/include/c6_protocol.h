@@ -3,7 +3,7 @@
 // the kind
 #pragma once
 
-#define C6_PROTOCOL 7
+#define C6_PROTOCOL 8
 
 #define C6_TO_P4 0x54354336u // "T5C6"
 // After P4_KEEP: the C6's protocol version
@@ -63,6 +63,13 @@ enum {
 #define C6_NVS_I64        0x18
 #define C6_NVS_STR        0x21
 #define C6_NVS_BLOB       0x42
+
+// The first protocol with Network Split: the C6 runs DHCP and keeps the address, ARP and ping; this chip takes the address and
+// the TCP and UDP ports 49152-61439, and TCP port 22
+#define C6_NW_SPLIT_SINCE 8
+// From C6_NW_SPLIT_SINCE, at start before P4_WIFI_LIST: [name], the C6's DHCP hostname, kept in its NVS for the next lease
+#define P4_HOSTNAME 6
+#define C6_HOSTNAME 32
 
 // After each SDIO card init the P4 raises esp_hosted's ESP_RESET (C6_SDIO_RESET) in HOST_TO_SLAVE_INTR: the C6, which may have
 // run on through the P4's restart, closes the data path, restarts its SDIO counters and writes C6_RESET_DONE to its scratch

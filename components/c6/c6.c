@@ -5,10 +5,13 @@
 #include <string.h>
 #include <sys/param.h>
 
+#include <eh_host_event.h>
+#include <eh_host_feat_nw_split.h>
 #include <eh_host_feat_peer_data.h>
 #include <eh_host_sys.h>
 #include <esp_attr.h>
 #include <esp_check.h>
+#include <esp_event.h>
 #include <esp_hosted.h>
 #include <esp_hosted_host_fw_ver.h>
 #include <esp_hosted_ota.h>
@@ -32,6 +35,7 @@ static c6_wifi_status wifi_status;
 static unsigned wifi_reports;
 static void (*wifi_listener)(void);
 static portMUX_TYPE wifi_lock = portMUX_INITIALIZER_UNLOCKED;
+static void (*lease_listener)(const c6_lease* lease);
 // Set by the restart that follows a C6 that did not come up, so one that stays silent is reset only once
 static RTC_NOINIT_ATTR uint32_t restarted;
 // One P4_NVS at a time; the answer goes to nvs_answer while it is set
@@ -120,11 +124,35 @@ static void leaving(void) {
     if (bus != NULL && eh_host_port_sdio_write_reg(bus, C6_INTERRUPT, &close, 1, true) == 0) vTaskDelay(pdMS_TO_TICKS(20));
 }
 
+static void on_status(void* arg, esp_event_base_t base, int32_t id, void* data) {
+    const eh_host_nw_split_status_t* s = data;
+    (void)arg, (void)base, (void)id;
+    c6_lease lease = {0};
+    if (s->dhcp_up && s->has_ipv4)
+        lease = (c6_lease){.address = s->ipv4.ip.addr,
+                           .netmask = s->ipv4.netmask.addr,
+                           .gateway = s->ipv4.gw.addr,
+                           .dns = s->dns_main.type == ESP_IPADDR_TYPE_V4 ? s->dns_main.u_addr.ip4.addr : 0};
+    if (lease_listener != NULL) lease_listener(&lease);
+}
+
+void c6_on_lease(void (*listener)(const c6_lease* lease)) {
+    lease_listener = listener;
+}
+
+esp_err_t c6_ask_lease(void) {
+    eh_host_nw_split_status_t status;
+    if (protocol < C6_NW_SPLIT_SINCE) return ESP_ERR_NOT_SUPPORTED;
+    ESP_RETURN_ON_ERROR(eh_host_nw_split_get_status(&status), TAG, "lease");
+    return esp_event_post(EH_HOST_EVENT, EH_HOST_EVENT_NW_SPLIT_STATUS, &status, sizeof status, pdMS_TO_TICKS(100));
+}
+
 // The C6 keeps its power and Wi-Fi through restarts of this chip (power.c powers it)
 esp_err_t c6_start(void) {
     char version[24] = "unknown";
     nvs_lock = xSemaphoreCreateMutexStatic(&nvs_lock_memory);
     nvs_answered = xSemaphoreCreateBinaryStatic(&nvs_answered_memory);
+    ESP_RETURN_ON_ERROR(esp_event_handler_register(EH_HOST_EVENT, EH_HOST_EVENT_NW_SPLIT_STATUS, on_status, NULL), TAG, "lease");
     esp_err_t err = esp_hosted_init();
     if (err == ESP_OK) err = esp_hosted_connect_to_slave();
     bool known = err == ESP_OK && c6_version(version, sizeof version);

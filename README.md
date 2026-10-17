@@ -21,7 +21,9 @@ make c6-update  # the ESP32-C6's esp_hosted (tools/c6), over USB (logged at boot
 The C6 keeps a new image once the Tab5 reaches it through esp_hosted, else it boots the one before after a minute: its
 bootloader has no rollback, and it can only be reflashed otherwise through the back-cover pads. Its log shows as `C6`.
 It keeps a copy of the known networks and joins them itself (the first one a scan sees, in their order; again after a
-drop), so it stays joined through restarts of the Tab5, which then only gets an address again.
+drop), so it stays joined through restarts of the Tab5. It also holds the Wi-Fi address (its own DHCP, ARP and ping;
+esp_hosted's Network Split), which the Tab5 shares with ports 49152-61439 and TCP 22 its own, so a restart of the Tab5
+needs no DHCP. Update the Tab5 before the C6: an older Tab5 gets no Wi-Fi address from it.
 
 `nvs list|get NAMESPACE KEY|dump [NAMESPACE]|set NAMESPACE KEY TYPE VALUE|erase NAMESPACE [KEY]` reads and changes
 the Tab5's NVS, `c6 nvs …` the C6's, over USB (`tools/device.py send`) or SSH; values only in the reply, never in a log.

@@ -80,6 +80,7 @@ sd-off:              ## Give the SD card back to the firmware
 	$(DEVICE) send "sd off"
 
 c6-update:           ## Build the ESP32-C6's esp_hosted and send it over USB; the Tab5 restarts into it
+	@if [ tools/c6/sdkconfig.defaults -nt build/c6/sdkconfig ]; then rm -f build/c6/sdkconfig; fi
 	$(call IDF,tools/c6,-e IDF_TARGET=esp32c6,c6) build
 	$(DEVICE) update --c6 build/c6/tab5_c6.bin
 
