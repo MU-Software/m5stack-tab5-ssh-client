@@ -398,7 +398,10 @@ static void join_known(void* arg) {
     xEventGroupWaitBits(g_auto_feat_init_done_eg, EH_CP_FEAT_INIT_DONE_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
     // The P4's esp_wifi_init then finds the same parameters (CONFIG_WIFI_RMT_* equal to these)
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
-    esp_err_t err = esp_wifi_init(&init);
+    // The P4's own over RPC may be under way, which refuses this one until it is done
+    esp_err_t err;
+    for (int tries = 0; (err = esp_wifi_init(&init)) != ESP_OK && tries < 20; tries++)
+        vTaskDelay(pdMS_TO_TICKS(100));
     // The default flash storage would keep the passwords in nvs.net80211 too
     if (err == ESP_OK) err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
     if (err == ESP_OK) err = esp_wifi_set_mode(WIFI_MODE_STA);

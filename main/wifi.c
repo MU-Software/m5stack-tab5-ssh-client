@@ -73,7 +73,11 @@ esp_err_t wifi_start(bool on) {
     // Registered with it, it would stop the C6's Wi-Fi at each restart of this chip
     if (esp_unregister_shutdown_handler((shutdown_handler_t)esp_wifi_stop) != ESP_OK) ESP_LOGW(TAG, "esp_wifi_stop still runs at restarts");
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_RETURN_ON_ERROR(esp_wifi_init(&init), TAG, "init");
+    // A C6 booting afresh starts its own Wi-Fi meanwhile, which refuses this one until it is done
+    esp_err_t err;
+    for (int tries = 0; (err = esp_wifi_init(&init)) != ESP_OK && tries < 20; tries++)
+        vTaskDelay(pdMS_TO_TICKS(100));
+    ESP_RETURN_ON_ERROR(err, TAG, "init");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, on_event, NULL), TAG, "events");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL), TAG, "events");
     // The default flash storage would keep the password in the C6's NVS; esp_hosted's host drops it, so the C6 firmware sets
