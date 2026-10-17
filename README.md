@@ -43,6 +43,11 @@ The ROM loader needs a BOOT reset.
   closed one on Enter. Control commands: `wifi on|off` (`wifi off save`: also after restarts, until `wifi on` or
   `wifi connect`), `wifi connect SSID [PASSWORD]` (saved to the configuration in use), `wifi forget SSID`,
   `lte on|off|status` (`lte off save` as `wifi off save`), `net status`, `net check HOST PORT`.
+- Modem: before each dial the firmware reads the registration, cell, signal, PDP context, SIM (ICCID masked) and back-off
+  state; once a boot, when no back-off is in sight, also its settings, keeping QUALCOMM URCs and the battery check on and
+  eDRX off while the network grants it (`AT+CURCCFG="QUALCOMM",1`, `AT+CBATCHK=1`, `AT+CEDRXS=0,4`, each only when
+  needed). `modem status` logs what was read, `modem read` reads it again while PPP is down (`lte off`), and the
+  settings screen's 모뎀 page shows it with its age.
 - Slow links: keys typed at the end of a line show underlined until the host echoes them (only once it echoed one since
   the last Enter or other key, so not at password prompts); top right, the seconds typing has had no answer from the host,
   not even to a keepalive request, or a session reconnects. Over LTE each connection step may take 30 s.

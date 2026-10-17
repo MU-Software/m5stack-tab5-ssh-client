@@ -27,6 +27,8 @@ add_executable(hangul_test hangul_test.c ${TOP}/main/hangul.c)
 add_executable(layout_test layout_test.c ${TOP}/main/layout.c)
 target_link_libraries(layout_test cjson)
 
+add_executable(modem_test modem_test.c ${TOP}/main/modem.c)
+
 add_executable(settings_test settings_test.c ${TOP}/main/layout.c ${TOP}/main/settings.c)
 target_link_libraries(settings_test cjson wolf)
 

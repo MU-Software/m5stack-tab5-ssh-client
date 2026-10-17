@@ -31,7 +31,7 @@ target_compile_options(cjson PRIVATE -w)
 
 # state.h's wolfSSH types, headers only
 include(${top}/cmake/wolf.cmake)
-add_executable(tab5_sim sim.c ${top}/main/layout.c ${top}/main/settings.c ${top}/main/ui.c)
+add_executable(tab5_sim sim.c ${top}/main/layout.c ${top}/main/modem.c ${top}/main/settings.c ${top}/main/ui.c)
 target_include_directories(tab5_sim PRIVATE ${top}/main)
 target_include_directories(tab5_sim SYSTEM PRIVATE ${top}/components/wolfssl/include ${WOLFSSL_DIR} ${WOLFSSH_DIR})
 target_compile_definitions(tab5_sim PRIVATE WOLFSSL_USER_SETTINGS)

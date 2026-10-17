@@ -25,6 +25,7 @@
 #include "keys.h"
 #include "logs.h"
 #include "memory_log.h"
+#include "modem.h"
 #include "net.h"
 #include "power.h"
 #include "screen.h"
@@ -404,8 +405,47 @@ static void c6_update_command(size_t size, uint32_t crc) {
     esp_restart();
 }
 
+static void log_modem(void) {
+    modem_snapshot* s = heap_caps_malloc(sizeof *s, MALLOC_CAP_SPIRAM);
+    if (s == NULL) return;
+    catm_snapshot(s);
+    int64_t now = esp_timer_get_time();
+    if (catm_connected()) ESP_LOGI(TAG, "modem: PPP is up, values from before the dial (lte off to read again)");
+    for (int i = 0; i < MODEM_ITEMS; i++)
+        if (s->read_at[i] != 0) ESP_LOGI(TAG, "modem %s: %s (%lld s ago)", modem_commands[i].name, s->values[i], (now - s->read_at[i]) / 1000000);
+    free(s);
+}
+
+static atomic_bool modem_reading;
+
+static void read_modem(void* arg) {
+    (void)arg;
+    ESP_LOGI(TAG, "modem read: %s", esp_err_to_name(catm_read()));
+    log_modem();
+    atomic_store(&modem_reading, false);
+    vTaskDeleteWithCaps(NULL);
+}
+
+// modem status|read; a read waits for the modem, which a dial may hold for a minute, off the screen's task
+static void modem_control(const char* arguments) {
+    if (strcmp(arguments, "status") == 0) {
+        log_modem();
+    } else if (strcmp(arguments, "read") != 0) {
+        ESP_LOGW(TAG, "modem status|read");
+    } else if (atomic_exchange(&modem_reading, true)) {
+        ESP_LOGW(TAG, "modem: reading already");
+    } else if (xTaskCreatePinnedToCoreWithCaps(read_modem, "modem", 4096, NULL, 4, NULL, 1, MALLOC_CAP_SPIRAM) != pdPASS) {
+        // Stack in PSRAM: a task there must never write flash
+        atomic_store(&modem_reading, false);
+    }
+}
+
 static bool command(const char* line) {
     unsigned long size, crc;
+    if (strncmp(line, "modem ", 6) == 0) {
+        modem_control(line + 6);
+        return true;
+    }
     if (sscanf(line, "c6 update %lu %lx", &size, &crc) == 2) {
         c6_update_command(size, (uint32_t)crc);
         return true;

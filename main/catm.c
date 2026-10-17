@@ -8,6 +8,7 @@
 
 #include <driver/gpio.h>
 #include <driver/uart.h>
+#include <esp_attr.h>
 #include <esp_heap_caps.h>
 #include <esp_check.h>
 #include <esp_event.h>
@@ -20,14 +21,15 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 
-#define UART    UART_NUM_2
-#define TX      6
-#define RX      46
-#define LINE    128
-#define SECOND  1000000LL
-#define GOT_IP  BIT0
-#define DEAD    BIT1
-#define NV_READ "AT+CNVR=1,\"/nv/item_files/modem/nas/mm_backoff_remaining_info\""
+#include "modem.h"
+
+#define UART   UART_NUM_2
+#define TX     6
+#define RX     46
+#define LINE   128
+#define SECOND 1000000LL
+#define GOT_IP BIT0
+#define DEAD   BIT1
 
 static const char* TAG = "catm";
 // An LCP Terminate-Request with every control byte escaped: a modem left in PPP by an earlier boot answers NO CARRIER,
@@ -44,6 +46,10 @@ static int64_t unanswered = -90 * SECOND;
 static atomic_bool answered; // this boot
 // The modem spoke unasked, e.g. NO CARRIER once a PPP link of an earlier boot timed out: it can be asked again at once
 static atomic_bool heard;
+// Read under lock, copied out under guard: a dial holds lock for a minute
+EXT_RAM_BSS_ATTR static modem_snapshot fresh, shown;
+static portMUX_TYPE guard = portMUX_INITIALIZER_UNLOCKED;
+static bool kept; // this boot
 
 static void reader(void* arg) {
     (void)arg;
@@ -64,7 +70,9 @@ static void reader(void* arg) {
             if (n == 0) continue;
             line[n] = 0;
             n = 0;
-            ESP_LOGI(TAG, "< %s", line);
+            char logged[LINE];
+            modem_mask(line, logged, sizeof logged);
+            ESP_LOGI(TAG, "< %s", logged);
             if (dialing && strncmp(line, "CONNECT", 7) == 0) data_mode = true;
             // Only a modem sends these: noise on a pin without one would not
             if (strcmp(line, "OK") == 0 || strcmp(line, "NO CARRIER") == 0 || strcmp(line, "RDY") == 0 || line[0] == '+' || line[0] == '$')
@@ -100,34 +108,41 @@ static bool at(const char* command, const char* prefix, char* reply) {
     return false;
 }
 
-// The item's first 16 hex digits are the T3346 back-off and timer 20 left
-static bool no_backoff(const char* reply) {
-    for (const char* p = reply; *p; p++) {
-        size_t n = strspn(p, "0123456789abcdefABCDEF");
-        if (n == 32) return strspn(p, "0") >= 16;
-        p += n > 0 ? n - 1 : 0;
+// The item into fresh: 1 for OK, 0 for ERROR (the value then empty), -1 when left unanswered (the value kept)
+static int ask(modem_item item) {
+    char reply[LINE];
+    int64_t before = unanswered;
+    bool ok = at(modem_commands[item].read, modem_commands[item].prefix, reply);
+    if (unanswered != before) return -1;
+    modem_value(reply, modem_commands[item].prefix, fresh.values[item], sizeof fresh.values[item]);
+    fresh.read_at[item] = esp_timer_get_time();
+    return ok;
+}
+
+// CTRJ 0 alone proves nothing: its read gives 0 while its gate is unset
+static esp_err_t backoff_clear(void) {
+    long trj = -1;
+    if (ask(MODEM_REJECTS) <= 0 || ask(MODEM_BACKOFF) <= 0) return ESP_ERR_TIMEOUT;
+    sscanf(fresh.values[MODEM_REJECTS], "%ld", &trj);
+    if (trj != 0 || !modem_backoff_clear(fresh.values[MODEM_BACKOFF])) {
+        ESP_LOGE(TAG, "a network back-off may be running: nothing sent");
+        return ESP_ERR_INVALID_STATE;
     }
-    return false;
+    return ESP_OK;
 }
 
 // Present, registered, and with the default bearer up, as the research bench required before every dial
 static esp_err_t check(void) {
-    char ctrj[LINE], nv[LINE], cereg[LINE], cpsi[LINE], cgact[LINE];
-    long trj = -1;
     int stat = -1;
-    if (!at("AT+CTRJ", "+CTRJ:", ctrj) || !at(NV_READ, "+CNVR:", nv) || !at("AT+CEREG?", "+CEREG:", cereg) || !at("AT+CPSI?", "+CPSI:", cpsi) ||
-        !at("AT+CGACT?", "+CGACT: 1,", cgact))
-        return ESP_ERR_TIMEOUT;
-    sscanf(ctrj, "+CTRJ: %ld", &trj);
-    sscanf(cereg, "+CEREG: %*d,%d", &stat);
-    if (trj != 0 || !no_backoff(nv)) {
-        ESP_LOGE(TAG, "a network back-off may be running: no dial");
-        return ESP_ERR_INVALID_STATE;
-    }
+    esp_err_t err = backoff_clear();
+    if (err != ESP_OK) return err;
+    if (ask(MODEM_REGISTRATION) <= 0 || ask(MODEM_SYSTEM) <= 0 || ask(MODEM_BEARER) <= 0) return ESP_ERR_TIMEOUT;
+    sscanf(fresh.values[MODEM_REGISTRATION], "%*d,%d", &stat);
     // The short form stays for ~20 s after the radio is lost
-    if ((stat != 1 && stat != 5) || strncmp(cpsi, "+CPSI: LTE CAT-M1,Online,450-", 29) != 0 || strcmp(cgact, "+CGACT: 1,1") != 0) {
+    if ((stat != 1 && stat != 5) || strncmp(fresh.values[MODEM_SYSTEM], "LTE CAT-M1,Online,450-", 22) != 0 ||
+        strcmp(fresh.values[MODEM_BEARER], "1") != 0) {
         ESP_LOGW(TAG, "not registered with the default bearer up yet");
-        return ESP_ERR_INVALID_STATE;
+        return ESP_ERR_NOT_FINISHED;
     }
     return ESP_OK;
 }
@@ -153,8 +168,8 @@ static esp_err_t open_uart(void) {
     return ESP_OK;
 }
 
-// Answering in command mode and ready to dial
-static esp_err_t ready(void) {
+// Answering in command mode
+static esp_err_t answering(void) {
     char line[LINE];
     if (lines == NULL || data_mode) return ESP_ERR_INVALID_STATE;
     ESP_RETURN_ON_ERROR(open_uart(), TAG, "UART");
@@ -173,8 +188,52 @@ static esp_err_t ready(void) {
     }
     unanswered = -90 * SECOND;
     atomic_store(&answered, true);
-    at("AT+CGMR", "", NULL);
-    return check();
+    ask(MODEM_REVISION);
+    return ESP_OK;
+}
+
+// Items first..last - 1, stopping at one left unanswered; false then
+static bool read_items(modem_item first, modem_item last) {
+    for (int i = first; i < (int)last; i++)
+        if (ask((modem_item)i) < 0) return false;
+    return true;
+}
+
+// Each write the settings call for, then the settings read again; a write left unanswered ends it
+static esp_err_t keep_settings(void) {
+    bool sent[MODEM_ITEMS] = {false}, any = false;
+    for (int i = 0; i < MODEM_REVISION; i++) {
+        if (!modem_wanted(&fresh, (modem_item)i)) continue;
+        int64_t before = unanswered;
+        bool ok = at(modem_commands[i].write, "", NULL);
+        if (unanswered != before) return ESP_ERR_TIMEOUT;
+        ESP_LOGW(TAG, "%s: %s", modem_commands[i].write, ok ? "OK" : "ERROR");
+        sent[i] = any = true;
+    }
+    if (any && !read_items(0, MODEM_REVISION)) return ESP_ERR_TIMEOUT;
+    // eDRX ends with the TAU that follows: CEDRXRDP may still show it
+    for (int i = 0; i < MODEM_REVISION; i++)
+        if (sent[i]) ESP_LOGW(TAG, "%s now: %s", modem_commands[i].name, fresh.values[i == MODEM_EDRX ? MODEM_EDRX_NETWORK : i]);
+    return ESP_OK;
+}
+
+// Answering and ready to dial. After the checks, so that a slow read cannot hold them: the network each time, the settings
+// when asked for, and once a boot with no back-off in sight, the settings read and kept
+static esp_err_t ready(bool settings) {
+    esp_err_t err = answering();
+    if (err != ESP_OK) return err;
+    err = check();
+    bool keep = !kept && (err == ESP_OK || err == ESP_ERR_NOT_FINISHED);
+    if (err != ESP_ERR_TIMEOUT && (!read_items(MODEM_SIGNAL, MODEM_ITEMS) || ((settings || keep) && !read_items(0, MODEM_REVISION))))
+        err = ESP_ERR_TIMEOUT;
+    if (keep && err != ESP_ERR_TIMEOUT) {
+        kept = true;
+        if (keep_settings() != ESP_OK) err = ESP_ERR_TIMEOUT;
+    }
+    taskENTER_CRITICAL(&guard);
+    shown = fresh;
+    taskEXIT_CRITICAL(&guard);
+    return err;
 }
 
 bool catm_answered(void) {
@@ -187,9 +246,23 @@ esp_err_t catm_status(void) {
     xSemaphoreTake(lock, portMAX_DELAY);
     esp_err_t err = ESP_OK;
     if (!data_mode)
-        err = ready();
+        err = ready(false);
     else if (esp_netif_get_ip_info(netif, &ip) == ESP_OK)
         ESP_LOGI(TAG, "PPP, ip " IPSTR, IP2STR(&ip.ip));
+    xSemaphoreGive(lock);
+    return err;
+}
+
+void catm_snapshot(modem_snapshot* out) {
+    taskENTER_CRITICAL(&guard);
+    *out = shown;
+    taskEXIT_CRITICAL(&guard);
+}
+
+esp_err_t catm_read(void) {
+    if (lines == NULL) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    esp_err_t err = data_mode ? ESP_ERR_INVALID_STATE : ready(true);
     xSemaphoreGive(lock);
     return err;
 }
@@ -198,7 +271,7 @@ static void disconnect(void);
 
 static esp_err_t dial(void) {
     char line[LINE];
-    esp_err_t err = ready();
+    esp_err_t err = ready(false);
     if (err != ESP_OK) return err;
     // So that no late result of the checks reads as the dial's
     vTaskDelay(pdMS_TO_TICKS(1000));

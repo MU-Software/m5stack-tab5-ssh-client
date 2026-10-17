@@ -14,6 +14,7 @@
 #include <shiroko/shiroko.h>
 
 #include "layout.h"
+#include "modem.h"
 #include "settings.h"
 #include "ui.h"
 
@@ -37,6 +38,33 @@ static ssh_host hosts[] = {
     {"cloud", "ssh.example.org", "me", "", 2222, NULL},
 };
 static const char* networks[] = {"MU_GL_XE3000", "YGYguest", "iPhone 15"};
+// As the research module answered; read_at only needs to be non-zero
+static const modem_snapshot modem = {
+    .values =
+        {
+            [MODEM_QUALCOMM_URC] = "1",
+            [MODEM_BATTERY_CHECK] = "1",
+            [MODEM_EDRX] = "\"0001\"",
+            [MODEM_EDRX_NETWORK] = "0",
+            [MODEM_PSM] = "0,,,\"01100000\",\"00000000\"",
+            [MODEM_MODE] = "2",
+            [MODEM_CATEGORY] = "1",
+            [MODEM_BANDS] = "1,2,3,4,5,8,12,13,14,18,19,20,25,26,27,28,66,85",
+            [MODEM_REVISION] = "1951B17SIM7080",
+            [MODEM_REJECTS] = "0",
+            [MODEM_BACKOFF] = "1,00000000000000000000000000000000",
+            [MODEM_REGISTRATION] = "0,1",
+            [MODEM_SYSTEM] = "LTE CAT-M1,Online,450-06,0x420F,14841609,82,EUTRAN-BAND5,2506,0,0,-7,-102,-75,13",
+            [MODEM_BEARER] = "1",
+            [MODEM_SIGNAL] = "18,99",
+            [MODEM_OPERATOR] = "0,0,\"LG U+\",7",
+            [MODEM_SIM] = "READY",
+            [MODEM_ICCID] = "898206…1234",
+            [MODEM_CONTEXT] = "\"IP\",\"internet.lguplus.co.kr\",\"0.0.0.0\",0,0,0,0",
+            [MODEM_ADDRESS] = "\"10.53.105.62\"",
+        },
+    .read_at = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+};
 
 static shr_status acquire(void* user, shr_surface* out) {
     (void)user;
@@ -85,6 +113,12 @@ static const char* text(void* user, const char* name) {
     }
     if (strcmp(name, "lte.detail") == 0) return "SKT · CAT-M · -97 dBm";
     if (strcmp(name, "battery") == 0) return "87%";
+    if (strcmp(name, "modem.read") == 0) return "PPP 중: 다이얼 전에 읽은 값 · 다시 읽으려면 LTE 끄기";
+    if (strncmp(name, "modem.", 6) == 0 && strstr(name, ".age") != NULL) return "12분 전";
+    if (strncmp(name, "modem.", 6) == 0) {
+        static char modem_text_buffer[96];
+        return modem_text(&modem, name + 6, modem_text_buffer, sizeof modem_text_buffer) != MODEM_ITEMS ? modem_text_buffer : NULL;
+    }
     if (strcmp(name, "time") == 0) {
         static char time_text[8];
         strftime(time_text, sizeof time_text, "%H:%M", localtime(&now));

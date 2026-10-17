@@ -128,7 +128,7 @@ static void command(char* line) {
         ESP_LOGW(TAG,
                  "commands: sd on|off, restart, update SIZE CRC32, c6 update SIZE CRC32, wifi on|off [save]|connect SSID [PASSWORD]|forget SSID, lte "
                  "on|off|status, net "
-                 "status|check HOST PORT");
+                 "status|check HOST PORT, modem status|read");
     }
 }
 

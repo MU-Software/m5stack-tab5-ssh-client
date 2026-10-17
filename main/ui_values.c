@@ -5,8 +5,10 @@
 #include <string.h>
 #include <time.h>
 
+#include <esp_attr.h>
 #include <esp_timer.h>
 
+#include "catm.h"
 #include "clock.h"
 #include "net.h"
 #include "power.h"
@@ -17,6 +19,7 @@
 static const global_state* state;
 static net_info net;
 static int millivolts = -1;
+EXT_RAM_BSS_ATTR static modem_snapshot modem;
 // One value at a time: the UI copies each before asking for the next
 static char text[96];
 
@@ -33,7 +36,11 @@ static const char* const lte_states[] = {
 static void refresh(void) {
     static int64_t described = -2 * SECOND, measured = -5 * SECOND;
     int64_t now = esp_timer_get_time();
-    if (now - described >= 2 * SECOND) net_describe(&net), described = now;
+    if (now - described >= 2 * SECOND) {
+        net_describe(&net);
+        catm_snapshot(&modem);
+        described = now;
+    }
     if (now - measured >= 5 * SECOND) {
         if (!power_battery(&millivolts)) millivolts = -1;
         measured = now;
@@ -57,6 +64,24 @@ static const char* network(void) {
         snprintf(text, sizeof text, "LTE");
     else
         snprintf(text, sizeof text, "망 없음 · LTE %s", net.lte_on ? lte_states[net.lte] : "꺼짐");
+    return text;
+}
+
+// {modem.NAME}, and {modem.NAME.age} for when it was read
+static const char* modem_shown(const char* name) {
+    char shown[32], scratch[96];
+    if (strcmp(name, "read") == 0)
+        return net.lte_address[0] != 0 ? "PPP 중: 다이얼 전에 읽은 값 · 다시 읽으려면 LTE 끄기" : "PPP 아님: 다시 읽기로 새로 읽음";
+    const char* age = strstr(name, ".age");
+    if (age == NULL) return modem_text(&modem, name, text, sizeof text) != MODEM_ITEMS ? text : NULL;
+    snprintf(shown, sizeof shown, "%.*s", (int)(age - name), name);
+    modem_item item = modem_text(&modem, shown, scratch, sizeof scratch);
+    if (item == MODEM_ITEMS || modem.read_at[item] == 0) return NULL;
+    int64_t ago = (esp_timer_get_time() - modem.read_at[item]) / SECOND;
+    if (ago < 120)
+        snprintf(text, sizeof text, "%d초 전", (int)ago);
+    else
+        snprintf(text, sizeof text, "%d분 전", (int)(ago / 60));
     return text;
 }
 
@@ -103,6 +128,7 @@ static const char* value(void* user, const char* name) {
         return lte_states[net.lte];
     }
     if (strcmp(name, "lte.detail") == 0) return net.lte_address[0] != 0 ? net.lte_address : NULL;
+    if (strncmp(name, "modem.", 6) == 0) return modem_shown(name + 6);
     if (strcmp(name, "countdown") == 0) {
         int64_t left = state->host_deadline_us - esp_timer_get_time();
         if (state->host_deadline_us == 0 || left < 0) return NULL;
