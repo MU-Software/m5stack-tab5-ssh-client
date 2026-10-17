@@ -19,6 +19,7 @@
 static const global_state* state;
 static net_info net;
 static int millivolts = -1;
+static bool charging;
 EXT_RAM_BSS_ATTR static modem_snapshot modem;
 // One value at a time: the UI copies each before asking for the next
 static char text[96];
@@ -42,7 +43,7 @@ static void refresh(void) {
         described = now;
     }
     if (now - measured >= 5 * SECOND) {
-        if (!power_battery(&millivolts)) millivolts = -1;
+        if (!power_battery(&millivolts, &charging)) millivolts = -1;
         measured = now;
     }
 }
@@ -146,10 +147,11 @@ static const char* value(void* user, const char* name) {
     if (strcmp(name, "network") == 0) return network();
     if (strcmp(name, "battery") == 0) {
         if (millivolts < 0) return NULL;
+        const char* mark = charging ? "⚡" : "";
         if (state->battery == 1)
-            snprintf(text, sizeof text, "%d%%", percent(millivolts));
+            snprintf(text, sizeof text, "%s%d%%", mark, percent(millivolts));
         else
-            snprintf(text, sizeof text, "%d.%02d V", millivolts / 1000, millivolts % 1000 / 10);
+            snprintf(text, sizeof text, "%s%d.%02d V", mark, millivolts / 1000, millivolts % 1000 / 10);
         return text;
     }
     if (strcmp(name, "time") == 0) {

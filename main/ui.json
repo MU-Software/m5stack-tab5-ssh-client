@@ -14,7 +14,7 @@
             {"when": "session.4", "button": "session 4", "text": " {session.4}"},
             {"width": 22, "align": "right", "style": "alert", "text": "{status}"},
             {"width": 30, "align": "right", "text": "{network}"},
-            {"width": 7, "align": "right", "text": "{battery}"},
+            {"width": 9, "align": "right", "text": "{battery}"},
             {"width": 7, "align": "right", "text": "{time} "}
           ]
         },

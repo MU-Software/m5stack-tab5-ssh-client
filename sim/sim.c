@@ -154,7 +154,10 @@ static const char* text(void* user, const char* name) {
     }
     if (strcmp(name, "lte.detail") == 0) return "SKT · CAT-M · -97 dBm";
     if (strncmp(name, "wifi.", 5) == 0) return wifi_text(name + 5);
-    if (strcmp(name, "battery") == 0) return "87%";
+    if (strcmp(name, "battery") == 0) {
+        snprintf(tab, sizeof tab, "%s%s", now / 3 % 2 ? "⚡" : "", state.battery == 1 ? "87%" : "8.21 V");
+        return tab;
+    }
     if (strcmp(name, "modem.read") == 0) return "PPP 중: 다이얼 전에 읽은 값 · 다시 읽으려면 LTE 끄기";
     if (strncmp(name, "modem.", 6) == 0 && strstr(name, ".age") != NULL) return "12분 전";
     if (strncmp(name, "modem.", 6) == 0) {
