@@ -32,6 +32,9 @@ CONFIG_ESP_HOSTED_AUTO_CALL_INIT_BEFORE_APP_MAIN=n
 CONFIG_LWIP_DHCP_RESTORE_LAST_IP=n
 CONFIG_LWIP_TCP_WND_DEFAULT=32768
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+# A window of 1200-byte segments + 2, as Kconfig advises: with the default 6 lwIP dropped the rest of each burst unacknowledged,
+# a 200 ms retransmission timeout each, and SSH uploads ran at 60 KB/s
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=30
 CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y
 CONFIG_LWIP_PPP_SUPPORT=y
 # DNS of the path in use, not of whichever interface got an address last
