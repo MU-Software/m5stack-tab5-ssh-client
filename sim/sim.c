@@ -60,10 +60,11 @@ static const modem_snapshot modem = {
             [MODEM_OPERATOR] = "0,0,\"LG U+\",7",
             [MODEM_SIM] = "READY",
             [MODEM_ICCID] = "898206…1234",
+            [MODEM_NUMBER] = "\"\",\"01012345678\",129",
             [MODEM_CONTEXT] = "\"IP\",\"internet.lguplus.co.kr\",\"0.0.0.0\",0,0,0,0",
             [MODEM_ADDRESS] = "\"10.53.105.62\"",
         },
-    .read_at = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+    .read_at = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
 };
 static const struct {
     const char* ssid;

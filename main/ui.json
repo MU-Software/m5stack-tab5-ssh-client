@@ -185,6 +185,7 @@
         {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   신호"}, {"text": "{modem.signal}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.signal.age} "}]},
         {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   PDP"}, {"text": "{modem.bearer}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.bearer.age} "}]},
         {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   SIM"}, {"text": "{modem.sim}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.sim.age} "}]},
+        {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   전화번호"}, {"text": "{modem.number}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.number.age} "}]},
         {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   back-off"}, {"text": "{modem.backoff}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.backoff.age} "}]},
         {"height": 1, "text": ""},
         {"height": 1, "style": "section", "text": " 펌웨어가 지키는 값 · 부팅 때 back-off가 보이지 않으면 맞춤"},

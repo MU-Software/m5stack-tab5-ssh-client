@@ -28,16 +28,37 @@ const modem_command modem_commands[MODEM_ITEMS] = {
     [MODEM_SIM] = {"sim", "AT+CPIN?", "+CPIN: ", NULL},
     // The reply is the ICCID alone, which starts with 89 (telecom)
     [MODEM_ICCID] = {"iccid", "AT+CCID", "89", NULL},
+    // "<alpha>","<number>",<type> for each number the SIM keeps, often none for a data SIM
+    [MODEM_NUMBER] = {"number", "AT+CNUM", "+CNUM: ", NULL},
     [MODEM_CONTEXT] = {"context", "AT+CGDCONT?", "+CGDCONT: 1,", NULL},
     [MODEM_ADDRESS] = {"address", "AT+CGPADDR", "+CGPADDR: 1,", NULL},
 };
 
+// Where the number of a +CNUM line or value starts, NULL for an empty one or another line
+static const char* number_at(const char* line) {
+    if (strncmp(line, "+CNUM: ", 7) == 0) line += 7;
+    const char* number = line[0] == '"' ? strstr(line + 1, "\",\"") : NULL;
+    if (number == NULL) return NULL;
+    number += 3;
+    size_t n = strspn(number, "+0123456789");
+    return n > 0 && number[n] == '"' ? number : NULL;
+}
+
 void modem_mask(const char* line, char* out, size_t size) {
     size_t n = strlen(line);
-    if (strncmp(line, "89", 2) == 0 && n >= 18 && n <= 22 && strspn(line, "0123456789abcdefABCDEF") == n)
+    const char* number = number_at(line);
+    if (strncmp(line, "89", 2) == 0 && n >= 18 && n <= 22 && strspn(line, "0123456789abcdefABCDEF") == n) {
         snprintf(out, size, "%.6s…%s", line, line + n - 4);
-    else
+    } else if (number != NULL) {
+        n = strspn(number, "+0123456789");
+        snprintf(out, size, "%.*s…%s", (int)(number - line), line, number + (n > 4 ? n - 4 : 0));
+    } else {
         snprintf(out, size, "%s", line);
+    }
+}
+
+bool modem_kept(const char* line, const char* prefix, const char* reply) {
+    return strncmp(line, prefix, strlen(prefix)) == 0 && number_at(reply) == NULL;
 }
 
 void modem_value(const char* line, const char* prefix, char* value, size_t size) {
@@ -46,7 +67,11 @@ void modem_value(const char* line, const char* prefix, char* value, size_t size)
     // The ICCID's prefix is part of it
     if (strncmp(line, prefix, n) == 0) rest = strcmp(prefix, "89") == 0 ? line : line + n;
     rest += strspn(rest, " ");
-    modem_mask(rest, value, size);
+    // The number whole for the screen; only logs mask it
+    if (number_at(rest) != NULL)
+        snprintf(value, size, "%s", rest);
+    else
+        modem_mask(rest, value, size);
 }
 
 // The NV item's 32 hex digits, NULL without them
@@ -126,6 +151,7 @@ static const struct {
     {"signal", MODEM_SYSTEM},
     {"bearer", MODEM_BEARER},
     {"sim", MODEM_SIM},
+    {"number", MODEM_NUMBER},
     {"backoff", MODEM_BACKOFF},
 };
 
@@ -189,6 +215,12 @@ modem_item modem_text(const modem_snapshot* s, const char* name, char* out, size
                  s->read_at[MODEM_CONTEXT] != 0 ? field(s->values[MODEM_CONTEXT], 1, b, sizeof b) : "?");
     } else if (item == MODEM_SIM) {
         snprintf(out, size, "%s · %s", v[0] != 0 ? v : "모름", s->values[MODEM_ICCID][0] != 0 ? s->values[MODEM_ICCID] : "?");
+    } else if (item == MODEM_NUMBER) {
+        const char* number = number_at(v);
+        if (number != NULL)
+            snprintf(out, size, "%.*s", (int)strspn(number, "+0123456789"), number);
+        else
+            snprintf(out, size, "없음");
     } else if (item == MODEM_BACKOFF) {
         const char* digits = backoff_digits(v);
         if (modem_backoff_clear(v) && strcmp(s->values[MODEM_REJECTS], "0") == 0)

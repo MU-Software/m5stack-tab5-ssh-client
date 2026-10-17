@@ -622,8 +622,12 @@ static void log_modem(void) {
     catm_snapshot(s);
     int64_t now = esp_timer_get_time();
     if (catm_connected()) ESP_LOGI(TAG, "modem: PPP is up, values from before the dial (lte off to read again)");
-    for (int i = 0; i < MODEM_ITEMS; i++)
-        if (s->read_at[i] != 0) ESP_LOGI(TAG, "modem %s: %s (%lld s ago)", modem_commands[i].name, s->values[i], (now - s->read_at[i]) / 1000000);
+    char logged[sizeof s->values[0]];
+    for (int i = 0; i < MODEM_ITEMS; i++) {
+        if (s->read_at[i] == 0) continue;
+        modem_mask(s->values[i], logged, sizeof logged);
+        ESP_LOGI(TAG, "modem %s: %s (%lld s ago)", modem_commands[i].name, logged, (now - s->read_at[i]) / 1000000);
+    }
     free(s);
 }
 

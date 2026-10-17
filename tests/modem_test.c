@@ -47,6 +47,7 @@ int main(void) {
         [MODEM_OPERATOR] = "+COPS: 0,0,\"LG U+\",7",
         [MODEM_SIM] = "+CPIN: READY",
         [MODEM_ICCID] = "89820612345678901234",
+        [MODEM_NUMBER] = "+CNUM: \"\",\"+821012345678\",145",
         [MODEM_CONTEXT] = "+CGDCONT: 1,\"IP\",\"internet.lguplus.co.kr\",\"0.0.0.0\",0,0,0,0",
         [MODEM_ADDRESS] = "+CGPADDR: 1,\"10.53.105.62\"",
     };
@@ -79,6 +80,15 @@ int main(void) {
     check(strcmp(shown(&s, "bearer"), "켜짐 · 10.53.105.62 · APN internet.lguplus.co.kr") == 0, "the PDP context");
     check(strcmp(shown(&s, "sim"), "READY · 898206…1234") == 0, "SIM with the ICCID masked");
     check(strcmp(shown(&s, "backoff"), "보이지 않음") == 0, "no back-off in sight");
+    check(strcmp(shown(&s, "number"), "+821012345678") == 0, "the number in full on the screen");
+    modem_mask("+CNUM: \"\",\"+821012345678\",145", masked, sizeof masked);
+    check(strcmp(masked, "+CNUM: \"\",\"…5678\",145") == 0, "a +CNUM line masked for the log");
+    modem_mask(s.values[MODEM_NUMBER], masked, sizeof masked);
+    check(strcmp(masked, "\"\",\"…5678\",145") == 0, "its value too, for modem status");
+    modem_mask(s.values[MODEM_CONTEXT], masked, sizeof masked);
+    check(strcmp(masked, s.values[MODEM_CONTEXT]) == 0, "the context's quoted fields are no number");
+    modem_mask(s.values[MODEM_PSM], masked, sizeof masked);
+    check(strcmp(masked, s.values[MODEM_PSM]) == 0, "nor PSM's timers");
     check(modem_text(&s, "signal", masked, sizeof masked) == MODEM_SYSTEM && modem_text(&s, "edrx", masked, sizeof masked) == MODEM_EDRX_NETWORK &&
               modem_text(&s, "category", masked, sizeof masked) == MODEM_ITEMS,
           "each name with the item its age goes by; only the page's names");
@@ -100,6 +110,7 @@ int main(void) {
         [MODEM_OPERATOR] = "+COPS: 0",
     };
     s = parsed(other);
+    check(strcmp(shown(&s, "number"), "없음") == 0, "no number after ERROR");
     check(strcmp(shown(&s, "qualcomm_urc"), "모름") == 0 && strcmp(shown(&s, "battery_check"), "끔") == 0, "a missing line is unknown, 0 is 끔");
     check(strcmp(shown(&s, "edrx"), "망이 10.24 s 허용") == 0, "eDRX granted by the network");
     check(!modem_wanted(&s, MODEM_QUALCOMM_URC) && modem_wanted(&s, MODEM_BATTERY_CHECK) && modem_wanted(&s, MODEM_EDRX) &&
@@ -120,6 +131,26 @@ int main(void) {
     check(!modem_wanted(&s, MODEM_EDRX), "eDRX granted for NB-IoT is not CAT-M's");
     snprintf(s.values[MODEM_EDRX_NETWORK], sizeof s.values[MODEM_EDRX_NETWORK], "%s", "");
     check(strcmp(shown(&s, "edrx"), "모름") == 0, "eDRX unknown without a CEDRXRDP line");
+
+    const char* const numbers[][3] = {
+        {"+CNUM: \"\",\"\",129", NULL, "없음"},
+        {"+CNUM: \"\",\"01012345678\",129", NULL, "01012345678"},
+        {"+CNUM: \"\",\"\",129", "+CNUM: \"Line 2\",\"01087654321\",129", "01087654321"},
+        {"+CNUM: \"\",\"01012345678\",129", "+CNUM: \"\",\"\",129", "01012345678"},
+        {"+CNUM: \"\",\"01012345678\",129", "+CNUM: \"Fax\",\"01087654321\",129", "01012345678"},
+    };
+    for (size_t i = 0; i < sizeof numbers / sizeof numbers[0]; i++) {
+        char reply[128] = "";
+        for (int k = 0; k < 3; k++) {
+            const char* line = k == 2 ? "OK" : numbers[i][k];
+            if (line != NULL && modem_kept(line, modem_commands[MODEM_NUMBER].prefix, reply)) snprintf(reply, sizeof reply, "%s", line);
+        }
+        modem_value(reply, modem_commands[MODEM_NUMBER].prefix, s.values[MODEM_NUMBER], sizeof s.values[MODEM_NUMBER]);
+        check(strcmp(shown(&s, "number"), numbers[i][2]) == 0, numbers[i][2]);
+    }
+    char reply[128] = "+CGACT: 1,1";
+    check(modem_kept("+CGACT: 1,0", "+CGACT: 1,", reply) && !modem_kept("+CGACT: 2,1", "+CGACT: 1,", reply),
+          "other replies: the last line with the prefix");
 
     modem_snapshot unread = {0};
     unread.values[MODEM_BATTERY_CHECK][0] = '0';

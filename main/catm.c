@@ -100,7 +100,7 @@ static bool at(const char* command, const char* prefix, char* reply) {
     if (reply != NULL) reply[0] = 0;
     send(command);
     for (int64_t deadline = esp_timer_get_time() + 3 * SECOND; receive(line, deadline);) {
-        if (reply != NULL && strncmp(line, prefix, strlen(prefix)) == 0) strlcpy(reply, line, LINE);
+        if (reply != NULL && modem_kept(line, prefix, reply)) strlcpy(reply, line, LINE);
         if (strcmp(line, "OK") == 0) return true;
         if (strcmp(line, "ERROR") == 0 || strncmp(line, "+CME ERROR", 10) == 0) return false;
     }

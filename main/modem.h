@@ -25,6 +25,7 @@ typedef enum {
     MODEM_OPERATOR,
     MODEM_SIM,
     MODEM_ICCID,
+    MODEM_NUMBER,
     MODEM_CONTEXT,
     MODEM_ADDRESS,
     MODEM_ITEMS
@@ -46,8 +47,12 @@ typedef struct {
 
 // The reply line after prefix and spaces into value, empty when the line does not start with it; an ICCID masked
 void modem_value(const char* line, const char* prefix, char* value, size_t size);
-// An ICCID as its issuer and last four digits, anything else as it is: logs and the screen never show a whole one
+// An ICCID as its issuer and last four digits, the number of a +CNUM line or value as its last four, anything else as it
+// is: logs and the screen never show a whole ICCID, logs never a whole number
 void modem_mask(const char* line, char* out, size_t size);
+// Whether at() keeps line over reply, the line kept so far: the last one starting with prefix, but the first +CNUM entry
+// with a number
+bool modem_kept(const char* line, const char* prefix, const char* reply);
 // The NV back-off item's T3346 and timer 20 parts are 0
 bool modem_backoff_clear(const char* value);
 // Whether modem_commands[item].write is due: a switch that reads 0, or eDRX the network grants for CAT-M
