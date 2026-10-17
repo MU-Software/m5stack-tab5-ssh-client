@@ -3,7 +3,7 @@
 SSH client for the M5Stack Tab5 (ESP32-P4) on wolfSSH, drawn on the panel through Ghostty and Shiroko. Work in progress:
 keys from M5Stack's Keyboard for Tab5, a USB keyboard on the USB-A port (boot protocol, no hubs) or the USB terminal
 port. Korean (Dubeolsik): LANG1, or a short press of CapsLock (Aa on the Tab5 keyboard); a long press locks
-capitals.
+capitals. Sym with 1…0, - and + on the Tab5 keyboard: F1–F12.
 
 ## Build and flash
 
