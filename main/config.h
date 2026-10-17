@@ -22,7 +22,11 @@ bool config_wifi_valid(const wifi_network* network);
 ssh_host* config_ssh_hosts(const char* text);
 
 host_state known_hosts_check(const char* text, const char* name, const uint8_t* key, size_t key_length);
+// key in SSH wire form; a line with options before the key type never matches, as the options would go unenforced
+bool authorized_keys_check(const char* text, const uint8_t* key, size_t key_length);
 int known_hosts_line(char* out, size_t size, const char* name, const uint8_t* key, size_t key_length);
+// "TYPE BASE64\n", as a .pub file holds it
+int public_key_line(char* out, size_t size, const uint8_t* key, size_t key_length);
 int ssh_fingerprint(char* out, size_t size, const uint8_t* key, size_t key_length);
 
 int openssh_public_key(const uint8_t* container, size_t size, const uint8_t** key, size_t* key_length);

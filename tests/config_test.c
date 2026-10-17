@@ -154,6 +154,14 @@ int main(void) {
     check(known_hosts_check(known, "new.org", a, a_len) == HOST_UNKNOWN, "known_hosts: unknown host");
     check(known_hosts_check(known, "ca.org", b, b_len) == HOST_UNKNOWN, "known_hosts: markers skipped");
 
+    static const char authorized[] = "# ssh-ed25519 " KEY_A "\n"
+                                     "restrict ssh-ed25519 " KEY_A " options\n"
+                                     "ssh-rsa " KEY_A "\n"
+                                     "  ssh-ed25519 " KEY_B " me@mac\r\n";
+    check(authorized_keys_check(authorized, b, b_len), "authorized_keys: listed key");
+    check(!authorized_keys_check(authorized, a, a_len), "authorized_keys: comments, options and another type never match");
+    check(!authorized_keys_check(authorized, b, b_len - 1) && !authorized_keys_check("", b, b_len), "authorized_keys: a prefix, an empty file");
+
     char line[256], fingerprint[64];
     check(known_hosts_line(line, sizeof line, "[new.org]:2222", a, a_len) == 0 && strcmp(line, "[new.org]:2222 ssh-ed25519 " KEY_A "\n") == 0 &&
               known_hosts_check(line, "[new.org]:2222", a, a_len) == HOST_KNOWN,

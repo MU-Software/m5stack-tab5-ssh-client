@@ -34,3 +34,6 @@ target_link_libraries(settings_test cjson wolf)
 
 add_executable(ssh_test ssh_test.c ${TOP}/main/config.c ${TOP}/main/ssh.c ${TOP}/main/tmux.c)
 target_link_libraries(ssh_test cjson wolf)
+
+add_executable(sshd_test sshd_test.c ${TOP}/main/config.c ${TOP}/main/sshd.c)
+target_link_libraries(sshd_test cjson wolf pthread)

@@ -111,6 +111,7 @@ int main(void) {
     tz.text[47] = 'A', tz.text[48] = 0;
     check(!settings_set(&state, settings_find("timezone"), &tz) && strlen(state.timezone) == 47, "48 characters refused");
     check(!settings_set(&state, settings_find("timezone"), &(setting_value){0}), "an empty time zone refused");
+    check(settings_set(&state, settings_find("remote.user"), &(setting_value){0}) && state.remote.user[0] == 0, "an empty user name: any");
 
     check(set_number(&state, "bars.top", 0) && !set_number(&state, "bars.bottom", 0) && state.bars.bottom, "both bars off refused");
     set_number(&state, "bars.top", 1);

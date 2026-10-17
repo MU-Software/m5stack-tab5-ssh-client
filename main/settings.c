@@ -21,7 +21,10 @@ static const setting table[] = {
     {"log.file_kb", SETTING_NUMBER, 16, 65536, 0, " KB", .offset = FIELD(log.file_kb)},
     {"log.keep_mb", SETTING_NUMBER, 1, 65536, 0, " MB", .offset = FIELD(log.keep_mb)},
     {"log.keep_days", SETTING_NUMBER, 1, 3650, 1, "일", .offset = FIELD(log.keep_days)},
-    {"timezone", SETTING_TEXT, .offset = FIELD(timezone)},
+    {"timezone", SETTING_TEXT, 1, .offset = FIELD(timezone)},
+    {"remote.enabled", SETTING_TOGGLE, .offset = FIELD(remote.enabled)},
+    {"remote.lte", SETTING_TOGGLE, .offset = FIELD(remote.lte)},
+    {"remote.user", SETTING_TEXT, .offset = FIELD(remote.user)},
 };
 
 const setting* settings_find(const char* name) {
@@ -59,7 +62,7 @@ bool settings_set(global_state* state, const setting* s, const setting_value* va
         return false;
     if (s->kind == SETTING_TEXT) {
         size_t length = strnlen(value->text, sizeof value->text);
-        if (length == 0 || length >= s->size || length == sizeof value->text) return false;
+        if (length < (size_t)s->minimum || length >= s->size || length == sizeof value->text) return false;
         memcpy(at, value->text, length + 1);
         return true;
     }
@@ -109,7 +112,7 @@ static const cJSON* lookup(const cJSON* config, const char* name, bool* wrong) {
     return parent != NULL ? lookup(parent, dot + 1, wrong) : NULL;
 }
 
-static bool parse(const setting* s, const cJSON* item, setting_value* value) {
+bool settings_parse(const setting* s, const cJSON* item, setting_value* value) {
     *value = (setting_value){0};
     if (s->kind == SETTING_TOGGLE) {
         value->number = cJSON_IsTrue(item);
@@ -131,7 +134,7 @@ void settings_load(global_state* state, const cJSON* config, void (*refused)(con
     bool wrong;
     for (const setting* s = table; s < table + sizeof table / sizeof table[0]; s++) {
         const cJSON* item = lookup(config, s->name, &wrong);
-        if ((item != NULL || wrong) && (wrong || !parse(s, item, &value) || !settings_set(state, s, &value))) refused(s->name);
+        if ((item != NULL || wrong) && (wrong || !settings_parse(s, item, &value) || !settings_set(state, s, &value))) refused(s->name);
     }
 }
 

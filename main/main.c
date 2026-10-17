@@ -18,7 +18,6 @@
 #include <nvs_flash.h>
 #include <wolfssl/wolfcrypt/memory.h>
 
-#include "c6.h"
 #include "catm.h"
 #include "clock.h"
 #include "config.h"
@@ -30,12 +29,14 @@
 #include "modem.h"
 #include "net.h"
 #include "power.h"
+#include "remote.h"
 #include "screen.h"
 #include "settings.h"
 #include "ssh.h"
 #include "storage.h"
 #include "terminal.h"
 #include "tmux.h"
+#include "update.h"
 #include "usb.h"
 
 static const char* TAG = "main";
@@ -585,18 +586,34 @@ static bool wifi_screen(const ui_event* e) {
     return true;
 }
 
-// The C6 boots the new image once the restart powers it again; it rolls back if that one does not stay up
-static void c6_update_command(size_t size, uint32_t crc) {
-    esp_err_t err;
-    uint8_t* image = usb_receive(size, crc, &err);
-    if (image != NULL) err = c6_update(image, size);
-    free(image);
-    char reply[48];
-    snprintf(reply, sizeof reply, "c6 update %s\n", esp_err_to_name(err));
-    usb_reply(reply);
-    if (err != ESP_OK) return;
-    vTaskDelay(pdMS_TO_TICKS(200)); // for the host to read the reply
-    esp_restart();
+// From the screen or the set command
+static void change(const setting* s, const setting_value* value) {
+    char text[80];
+    settings_text(s, value, text, sizeof text);
+    if (!settings_set(&state, s, value)) {
+        ESP_LOGW(TAG, "%s %s refused", s->name, text);
+        return;
+    }
+    bool saved = storage_set_config(s->name, settings_json(&state, s)) == 0;
+    ESP_LOGI(TAG, "%s %s%s", s->name, text, saved ? "" : ", not saved");
+    if (strncmp(s->name, "log.", 4) == 0) logs_configure(&state.log);
+    if (strcmp(s->name, "timezone") == 0) clock_timezone(state.timezone);
+}
+
+// set NAME VALUE, the value as the configuration file keeps it, text also without its quotes
+static void set_command(const char* arguments) {
+    const char* value = strchr(arguments, ' ');
+    char name[32];
+    snprintf(name, sizeof name, "%.*s", value != NULL ? (int)(value - arguments) : 0, arguments);
+    const setting* s = value != NULL ? settings_find(name) : NULL;
+    cJSON* item = s != NULL ? cJSON_ParseWithOpts(value + 1, NULL, true) : NULL;
+    if (s != NULL && item == NULL) item = cJSON_CreateString(value + 1);
+    setting_value v;
+    if (item != NULL && settings_parse(s, item, &v))
+        change(s, &v);
+    else
+        ESP_LOGW(TAG, "set %s: no such setting or not a value for it", arguments);
+    cJSON_Delete(item);
 }
 
 static void log_modem(void) {
@@ -635,13 +652,23 @@ static void modem_control(const char* arguments) {
 }
 
 static bool command(const char* line) {
-    unsigned long size, crc;
     if (strncmp(line, "modem ", 6) == 0) {
         modem_control(line + 6);
         return true;
     }
-    if (sscanf(line, "c6 update %lu %lx", &size, &crc) == 2) {
-        c6_update_command(size, (uint32_t)crc);
+    if (strcmp(line, "settings") == 0) {
+        const setting* s;
+        for (size_t i = 0; (s = settings_at(i)) != NULL; i++) {
+            cJSON* value = settings_json(&state, s);
+            char* text = cJSON_PrintUnformatted(value);
+            ESP_LOGI(TAG, "%s %s", s->name, text != NULL ? text : "?");
+            free(text);
+            cJSON_Delete(value);
+        }
+        return true;
+    }
+    if (strncmp(line, "set ", 4) == 0) {
+        set_command(line + 4);
         return true;
     }
     if (strncmp(line, "wifi connect ", 13) == 0) {
@@ -793,7 +820,6 @@ static session* restore_sessions(void) {
 
 // From the screen's task, whose stack in internal RAM lets it write NVS
 static void apply(const ui_event* e) {
-    char text[80];
     int n;
     session* s = atomic_load(&shown);
     if (wifi_screen(e) || (e->kind == UI_SET && e->setting == NULL)) return;
@@ -843,15 +869,7 @@ static void apply(const ui_event* e) {
         ESP_LOGI(TAG, "%s: %s", e->name, command(e->name) ? "done" : "unknown");
         return;
     }
-    settings_text(e->setting, &e->value, text, sizeof text);
-    if (!settings_set(&state, e->setting, &e->value)) {
-        ESP_LOGW(TAG, "%s %s refused", e->name, text);
-        return;
-    }
-    bool saved = storage_set_config(e->name, settings_json(&state, e->setting)) == 0;
-    ESP_LOGI(TAG, "%s %s%s", e->name, text, saved ? "" : ", not saved");
-    if (strncmp(e->name, "log.", 4) == 0) logs_configure(&state.log);
-    if (strcmp(e->name, "timezone") == 0) clock_timezone(state.timezone);
+    change(e->setting, &e->value);
 }
 
 // JSON trees, such as the layout the screen keeps, are hundreds of small blocks: in internal RAM they would take the room the
@@ -860,17 +878,17 @@ static void* psram_malloc(size_t size) {
     return heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
 }
 
-static void keep_image(void* arg) {
+static void ran(void* arg) {
     (void)arg;
-    usb_keep_image();
+    update_ran();
 }
 
 // Kept once it has run 10 s: an image that crashes while starting rolls back at the next restart
 static void keep_image_later(void) {
     esp_timer_handle_t keep;
-    if (esp_timer_create(&(esp_timer_create_args_t){.callback = keep_image, .name = "keep image"}, &keep) != ESP_OK ||
+    if (esp_timer_create(&(esp_timer_create_args_t){.callback = ran, .name = "keep image"}, &keep) != ESP_OK ||
         esp_timer_start_once(keep, 10 * 1000000) != ESP_OK)
-        usb_keep_image();
+        update_ran();
 }
 
 void app_main(void) {
@@ -880,6 +898,7 @@ void app_main(void) {
     if (power_start() != ESP_OK) ESP_LOGE(TAG, "no power for the C6, the USB-A port or charging");
     ESP_ERROR_CHECK(keys_start());
     esp_err_t keyboard = keyboard_usb_start();
+    ESP_ERROR_CHECK(update_start());
     ESP_ERROR_CHECK(usb_start(command));
     if (keyboard != ESP_OK) ESP_LOGE(TAG, "no USB keyboard: %s", esp_err_to_name(keyboard));
     if (keyboard_tab5_start() != ESP_OK) ESP_LOGE(TAG, "no Tab5 keyboard");
@@ -897,6 +916,7 @@ void app_main(void) {
     esp_err_t screen = screen_start(&state);
     if (screen == ESP_OK) screen_resized(&state.terminal_size);
     keep_image_later();
+    if (remote_start(&state, command) != ESP_OK) ESP_LOGE(TAG, "no remote control");
     saves = xQueueCreate(4, sizeof(save));
     input_lock = xSemaphoreCreateMutex();
     // Held for good: the sessions' own Init and Cleanup then never tear wolfCrypt down under one another

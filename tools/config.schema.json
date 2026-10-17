@@ -87,6 +87,28 @@
       },
       "type": "object"
     },
+    "remote": {
+      "additionalProperties": false,
+      "description": "The control commands over SSH on port 22, for the keys in the SD card's .ssh/authorized_keys",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "lte": {
+          "default": false,
+          "description": "Also from the LTE address, not only Wi-Fi",
+          "type": "boolean"
+        },
+        "user": {
+          "default": "",
+          "description": "Only this SSH user name; empty: any, the key alone decides",
+          "maxLength": 32,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "timezone": {
       "default": "KST-9",
       "description": "POSIX TZ, for log dates and times",

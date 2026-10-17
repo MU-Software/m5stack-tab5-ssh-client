@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The Tab5 over USB: the firmware's terminal and control ports (TinyUSB), or USB-Serial/JTAG for esptool."""
+"""The Tab5 over USB: the firmware's terminal and control ports (TinyUSB), or USB-Serial/JTAG for esptool. Or SSH."""
 
 import os
+import subprocess
 import time
 import zlib
 from pathlib import Path
@@ -16,6 +17,17 @@ ESPRESSIF = 0x303A
 USB_SERIAL_JTAG = 0x1001
 
 app = typer.Typer(no_args_is_help=True)
+host: str | None = None
+
+
+@app.callback()
+def main(
+    destination: Annotated[
+        str | None, typer.Option("--host", envvar="TAB5_HOST", help="over SSH instead: a Host in ~/.ssh/config, ...")
+    ] = None,
+) -> None:
+    global host
+    host = destination
 
 
 def ports(jtag: bool = False) -> list[str]:
@@ -56,12 +68,34 @@ def esptool_main(*args: str) -> None:
     esptool.main(["--chip", "esp32p4", "--port", jtag_port(), "--after", "watchdog-reset", *args])
 
 
+def ssh(
+    destination: str, command: str, data: bytes | None = None, batch: str = "no"
+) -> subprocess.CompletedProcess[bytes]:
+    options = ["-o", "ConnectTimeout=3", "-o", f"BatchMode={batch}"]
+    return subprocess.run(["ssh", *options, destination, command], input=data, capture_output=True)
+
+
+def update_over_network(destination: str, command: str, line: str, data: bytes) -> None:
+    if (sent := ssh(destination, line, data=data)).stdout.strip() != f"{command} ESP_OK".encode():
+        raise SystemExit((sent.stdout or sent.stderr).decode().strip())
+    time.sleep(2)
+    # This login is what keeps a new app image
+    for _ in range(30):
+        if (back := ssh(destination, "version", batch="yes")).returncode == 0:
+            return print(f"updated: {back.stdout.decode().strip()}")
+        time.sleep(1)
+    raise SystemExit("the Tab5 did not come back over the network: a new app image rolls back after 60 s")
+
+
 @app.command()
 def update(image: Path, c6: Annotated[bool, typer.Option(help="an ESP32-C6 esp_hosted image")] = False) -> None:
-    """Send an app image (or the C6's) over the control port, then wait for the Tab5 to come back."""
+    """Send an app image (or the C6's) over the control port or SSH, then wait for the Tab5 to come back."""
     data, command = image.read_bytes(), "c6 update" if c6 else "update"
+    line = f"{command} {len(data)} {zlib.crc32(data):08x}"
+    if host:
+        return update_over_network(host, command, line, data)
     with serial.Serial(firmware_port(-1), timeout=0.1) as s:
-        s.write(f"{command} {len(data)} {zlib.crc32(data):08x}\n".encode())
+        s.write(f"{line}\n".encode())
         wait_line(s, b"ready", 10)
         s.write(data)
         if (result := wait_line(s, f"{command} ".encode(), 180)) != f"{command} ESP_OK".encode():
@@ -83,7 +117,7 @@ def update(image: Path, c6: Annotated[bool, typer.Option(help="an ESP32-C6 esp_h
 @app.command()
 def flash(image: Path) -> None:
     """Install a build: an OTA update when TinyUSB firmware runs, else esptool with the flash_args next to it."""
-    if ports():
+    if host or ports():
         update(image)
     else:
         os.chdir(image.parent)
@@ -98,7 +132,9 @@ def run_esptool(context: typer.Context) -> None:
 
 @app.command()
 def send(command: Annotated[str, typer.Argument(help="any unknown command makes the firmware log the list")]) -> None:
-    """Send a control command to the firmware."""
+    """Send a control command to the firmware; over SSH, print what it logs until it is quiet for a second."""
+    if host:
+        raise SystemExit(subprocess.run(["ssh", host, command]).returncode)
     with serial.Serial(firmware_port(-1)) as s:
         s.write(command.encode() + b"\n")
 

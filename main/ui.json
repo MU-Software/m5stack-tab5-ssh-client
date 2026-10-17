@@ -248,7 +248,13 @@
                 {"height": 1, "text": ""},
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   위 바"}, {"width": 16, "toggle": "bars.top"}]},
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   아래 바"}, {"width": 16, "toggle": "bars.bottom"}]},
-                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   배터리 표시"}, {"width": 16, "choice": "bars.battery"}]}
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   배터리 표시"}, {"width": 16, "choice": "bars.battery"}]},
+                {"height": 1, "text": ""},
+                {"height": 1, "style": "section", "text": " 원격 제어 (SSH)"},
+                {"height": 1, "text": ""},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   켜기"}, {"width": 16, "toggle": "remote.enabled"}]},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   LTE로도"}, {"width": 16, "toggle": "remote.lte"}]},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   사용자 이름"}, {"width": 24, "field": "remote.user"}]}
               ]
             },
             {

@@ -35,7 +35,7 @@ services:
     build:
       dockerfile_inline: |
         FROM debian:trixie
-        RUN apt-get update && apt-get install -y --no-install-recommends clang libclang-rt-19-dev llvm-19 cmake make libc6-dev patch && rm -rf /var/lib/apt/lists/*
+        RUN apt-get update && apt-get install -y --no-install-recommends clang libclang-rt-19-dev llvm-19 cmake make libc6-dev patch openssh-client && rm -rf /var/lib/apt/lists/*
     environment:
       CC: clang
     working_dir: /workspace

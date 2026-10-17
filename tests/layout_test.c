@@ -120,7 +120,7 @@ int main(void) {
     check(parse("{\"screens\": {}}", "s") == NULL && strstr(error, "no screen s") != NULL, "a missing screen refused");
 
     FILE* f = fopen("main/ui.json", "rb");
-    char text[16384];
+    static char text[32768];
     size_t n = f != NULL ? fread(text, 1, sizeof text - 1, f) : 0;
     if (f != NULL) fclose(f);
     text[n] = 0;

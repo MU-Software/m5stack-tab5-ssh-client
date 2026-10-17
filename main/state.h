@@ -99,6 +99,12 @@ typedef struct {
     } bars;
     // Index of the "bars.battery" setting's choices
     int battery;
+    // Control over SSH (remote.c): off by default; enabled needs the SD card's .ssh/authorized_keys as well
+    struct {
+        bool enabled, lte;
+        // Only this SSH user name; empty for any, the key alone deciding
+        char user[33];
+    } remote;
     // Choosing a host at boot connects to the one chosen at this esp_timer time, 0 while nobody waits for it
     int64_t host_deadline_us;
     wifi_edit wifi_edit;

@@ -13,7 +13,7 @@ typedef enum { SETTING_TOGGLE, SETTING_NUMBER, SETTING_CHOICE, SETTING_TEXT } se
 typedef struct {
     const char* name;
     setting_kind kind;
-    // Numbers: minimum..maximum by step, or doubling and halving with step 0
+    // Numbers: minimum..maximum by step, or doubling and halving with step 0; text: at least minimum bytes
     int minimum, maximum, step;
     const char* unit;
     // Choices, NULL-ended, as shown and in the configuration file
@@ -39,6 +39,8 @@ bool settings_set(global_state* state, const setting* s, const setting_value* va
 void settings_step(const setting* s, setting_value* value, int direction);
 // The value as shown: on/off as 켬/끔, numbers with their unit
 void settings_text(const setting* s, const setting_value* value, char* out, size_t size);
+// A value as the configuration file keeps it; false when it is not of the setting's kind
+bool settings_parse(const setting* s, const cJSON* item, setting_value* value);
 // The configuration's settings into the state; each one absent keeps its value, each one refused is passed to refused
 void settings_load(global_state* state, const cJSON* config, void (*refused)(const char* name));
 // The value as the configuration file keeps it

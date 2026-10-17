@@ -255,9 +255,30 @@ host_state known_hosts_check(const char* text, const char* name, const uint8_t* 
     return found;
 }
 
+bool authorized_keys_check(const char* text, const uint8_t* key, size_t key_length) {
+    if (key_length < 4 || be32(key) > key_length - 4) return false;
+    const char *p, *end;
+    while ((p = next_line(&text, &end)) != NULL) {
+        size_t t_len, b64_len;
+        const char* t = word(&p, end, &t_len);
+        const char* b64 = word(&p, end, &b64_len);
+        byte listed[2048];
+        word32 listed_len = sizeof listed;
+        if (t_len == be32(key) && memcmp(t, key + 4, t_len) == 0 && Base64_Decode((const byte*)b64, (word32)b64_len, listed, &listed_len) == 0 &&
+            listed_len == key_length && memcmp(listed, key, key_length) == 0)
+            return true;
+    }
+    return false;
+}
+
 int known_hosts_line(char* out, size_t size, const char* name, const uint8_t* key, size_t key_length) {
+    int n = snprintf(out, size, "%s ", name);
+    return n < 0 || (size_t)n >= size ? -1 : public_key_line(out + n, size - (size_t)n, key, key_length);
+}
+
+int public_key_line(char* out, size_t size, const uint8_t* key, size_t key_length) {
     if (key_length < 4 || be32(key) > key_length - 4) return -1;
-    int n = snprintf(out, size, "%s %.*s ", name, (int)be32(key), (const char*)key + 4);
+    int n = snprintf(out, size, "%.*s ", (int)be32(key), (const char*)key + 4);
     if (n < 0 || (size_t)n + 2 >= size) return -1;
     word32 len = (word32)(size - (size_t)n - 1);
     if (Base64_Encode_NoNl(key, (word32)key_length, (byte*)out + n, &len) != 0 || (size_t)n + len + 2 > size) return -1;

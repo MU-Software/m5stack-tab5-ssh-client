@@ -27,6 +27,16 @@ USB-C is TinyUSB: a terminal port and a control port (`tools/device.py`). An OTA
 and USB came up: one that USB never comes up with rolls back after 30 s, one that crashes before at the next restart.
 The ROM loader needs a BOOT reset.
 
+With `remote.enabled` on (off by default) and `.ssh/authorized_keys` on the SD card (lines with options never match),
+the Tab5 answers SSH on port 22 for those keys, over Wi-Fi (and LTE with `remote.lte`), as `remote.user` only when set;
+one command a connection: the control commands (the log follows each until it is quiet for a second), `log` (the RAM
+ring's last 64 KiB, then live), `version`, `restart`, `config` (the configuration in use, Wi-Fi passwords included),
+`config set` (a whole one on stdin, checked as at boot, for the next start), `update`/`c6 update SIZE CRC32` with the
+image on stdin (`TAB5_HOST=tab5 make flash`, `tools/device.py --host`). Its Ed25519 host key is
+`.config/tab5-ssh/ssh_host_ed25519_key` on the SD card (PKCS#8 PEM), made when the port first opens, with a `.pub`
+beside it for `known_hosts`; the log shows its fingerprint. An image sent this way is kept once a key logs in again within
+60 s and it has run 10 s; USB does not count for it.
+
 ## Configuration
 
 - Wi-Fi and settings: `.config/tab5-ssh/config.json` on the SD card, else NVS (`tools/config.py write`, ROM loader).
@@ -50,7 +60,8 @@ The ROM loader needs a BOOT reset.
   top right says what LTE does, and Enter dials at once. A dropped or moved session reconnects to its tmux session; a
   closed one on Enter. Control commands: `wifi on|off` (`wifi off save`: also after restarts, until `wifi on` or
   `wifi connect`), `wifi connect SSID [PASSWORD]` (saved to the configuration in use), `wifi forget SSID`,
-  `lte on|off|status` (`lte off save` as `wifi off save`), `net status`, `net check HOST PORT`.
+  `lte on|off|status` (`lte off save` as `wifi off save`), `net status`, `net check HOST PORT`, `settings`,
+  `set NAME VALUE` (as in the configuration; text also without quotes).
 - Modem: before each dial the firmware reads the registration, cell, signal, PDP context, SIM (ICCID masked) and back-off
   state; once a boot, when no back-off is in sight, also its settings, keeping QUALCOMM URCs and the battery check on and
   eDRX off while the network grants it (`AT+CURCCFG="QUALCOMM",1`, `AT+CBATCHK=1`, `AT+CEDRXS=0,4`, each only when

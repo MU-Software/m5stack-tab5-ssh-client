@@ -77,9 +77,11 @@ static char* nvs_text(void) {
     return text;
 }
 
+// The text holds Wi-Fi passwords
 static cJSON* parse(char* text, const char* where) {
     cJSON* config = cJSON_Parse(text);
     if (text != NULL && config == NULL) ESP_LOGW(TAG, "%s is not JSON", where);
+    if (text != NULL) memset(text, 0, strlen(text));
     free(text);
     return config;
 }
@@ -266,6 +268,15 @@ int storage_add_wifi(const char* ssid, const char* password) {
     snprintf(network.password, sizeof network.password, "%s", password != NULL ? password : "");
     int err = storage_set_wifi(ssid, password != NULL ? &network : NULL, INT_MIN, NULL);
     memset(&network, 0, sizeof network);
+    return err;
+}
+
+int storage_set_device_config(cJSON* config) {
+    config_source source;
+    xSemaphoreTake(config_lock, portMAX_DELAY);
+    cJSON_Delete(storage_get_device_config(&source));
+    int err = save_config(config, source == CONFIG_SD ? CONFIG_SD : CONFIG_NVS);
+    xSemaphoreGive(config_lock);
     return err;
 }
 

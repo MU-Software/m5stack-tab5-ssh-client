@@ -2,7 +2,6 @@
 #include "usb.h"
 
 #include <stdio.h>
-#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/param.h>
@@ -12,16 +11,17 @@
 #include <esp_mac.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
-#include <esp_ota_ops.h>
 #include <esp_rom_crc.h>
 #include <esp_system.h>
-#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <hal/usb_wrap_ll.h>
 #include <tinyusb.h>
 #include <tinyusb_cdc_acm.h>
 #include <tinyusb_console.h>
+
+#include "control.h"
+#include "update.h"
 
 #define STORAGE_BOOT 0x53444f4eu
 
@@ -30,7 +30,6 @@ static const char* TAG = "usb";
 static __NOINIT_ATTR uint32_t boot_mode;
 static int storage_boot;
 static tinyusb_cdcacm_itf_t control_port;
-static esp_timer_handle_t rollback;
 static bool (*app_command)(const char* line);
 
 static const uint8_t terminal_config[] = {
@@ -68,7 +67,7 @@ void usb_terminal_write(const void* buffer, size_t size) {
     if (tud_cdc_n_connected(TINYUSB_CDC_ACM_0)) put(TINYUSB_CDC_ACM_0, buffer, size);
 }
 
-uint8_t* usb_receive(size_t size, uint32_t crc, esp_err_t* err) {
+static uint8_t* receive(size_t size, uint32_t crc, esp_err_t* err) {
     uint8_t* image = size > 0 ? heap_caps_malloc(size, MALLOC_CAP_SPIRAM) : NULL;
     *err = ESP_ERR_INVALID_SIZE;
     if (image == NULL) return NULL;
@@ -90,24 +89,6 @@ uint8_t* usb_receive(size_t size, uint32_t crc, esp_err_t* err) {
     return NULL;
 }
 
-void usb_reply(const char* text) {
-    put(control_port, text, strlen(text));
-}
-
-static esp_err_t receive_update(size_t size, uint32_t crc) {
-    const esp_partition_t* slot = esp_ota_get_next_update_partition(NULL);
-    if (slot == NULL || size > slot->size) return ESP_ERR_INVALID_SIZE;
-    esp_err_t err;
-    uint8_t* image = usb_receive(size, crc, &err);
-    if (image == NULL) return err;
-    esp_ota_handle_t ota = 0;
-    err = esp_ota_begin(slot, size, &ota);
-    if (err == ESP_OK) err = esp_ota_write(ota, image, size);
-    free(image);
-    if (ota != 0) err = err == ESP_OK ? esp_ota_end(ota) : (esp_ota_abort(ota), err);
-    return err == ESP_OK ? esp_ota_set_boot_partition(slot) : err;
-}
-
 static void command(char* line) {
     unsigned long size, crc;
     if (strcmp(line, "sd on") == 0) {
@@ -115,20 +96,20 @@ static void command(char* line) {
         esp_restart();
     } else if (strcmp(line, "sd off") == 0 || strcmp(line, "restart") == 0) {
         esp_restart();
-    } else if (sscanf(line, "update %lu %lx", &size, &crc) == 2) {
-        esp_err_t err = receive_update(size, crc);
+    } else if (sscanf(line, "update %lu %lx", &size, &crc) == 2 || sscanf(line, "c6 update %lu %lx", &size, &crc) == 2) {
+        bool c6 = line[0] == 'c';
+        esp_err_t err;
+        uint8_t* image = receive(size, crc, &err);
+        if (image != NULL) err = update_install(c6, image, size);
+        free(image);
         char reply[48];
-        int n = snprintf(reply, sizeof reply, "update %s\n", esp_err_to_name(err));
+        int n = snprintf(reply, sizeof reply, "%supdate %s\n", c6 ? "c6 " : "", esp_err_to_name(err));
         put(control_port, reply, (size_t)n);
-        if (err == ESP_OK) {
-            vTaskDelay(pdMS_TO_TICKS(200)); // for the host to read the reply
-            esp_restart();
-        }
+        if (err == ESP_OK) update_restart(UPDATE_USB);
     } else if (line[0] && !app_command(line)) {
-        ESP_LOGW(TAG,
-                 "commands: sd on|off, restart, update SIZE CRC32, c6 update SIZE CRC32, wifi on|off [save]|connect SSID [PASSWORD]|forget SSID, lte "
-                 "on|off|status, net "
-                 "status|check HOST PORT, modem status|read");
+        char help[320];
+        control_help(CONTROL_USB, help, sizeof help);
+        ESP_LOGW(TAG, "%s", help);
     }
 }
 
@@ -151,24 +132,9 @@ static void control(void* arg) {
     }
 }
 
-static void keep_image(int check) {
-    static atomic_int passed;
-    if ((atomic_fetch_or(&passed, check) | check) == 3 && rollback != NULL && esp_timer_stop(rollback) == ESP_OK)
-        esp_ota_mark_app_valid_cancel_rollback();
-}
-
-void usb_keep_image(void) {
-    keep_image(2);
-}
-
 static void attach(tinyusb_event_t* event, void* arg) {
     (void)arg;
-    if (event->id == TINYUSB_EVENT_ATTACHED) keep_image(1);
-}
-
-static void roll_back(void* arg) {
-    (void)arg;
-    esp_ota_mark_app_invalid_rollback_and_reboot();
+    if (event->id == TINYUSB_EVENT_ATTACHED) update_works(UPDATE_USB);
 }
 
 // The selection outlives a restart: an image without TinyUSB would otherwise find the USB-C pads taken
@@ -181,11 +147,6 @@ esp_err_t usb_start(bool (*command)(const char* line)) {
     storage_boot = boot_mode == STORAGE_BOOT;
     boot_mode = 0;
     control_port = storage_boot ? TINYUSB_CDC_ACM_0 : TINYUSB_CDC_ACM_1;
-    esp_ota_img_states_t state;
-    if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY) {
-        ESP_RETURN_ON_ERROR(esp_timer_create(&(esp_timer_create_args_t){.callback = roll_back, .name = "rollback"}, &rollback), TAG, "timer");
-        ESP_RETURN_ON_ERROR(esp_timer_start_once(rollback, 30 * 1000000), TAG, "timer");
-    }
     // The USB-C pads are FSLS PHY 0, USB-Serial/JTAG's unless the OTG controller is mapped onto it
     usb_wrap_ll_phy_select(&USB_WRAP, 0);
     ESP_RETURN_ON_ERROR(esp_register_shutdown_handler(give_pads_back), TAG, "shutdown handler");

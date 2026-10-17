@@ -61,6 +61,23 @@ static size_t take(char* out, size_t max) {
     return n;
 }
 
+size_t logs_position(void) {
+    taskENTER_CRITICAL(&guard);
+    size_t position = head;
+    taskEXIT_CRITICAL(&guard);
+    return position;
+}
+
+size_t logs_read(size_t* position, char* out, size_t max) {
+    size_t n = 0;
+    taskENTER_CRITICAL(&guard);
+    if (head - *position > RING) *position = head - RING;
+    for (; n < max && *position != head; n++)
+        out[n] = ring[(*position)++ % RING];
+    taskEXIT_CRITICAL(&guard);
+    return n;
+}
+
 static void today(char date[11]) {
     struct tm t;
     time_t now = time(NULL);

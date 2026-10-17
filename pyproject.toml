@@ -24,8 +24,9 @@ target-version = "py313"
 select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
 
 [tool.ruff.lint.per-file-ignores]
-# runs docker with an argument list
+# run docker and ssh with an argument list
 "tools/ide.py" = ["S603", "S607"]
+"tools/device.py" = ["S603", "S607"]
 
 [tool.mypy]
 strict = true
