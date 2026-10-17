@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/param.h>
 
 #include <cJSON.h>
 #include <esp_event.h>
@@ -32,6 +33,7 @@
 #include "remote.h"
 #include "screen.h"
 #include "settings.h"
+#include "sleep.h"
 #include "ssh.h"
 #include "storage.h"
 #include "terminal.h"
@@ -673,7 +675,14 @@ static void modem_control(const char* arguments) {
     }
 }
 
+// Asked by control commands, done by the main loop
+static atomic_bool sleep_asked, wake_asked, profile_asked;
+
 static bool command(const char* line) {
+    if (strcmp(line, "sleep") == 0 || strcmp(line, "wake") == 0 || strcmp(line, "power profile") == 0) {
+        atomic_store(line[0] == 'w' ? &wake_asked : line[0] == 's' ? &sleep_asked : &profile_asked, true);
+        return true;
+    }
     if (strncmp(line, "modem ", 6) == 0) {
         modem_control(line + 6);
         return true;
@@ -837,6 +846,107 @@ static session* restore_sessions(void) {
     return first;
 }
 
+// Light sleep in steps, each followed by DWELL_MS awake: lwIP's timers and the sessions' keepalives run in the time
+// caught up, and esp_hosted reads what the C6 queued meanwhile
+#define STEP_MS  5000
+#define DWELL_MS 100
+
+static struct {
+    int64_t lit_at, off_at, awake_until, asleep_us;
+    unsigned wakes[SLEEP_OTHER + 1];
+    bool usb_a_off;
+} sleeping;
+static const char* const wakes[] = {"failed", "timer", "keyboard", "USB", "Wi-Fi", "other"};
+
+// Once asked, or without a key or a touch for the idle time
+static bool idle(void) {
+    int64_t input = MAX(MAX(keys_pressed_at(), screen_touched_at()), sleeping.lit_at);
+    atomic_store(&wake_asked, false);
+    if (!atomic_exchange(&sleep_asked, false) &&
+        (state.sleep.idle_minutes == 0 || esp_timer_get_time() - input < state.sleep.idle_minutes * 60 * 1000000LL))
+        return false;
+    esp_err_t err = screen_sleep(true);
+    ESP_LOGI(TAG, "screen off: %s", esp_err_to_name(err));
+    memset(&sleeping.wakes, 0, sizeof sleeping.wakes);
+    sleeping.off_at = esp_timer_get_time(), sleeping.asleep_us = 0;
+    return true;
+}
+
+// With the screen off: a key or `wake` turns it on, the key going no further; while no computer uses USB-C the Tab5 sleeps
+// in steps, USB-A unpowered unless kept
+static bool woken(void) {
+    key_event e;
+    char c;
+    bool pressed = false;
+    keys_divert(true);
+    while (keys_take(&e, &c))
+        pressed = true;
+    atomic_store(&sleep_asked, false);
+    if (!pressed && !atomic_exchange(&wake_asked, false)) {
+        bool attached = usb_attached();
+        if (attached && sleeping.usb_a_off) sleeping.usb_a_off = power_usb_a(true) != ESP_OK;
+        if (attached || esp_timer_get_time() < sleeping.awake_until) return false;
+        if (!state.sleep.usb_a && !sleeping.usb_a_off) sleeping.usb_a_off = power_usb_a(false) == ESP_OK;
+        int64_t start = esp_timer_get_time();
+        sleep_wake wake = sleep_light(STEP_MS, state.sleep.wifi_wake);
+        sleeping.asleep_us += esp_timer_get_time() - start;
+        sleeping.wakes[wake]++;
+        ESP_LOGD(TAG, "woken: %s", wakes[wake]);
+        // A computer on USB-C needs the Tab5 awake to set it up
+        sleeping.awake_until = esp_timer_get_time() + (wake == SLEEP_USB ? 3000 : DWELL_MS) * 1000;
+        if (wake != SLEEP_KEYBOARD) return false;
+    }
+    if (sleeping.usb_a_off) sleeping.usb_a_off = power_usb_a(true) != ESP_OK;
+    int64_t start = esp_timer_get_time();
+    esp_err_t err = screen_sleep(false);
+    while (keys_take(&e, &c))
+        ;
+    sleeping.lit_at = esp_timer_get_time();
+    ESP_LOGI(TAG, "screen on in %lld ms: %s; off %lld s, asleep %lld s, woken by the timer %u, USB %u, Wi-Fi %u, other %u, failed %u",
+             (sleeping.lit_at - start) / 1000, esp_err_to_name(err), (sleeping.lit_at - sleeping.off_at) / 1000000, sleeping.asleep_us / 1000000,
+             sleeping.wakes[SLEEP_TIMER], sleeping.wakes[SLEEP_USB], sleeping.wakes[SLEEP_WIFI], sleeping.wakes[SLEEP_OTHER],
+             sleeping.wakes[SLEEP_FAILED]);
+    return true;
+}
+
+// The battery's draw step by step, each the INA226's average over 8.5 s before the step ends. Only on battery: USB-C power
+// cuts the pack off.
+static void power_profile(bool lit) {
+    static const char* const steps[] = {"screen on", "backlight off", "panel asleep", "USB-A off", "light sleep"};
+    if (!lit) screen_sleep(false), screen_draw();
+    sleeping.lit_at = esp_timer_get_time();
+    ESP_LOGI(TAG, "power profile: unplug USB-C within a minute");
+    for (int i = 0; usb_attached(); i++) {
+        if (i == 600) {
+            ESP_LOGW(TAG, "power profile: USB-C still in use");
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    power_average(true);
+    for (size_t i = 0; i < sizeof steps / sizeof steps[0]; i++) {
+        if (i == 1) screen_backlight(false);
+        if (i == 2) screen_sleep(true);
+        if (i == 3) power_usb_a(false);
+        // A sleep is refused while a wake source is pending
+        sleep_wake wake = SLEEP_FAILED;
+        for (int tries = 0; i == 4 && wake == SLEEP_FAILED && tries < 5; tries++)
+            if ((wake = sleep_light(40000, false)) == SLEEP_FAILED) vTaskDelay(pdMS_TO_TICKS(200));
+        if (i == 4)
+            ESP_LOGI(TAG, "power profile: woken by %s", wakes[wake]);
+        else
+            vTaskDelay(pdMS_TO_TICKS(18000));
+        ESP_LOGI(TAG, "power profile: %s", steps[i]);
+        power_report();
+    }
+    power_average(false);
+    power_usb_a(true);
+    screen_sleep(false);
+    screen_draw();
+    sleeping.lit_at = esp_timer_get_time();
+    ESP_LOGI(TAG, "power profile: done");
+}
+
 // From the screen's task, whose stack in internal RAM lets it write NVS
 static void apply(const ui_event* e) {
     int n;
@@ -949,6 +1059,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(first != NULL ? ESP_OK : ESP_ERR_NO_MEM);
     show(first);
     if (screen != ESP_OK) ESP_LOGE(TAG, "no screen");
+    bool lit = true;
     for (;;) {
         ui_event e;
         terminal_size size;
@@ -962,7 +1073,9 @@ void app_main(void) {
                 storage_set_session(s.number, s.host->alias, s.tmux);
         tend_sessions();
         memory_log();
-        if (screen == ESP_OK) {
+        if (screen == ESP_OK && atomic_exchange(&profile_asked, false)) power_profile(lit), lit = true;
+        if (screen == ESP_OK && !lit) lit = woken();
+        if (screen == ESP_OK && lit) {
             screen_draw();
             // What was typed there goes once it closes
             const char* panel = ui_panel();
@@ -977,6 +1090,7 @@ void app_main(void) {
                     if (sessions[i].used) terminal_resize(sessions[i].terminal, &size);
                 atomic_fetch_add(&resizes, 1);
             }
+            lit = !idle();
         }
         vTaskDelay(pdMS_TO_TICKS(30));
     }

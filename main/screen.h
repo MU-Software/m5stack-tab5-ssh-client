@@ -9,8 +9,8 @@
 #include "terminal.h"
 #include "ui.h"
 
-// Shiroko's calls stay on the task that calls these: screen_start, screen_draw, screen_event, screen_resized and
-// screen_show
+// Shiroko's calls stay on the task that calls these: screen_start, screen_draw, screen_event, screen_resized,
+// screen_show and screen_sleep
 esp_err_t screen_start(const global_state* state);
 // The terminal to draw, before the first screen_draw; drawn whole after a change
 void screen_show(terminal* t);
@@ -25,6 +25,12 @@ bool screen_resized(terminal_size* out);
 void screen_open(const char* panel);
 bool screen_panel_open(void);
 bool screen_input(void);
+// esp_timer time of the last touch, 0 before one
+int64_t screen_touched_at(void);
+esp_err_t screen_backlight(bool on);
+// Backlight off, display off, the panel's sleep mode and the display stream deleted, or back: then the next screen_draw draws
+// the whole screen and turns the backlight on
+esp_err_t screen_sleep(bool asleep);
 // What the session waits for and for how long ("held 3 s"); false when nothing
 bool screen_status(char* out, size_t size);
 // From the session: the keys it sent, which the screen shows before the host echoes them; NULL when the session ended

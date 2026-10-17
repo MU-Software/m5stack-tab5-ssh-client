@@ -162,6 +162,30 @@
       },
       "type": "object"
     },
+    "sleep": {
+      "additionalProperties": false,
+      "description": "The screen off without a key or a touch, then light sleep while no computer uses USB-C",
+      "properties": {
+        "idle_minutes": {
+          "default": 0,
+          "description": "0: never",
+          "maximum": 60,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "usb_a": {
+          "default": false,
+          "description": "The USB-A port's 5 V kept on while asleep; a USB keyboard cannot wake the Tab5 anyway",
+          "type": "boolean"
+        },
+        "wifi_wake": {
+          "default": false,
+          "description": "Experimental: the C6's traffic wakes it too",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "timezone": {
       "default": "KST-9",
       "description": "POSIX TZ, for log dates and times",

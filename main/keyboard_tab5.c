@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "keyboard_tab5.h"
 
+#include <driver/gpio.h>
 #include <driver/i2c_master.h>
 #include <esp_heap_caps.h>
 #include <esp_check.h>
@@ -64,15 +65,20 @@ static void poll(void* bus) {
             modifiers = 0;
             keys_push(&(key_event){.action = GHOSTTY_KEY_ACTION_RELEASE});
         }
-        if (event != 0xff)
+        if (event != 0xff) {
             handle(event);
-        else
-            vTaskDelay(pdMS_TO_TICKS(attached ? 20 : 1000));
+            continue;
+        }
+        // INT stays low until written 0, and would wake light sleep at once
+        if (attached && gpio_get_level(KEYBOARD_TAB5_INTERRUPT) == 0) write(0x01, 0);
+        vTaskDelay(pdMS_TO_TICKS(attached ? 20 : 1000));
     }
 }
 
 esp_err_t keyboard_tab5_start(void) {
     i2c_master_bus_handle_t bus;
+    ESP_RETURN_ON_ERROR(gpio_config(&(gpio_config_t){.pin_bit_mask = BIT64(KEYBOARD_TAB5_INTERRUPT), .mode = GPIO_MODE_INPUT, .pull_up_en = true}),
+                        TAG, "INT");
     ESP_RETURN_ON_ERROR(i2c_new_master_bus(&(i2c_master_bus_config_t){.i2c_port = -1,
                                                                       .sda_io_num = 0,
                                                                       .scl_io_num = 1,

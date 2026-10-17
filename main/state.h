@@ -56,6 +56,13 @@ typedef struct {
     int delay_ms;
 } echo_settings;
 
+// The screen off after idle_minutes without a key or a touch (0: never), then light sleep while no computer uses USB-C,
+// with the USB-A port's 5 V on only with usb_a; wifi_wake also wakes it for the C6's traffic (experimental)
+typedef struct {
+    int idle_minutes;
+    bool usb_a, wifi_wake;
+} sleep_settings;
+
 // The Wi-Fi screen: the saved network it changes ("" for a new one), the network as typed, what came of the last step, and
 // a delete waiting for a second press
 typedef struct {
@@ -102,6 +109,7 @@ typedef struct {
     struct {
         bool top, bottom;
     } bars;
+    sleep_settings sleep;
     // Index of the "bars.battery" setting's choices
     int battery;
     // On the terminal: drag pixels per wheel report or scrollback line, and Up/Down keys for a drag on the alternate screen

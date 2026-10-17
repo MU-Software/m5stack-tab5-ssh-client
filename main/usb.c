@@ -71,6 +71,11 @@ void usb_terminal_write(const void* buffer, size_t size) {
     if (tud_cdc_n_connected(TINYUSB_CDC_ACM_0)) put(TINYUSB_CDC_ACM_0, buffer, size);
 }
 
+// Without VBUS sensing an unplugged cable shows only as a suspended bus
+bool usb_attached(void) {
+    return tud_mounted() && !tud_suspended();
+}
+
 static uint8_t* receive(size_t size, uint32_t crc, esp_err_t* err) {
     uint8_t* image = size > 0 ? heap_caps_malloc(size, MALLOC_CAP_SPIRAM) : NULL;
     *err = ESP_ERR_INVALID_SIZE;

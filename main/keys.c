@@ -83,6 +83,7 @@ static int64_t caps_pressed;
 static hangul typing = HANGUL_EMPTY;
 static atomic_uint preedit;
 static atomic_bool diverted;
+static _Atomic int64_t pressed_at;
 
 static void repeat_key(void* arg) {
     (void)arg;
@@ -100,12 +101,17 @@ void keys_push(const key_event* event) {
     key_event e = *event;
     e.time = esp_timer_get_time();
     xQueueSend(events, &e, 0);
+    if (e.action == GHOSTTY_KEY_ACTION_PRESS) atomic_store(&pressed_at, e.time);
     if (e.action == GHOSTTY_KEY_ACTION_PRESS || e.usage == repeating.usage || e.usage == 0) esp_timer_stop(repeat);
     if (e.action == GHOSTTY_KEY_ACTION_PRESS && e.usage != CAPS_LOCK) {
         repeating = e;
         repeating.action = GHOSTTY_KEY_ACTION_REPEAT;
         esp_timer_start_once(repeat, REPEAT_DELAY_US);
     }
+}
+
+int64_t keys_pressed_at(void) {
+    return atomic_load(&pressed_at);
 }
 
 uint32_t keys_preedit(void) {

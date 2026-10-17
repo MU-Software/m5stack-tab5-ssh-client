@@ -119,6 +119,10 @@ int main(void) {
     check(!settings_set(&state, settings_find("timezone"), &tz) && strlen(state.timezone) == 47, "48 characters refused");
     check(!settings_set(&state, settings_find("timezone"), &(setting_value){0}), "an empty time zone refused");
     check(settings_set(&state, settings_find("remote.user"), &(setting_value){0}) && state.remote.user[0] == 0, "an empty user name: any");
+    check(set_number(&state, "sleep.idle_minutes", 0) && set_number(&state, "sleep.idle_minutes", 60) &&
+              !set_number(&state, "sleep.idle_minutes", 61) && strcmp(shown("sleep.idle_minutes", 0), "0분") == 0,
+          "screen off after 0 (never) to 60 minutes");
+    check(!state.sleep.usb_a && set_number(&state, "sleep.usb_a", 1) && state.sleep.usb_a, "USB-A off while asleep unless set");
 
     check(set_number(&state, "bars.top", 0) && !set_number(&state, "bars.bottom", 0) && state.bars.bottom, "both bars off refused");
     set_number(&state, "bars.top", 1);

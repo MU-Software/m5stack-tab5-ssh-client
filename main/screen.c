@@ -18,6 +18,8 @@
 #include <esp_heap_caps.h>
 #include <esp_memory_utils.h>
 #include <esp_lcd_mipi_dsi.h>
+#include <esp_lcd_panel_commands.h>
+#include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_touch.h>
 #include <esp_log.h>
@@ -42,6 +44,11 @@ enum { BADGE = 48, COLUMNS = BSP_LCD_V_RES / SHR_CELL_WIDTH, ROWS = BSP_LCD_H_RE
 static const global_state* state;
 static esp_lcd_touch_handle_t touch;
 static esp_lcd_panel_handle_t panel;
+static esp_lcd_panel_io_handle_t io;
+static esp_lcd_dsi_bus_handle_t bus;
+static esp_lcd_dpi_panel_config_t dpi;
+// After waking: the backlight comes on once the new frame buffer is drawn
+static bool light_pending;
 static shr_surface framebuffer;
 static shr_framebuffer_driver software, driver;
 static ppa_client_handle_t ppa;
@@ -58,6 +65,7 @@ static ui_event events[8];
 static size_t event_count;
 static _Atomic(const char*) open_request;
 static atomic_bool open_asked, panel_open, input_seen;
+static _Atomic int64_t touched_at;
 static TickType_t fonts_again;
 static bool see_through; // the grid lets z < 0 images show under its default background
 static GhosttyKittyGraphicsPlacementIterator placements;
@@ -304,14 +312,42 @@ static void place_terminal(void) {
     resized = true;
 }
 
+// The BSP's DPI timings (bsp_display.c): the GT911 boards have no touch interrupt; on the others the ST712x touch firmware tells
+// the ST7121 (1) from the ST7123 (3), as the BSP probes it
+static esp_lcd_dpi_panel_config_t dpi_config(void) {
+    uint8_t firmware = 0;
+    esp_lcd_dpi_panel_config_t c = {.dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
+                                    .dpi_clock_freq_mhz = 70,
+                                    .in_color_format = LCD_COLOR_FMT_RGB565,
+                                    .num_fbs = 1,
+                                    .video_timing = {.h_size = BSP_LCD_H_RES,
+                                                     .v_size = BSP_LCD_V_RES,
+                                                     .hsync_back_porch = 40,
+                                                     .hsync_pulse_width = 2,
+                                                     .hsync_front_porch = 40,
+                                                     .vsync_back_porch = 8,
+                                                     .vsync_pulse_width = 2,
+                                                     .vsync_front_porch = 220}};
+    if (touch == NULL || touch->config.int_gpio_num == GPIO_NUM_NC) {
+        c.dpi_clock_freq_mhz = 60;
+        c.video_timing.hsync_back_porch = 140, c.video_timing.hsync_pulse_width = 40;
+        c.video_timing.vsync_back_porch = 20, c.video_timing.vsync_pulse_width = 4, c.video_timing.vsync_front_porch = 20;
+    } else if (esp_lcd_panel_io_rx_param(touch->io, 0x0000, &firmware, 1) == ESP_OK && firmware == 1) {
+        c.video_timing.vsync_back_porch = 24, c.video_timing.vsync_pulse_width = 20, c.video_timing.vsync_front_porch = 200;
+    }
+    return c;
+}
+
 esp_err_t screen_start(const global_state* global) {
     state = global;
     bsp_lcd_handles_t lcd;
     void* pixels;
     ESP_RETURN_ON_ERROR(bsp_display_new_with_handles(&(bsp_display_config_t){.dsi_bus.lane_bit_rate_mbps = BSP_LCD_MIPI_DSI_LANE_BITRATE_MBPS}, &lcd),
                         TAG, "panel");
-    panel = lcd.panel;
+    panel = lcd.panel, io = lcd.io, bus = lcd.mipi_dsi_bus;
     ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(panel, true), TAG, "panel on");
+    // Frames are drawn in the frame buffer itself, so the BSP's DMA2D copy goes unused; deleting the stream refuses it
+    ESP_RETURN_ON_ERROR(esp_lcd_dpi_panel_disable_dma2d(panel), TAG, "DMA2D");
     ESP_RETURN_ON_ERROR(esp_lcd_dpi_panel_get_frame_buffer(panel, 1, &pixels), TAG, "frame buffer");
     ESP_RETURN_ON_ERROR(bsp_display_backlight_on(), TAG, "backlight");
     framebuffer = (shr_surface){.pixels = pixels,
@@ -367,6 +403,7 @@ esp_err_t screen_start(const global_state* global) {
         ghostty_kitty_graphics_placement_iterator_new(&terminal_allocator, &placements) != GHOSTTY_SUCCESS)
         return ESP_FAIL;
     if (bsp_touch_new(NULL, &touch) != ESP_OK) ESP_LOGE(TAG, "no touch");
+    dpi = dpi_config();
     load_layout();
     place_terminal();
     return ESP_OK;
@@ -803,6 +840,7 @@ static void poll_touch(void) {
     int32_t x = BSP_LCD_V_RES - 1 - p.y, y = p.x;
     if (phase == UI_TOUCH_DOWN) {
         atomic_store(&input_seen, true);
+        atomic_store(&touched_at, esp_timer_get_time());
         on_terminal = ui_panel() == NULL && x >= origin_x && x < origin_x + columns * SHR_CELL_WIDTH && y >= origin_y &&
                       y < origin_y + rows_count * SHR_CELL_HEIGHT;
         ESP_LOGD(TAG, "touch %u,%u%s", p.x, p.y, on_terminal ? " on the terminal" : "");
@@ -888,6 +926,49 @@ bool screen_input(void) {
     return atomic_exchange(&input_seen, false);
 }
 
+int64_t screen_touched_at(void) {
+    return atomic_load(&touched_at);
+}
+
+esp_err_t screen_backlight(bool on) {
+    return on ? bsp_display_backlight_on() : bsp_display_backlight_off();
+}
+
+// Asleep, no DMA reads the frame buffer from PSRAM, which light sleep cuts off: the stream goes with it, and waking makes a new
+// one and draws it whole. Delays as in the panel's init commands.
+esp_err_t screen_sleep(bool asleep) {
+    void* pixels;
+    if (asleep) {
+        ESP_RETURN_ON_ERROR(bsp_display_backlight_off(), TAG, "backlight");
+        ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, LCD_CMD_DISPOFF, NULL, 0), TAG, "display off");
+        ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, LCD_CMD_SLPIN, NULL, 0), TAG, "sleep in");
+        // Before a sleep out
+        vTaskDelay(pdMS_TO_TICKS(120));
+        ESP_RETURN_ON_ERROR(esp_lcd_panel_del(panel), TAG, "stream");
+        panel = NULL;
+        return ESP_OK;
+    }
+    // The deleted stream left pixels and its output on in the bridge, which only the bus's reset clears: as at boot
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_del(io), TAG, "commands");
+    ESP_RETURN_ON_ERROR(esp_lcd_del_dsi_bus(bus), TAG, "bus");
+    ESP_RETURN_ON_ERROR(
+        esp_lcd_new_dsi_bus(
+            &(esp_lcd_dsi_bus_config_t){.num_data_lanes = BSP_LCD_MIPI_DSI_LANE_NUM, .lane_bit_rate_mbps = BSP_LCD_MIPI_DSI_LANE_BITRATE_MBPS}, &bus),
+        TAG, "bus");
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_dbi(bus, &(esp_lcd_dbi_io_config_t){.lcd_cmd_bits = 8, .lcd_param_bits = 8}, &io), TAG, "commands");
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_dpi(bus, &dpi, &panel), TAG, "stream");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_init(panel), TAG, "stream");
+    ESP_RETURN_ON_ERROR(esp_lcd_dpi_panel_get_frame_buffer(panel, 1, &pixels), TAG, "frame buffer");
+    framebuffer.pixels = pixels, framebuffer.generation++;
+    shr_request_redraw(context);
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, LCD_CMD_SLPOUT, NULL, 0), TAG, "sleep out");
+    vTaskDelay(pdMS_TO_TICKS(120));
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, LCD_CMD_DISPON, NULL, 0), TAG, "display on");
+    vTaskDelay(pdMS_TO_TICKS(50));
+    light_pending = true;
+    return ESP_OK;
+}
+
 void screen_show(terminal* t) {
     shown_terminal = t;
     shows++;
@@ -946,6 +1027,7 @@ void screen_draw(void) {
                 ESP_LOGW(TAG, "event %d: %s", event.kind, shr_status_name(event.status));
                 if (event.kind == SHR_EVENT_RESOURCE_FAILED && fonts_again == 0) fonts_again = xTaskGetTickCount() + pdMS_TO_TICKS(1000);
             }
-        if (shr_next_deadline(context, &next) != SHR_OK || next.kind != SHR_DEADLINE_NOW) return;
+        if (shr_next_deadline(context, &next) != SHR_OK || next.kind != SHR_DEADLINE_NOW) break;
     }
+    if (light_pending) light_pending = false, bsp_display_backlight_on();
 }

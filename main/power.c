@@ -43,6 +43,16 @@ esp_err_t power_start(void) {
     return update(HIGH_Z, pins, 0);
 }
 
+esp_err_t power_usb_a(bool on) {
+    return expander == NULL ? ESP_ERR_INVALID_STATE : update(OUTPUT, USB_A_5V, on ? USB_A_5V : 0);
+}
+
+void power_average(bool on) {
+    // 1024 samples of 4.156 ms per channel, else the power-on default: 1 sample of 1.1 ms
+    uint16_t config = on ? 0x4fb7 : 0x4127;
+    if (monitor != NULL) i2c_master_transmit(monitor, (uint8_t[]){0x00, (uint8_t)(config >> 8), (uint8_t)config}, 3, 50);
+}
+
 static esp_err_t read16(uint8_t reg, int16_t* value) {
     uint8_t data[2];
     ESP_RETURN_ON_ERROR(i2c_master_transmit_receive(monitor, &reg, 1, data, 2, 50), TAG, "INA226");

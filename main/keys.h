@@ -17,6 +17,8 @@ typedef struct {
 esp_err_t keys_start(void);
 // From any task; a press repeats until its release or another press
 void keys_push(const key_event* event);
+// esp_timer time of the last press, 0 before one
+int64_t keys_pressed_at(void);
 // From the SSH task: the next key as bytes for the channel, 0 when none is waiting. LANG1 or a short CapsLock switches
 // between English and Korean (Dubeolsik), a long CapsLock locks capitals.
 size_t keys_read(char* out, size_t size);

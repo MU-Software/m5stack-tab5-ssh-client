@@ -8,5 +8,8 @@
 esp_err_t power_start(void);
 // The battery pack's voltage and current (the INA226 sits in the battery path, not the USB input) and whether the charger is charging
 void power_report(void);
+esp_err_t power_usb_a(bool on);
+// The INA226's readings as averages over 8.5 s instead of single samples
+void power_average(bool on);
 // The pack's voltage; false without the monitor
 bool power_battery(int* millivolts);

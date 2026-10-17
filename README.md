@@ -89,6 +89,12 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
   The network screen lists the saved Wi-Fi networks in the order they are tried; one opens to change its password, move
   it up, join or delete it, 추가 adds one from a scan or typed (연결 saves it once joined). `.config/tab5-ssh/ui.json` on
   the SD card replaces the built-in `main/ui.json`.
+- Sleep: after `sleep.idle_minutes` without a key or a touch (화면 끄기; 0, the default: never), or on `sleep`, the screen
+  goes off; a key or `wake` turns it on, the key going no further (touch does not). While no computer uses USB-C the
+  Tab5 then light-sleeps in 5 s steps, awake 0.1 s between them for the network and the sessions; only the Tab5 keyboard
+  and a computer on USB-C wake it, with `sleep.wifi_wake` (experimental) also the C6's traffic. USB-A has no power
+  meanwhile unless `sleep.usb_a` (잘 때 USB-A): a USB keyboard cannot wake it. `power profile`: once USB-C is unplugged,
+  the battery's draw with the screen on, the backlight off, the panel asleep, USB-A off and in light sleep, to the log.
 - Fonts: `build/shiroko-host/fonts/` (`*.shrf`, `NOTICE`, `LICENSES/`) to the SD card's `.local/share/tab5-ssh/fonts/`.
 
 ## Development

@@ -8,6 +8,8 @@
 
 // command: the app's control commands, true when handled
 esp_err_t usb_start(bool (*command)(const char* line));
+// A computer uses the USB-C port
+bool usb_attached(void);
 // After the "sd on" command: CDC 0 is the control port and the SD card is mass storage, for one boot
 int usb_storage_boot(void);
 // Not usb_read/usb_write: the P4's ROM linker script defines those and silently wins
