@@ -116,6 +116,25 @@
       "minLength": 1,
       "type": "string"
     },
+    "touch": {
+      "additionalProperties": false,
+      "description": "Touch on the terminal",
+      "properties": {
+        "arrows": {
+          "default": true,
+          "description": "A drag on the alternate screen of a program without mouse reports sends Up/Down keys",
+          "type": "boolean"
+        },
+        "wheel_px": {
+          "default": 48,
+          "description": "Pixels of drag per wheel report or scrollback line",
+          "maximum": 240,
+          "minimum": 12,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "wifi": {
       "description": "Tried in this order; only networks a scan sees",
       "items": {

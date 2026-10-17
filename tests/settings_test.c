@@ -83,8 +83,11 @@ static const char* shown(const char* name, int n) {
 }
 
 int main(void) {
-    global_state state = {
-        .log = {.enabled = true, .file_kb = 1024, .keep_mb = 32, .keep_days = 14}, .timezone = "KST-9", .echo = {true, 50}, .bars = {true, true}};
+    global_state state = {.log = {.enabled = true, .file_kb = 1024, .keep_mb = 32, .keep_days = 14},
+                          .timezone = "KST-9",
+                          .echo = {true, 50},
+                          .bars = {true, true},
+                          .touch = {48, true}};
     setting_value v;
     check(settings_find("echo.delay_ms") != NULL && settings_find("nothing") == NULL, "found by name");
     settings_get(&state, settings_find("echo.delay_ms"), &v);
@@ -97,6 +100,8 @@ int main(void) {
     check(stepped("echo.delay_ms", 50, 1) == 60 && stepped("echo.delay_ms", 0, -1) == 0, "steps of 10 within 0..1000");
     check(stepped("log.file_kb", 1024, 1) == 2048 && stepped("log.file_kb", 16, -1) == 16 && stepped("log.file_kb", 65536, 1) == 65536,
           "step 0 doubles and halves within range");
+    check(stepped("touch.wheel_px", 48, 1) == 60 && stepped("touch.wheel_px", 12, -1) == 12 && stepped("touch.wheel_px", 240, 1) == 240,
+          "wheel pixels in cells of 12 within 12..240");
     check(stepped("log.session_level", 1, 1) == 0 && stepped("log.session_level", 0, -1) == 1, "choices wrap");
     check(stepped("bars.top", 1, 1) == 0 && stepped("bars.top", 0, -1) == 1, "toggles flip either way");
     check(strcmp(shown("log.keep_mb", 32), "32 MB") == 0 && strcmp(shown("bars.top", 1), "켬") == 0 &&

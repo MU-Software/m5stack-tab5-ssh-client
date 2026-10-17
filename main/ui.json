@@ -250,6 +250,8 @@
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   위 바"}, {"width": 16, "toggle": "bars.top"}]},
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   아래 바"}, {"width": 16, "toggle": "bars.bottom"}]},
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   배터리 표시"}, {"width": 16, "choice": "bars.battery"}]},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   휠 한 칸 끌기"}, {"width": 16, "number": "touch.wheel_px"}]},
+                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   끌기로 ↑↓ 키"}, {"width": 16, "toggle": "touch.arrows"}]},
                 {"height": 1, "text": ""},
                 {"height": 1, "style": "section", "text": " 원격 제어 (SSH)"},
                 {"height": 1, "text": ""},

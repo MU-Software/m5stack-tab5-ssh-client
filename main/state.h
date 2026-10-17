@@ -99,6 +99,12 @@ typedef struct {
     } bars;
     // Index of the "bars.battery" setting's choices
     int battery;
+    // On the terminal: drag pixels per wheel report or scrollback line, and Up/Down keys for a drag on the alternate screen
+    // of a program that asked for no mouse reports
+    struct {
+        int wheel_px;
+        bool arrows;
+    } touch;
     // Control over SSH (remote.c): off by default; enabled needs the SD card's .ssh/authorized_keys as well
     struct {
         bool enabled, lte;

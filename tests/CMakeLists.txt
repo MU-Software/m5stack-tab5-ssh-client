@@ -22,6 +22,8 @@ target_compile_options(cjson PRIVATE -w)
 add_executable(config_test config_test.c ${TOP}/main/config.c)
 target_link_libraries(config_test cjson wolf)
 
+add_executable(gesture_test gesture_test.c ${TOP}/main/gesture.c)
+
 add_executable(hangul_test hangul_test.c ${TOP}/main/hangul.c)
 
 add_executable(layout_test layout_test.c ${TOP}/main/layout.c)

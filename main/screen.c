@@ -27,6 +27,7 @@
 #include <shiroko/port_software.h>
 #include <shiroko/shiroko.h>
 
+#include "gesture.h"
 #include "keys.h"
 #include "storage.h"
 #include "terminal.h"
@@ -788,25 +789,37 @@ static void push(ui_event e) {
     if (e.kind != UI_NONE && event_count < sizeof events / sizeof events[0]) events[event_count++] = e;
 }
 
-// Panel cells: x runs up the portrait panel's height, y along its width
+// x runs up the portrait panel's height, y along its width. A touch going down on the terminal while no panel is open
+// stays the terminal's: taps click, drags scroll.
 static void poll_touch(void) {
-    static bool down;
+    static bool down, on_terminal;
     static int32_t column, row;
+    static gesture finger = {.slop = SHR_CELL_HEIGHT};
     esp_lcd_touch_point_data_t p = {0};
     uint8_t n = 0;
     if (touch == NULL || esp_lcd_touch_read_data(touch) != ESP_OK || esp_lcd_touch_get_data(touch, &p, &n, 1) != ESP_OK) n = 0;
     if (n == 0 && !down) return;
     ui_touch_phase phase = n == 0 ? UI_TOUCH_UP : down ? UI_TOUCH_MOVE : UI_TOUCH_DOWN;
+    int32_t x = BSP_LCD_V_RES - 1 - p.y, y = p.x;
+    if (phase == UI_TOUCH_DOWN) {
+        atomic_store(&input_seen, true);
+        on_terminal = ui_panel() == NULL && x >= origin_x && x < origin_x + columns * SHR_CELL_WIDTH && y >= origin_y &&
+                      y < origin_y + rows_count * SHR_CELL_HEIGHT;
+        ESP_LOGD(TAG, "touch %u,%u%s", p.x, p.y, on_terminal ? " on the terminal" : "");
+        finger.step = state->touch.wheel_px;
+    }
+    down = n > 0;
+    if (on_terminal) {
+        gesture_event e = gesture_touch(&finger, down, x - origin_x, y - origin_y);
+        if (e.lines != 0) terminal_wheel(shown_terminal, e.lines, e.x, e.y, state->touch.arrows);
+        if (e.tap) terminal_click(shown_terminal, e.x, e.y);
+        return;
+    }
     if (n > 0) {
-        int32_t c = (BSP_LCD_V_RES - 1 - p.y) / SHR_CELL_WIDTH, r = p.x / SHR_CELL_HEIGHT;
+        int32_t c = x / SHR_CELL_WIDTH, r = y / SHR_CELL_HEIGHT;
         if (phase == UI_TOUCH_MOVE && c == column && r == row) return;
         column = c, row = r;
     }
-    if (phase == UI_TOUCH_DOWN) {
-        atomic_store(&input_seen, true);
-        ESP_LOGD(TAG, "touch %u,%u: cell %ld,%ld", p.x, p.y, (long)column, (long)row);
-    }
-    down = n > 0;
     push(ui_touch(phase, column, row));
 }
 

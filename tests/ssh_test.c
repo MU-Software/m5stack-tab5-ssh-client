@@ -99,30 +99,36 @@ static int login(const char* known_hosts, const char* private_key, const char* p
 }
 
 static const char *known_hosts, *private_key;
-static ssh_session other;
+static ssh_session other, probe;
 
-// On a connection of its own: the exit status, -1 when it did not end within 5 s, -2 without a connection
-static int exec_status(const char* command) {
-    other = (ssh_session){.host = &host, .known_hosts = known_hosts, .private_key = private_key, .command = command};
-    if (ssh_open(&state, &other) != WS_SUCCESS) return -2;
+// On connection s of its own: the exit status, -1 when it did not end within 5 s, -2 without a connection
+static int exec_on(ssh_session* s, const char* command) {
+    *s = (ssh_session){.host = &host, .known_hosts = known_hosts, .private_key = private_key, .command = command};
+    if (ssh_open(&state, s) != WS_SUCCESS) return -2;
     char buf[512];
     int r = WS_WANT_READ, status = -1;
     for (long start = now_ms(); r != WS_CHANNEL_CLOSED && now_ms() - start < 5000;)
-        if ((r = ssh_read(&other, buf, sizeof buf)) == WS_WANT_READ) usleep(1000);
-    ssh_close(&other, &status);
+        if ((r = ssh_read(s, buf, sizeof buf)) == WS_WANT_READ) usleep(1000);
+    ssh_close(s, &status);
     return r == WS_CHANNEL_CLOSED ? status : -1;
 }
 
-// Attached to tmux session `name` as the device is for 1.5 s, then whether the end keys ended it with status 0
+static int exec_status(const char* command) {
+    return exec_on(&other, command);
+}
+
+// Attached to tmux session `name` as the device is for 1.5 s, with the mouse on, then whether the end keys ended it with
+// status 0
 static bool attach_and_end(const char* name, bool attach, const char* old, const char* keep, int age_s) {
-    char command[1400], buf[2048];
+    char command[1400], buf[2048], mouse[128];
     if (!tmux_command(command, sizeof command, name, attach, old, "tab5-test01-", keep, age_s)) return false;
     other = (ssh_session){.host = &host, .known_hosts = known_hosts, .private_key = private_key, .command = command};
     if (ssh_open(&state, &other) != WS_SUCCESS) return false;
     int r = WS_WANT_READ, status = -1;
     for (long start = now_ms(); now_ms() - start < 1500 && (r >= 0 || r == WS_WANT_READ);)
         if ((r = ssh_read(&other, buf, sizeof buf)) == WS_WANT_READ) usleep(1000);
-    bool held = r >= 0 || r == WS_WANT_READ;
+    snprintf(mouse, sizeof mouse, "[ \"$(tmux show -t =%s: -v mouse)\" = on ]", name);
+    bool held = (r >= 0 || r == WS_WANT_READ) && exec_on(&probe, mouse) == 0;
     for (long start = now_ms();
          r != WS_CHANNEL_CLOSED && ssh_write(&other, tmux_end_keys, strlen(tmux_end_keys)) == WS_WANT_WRITE && now_ms() - start < 1000;)
         usleep(1000);

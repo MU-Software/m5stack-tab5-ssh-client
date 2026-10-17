@@ -16,6 +16,8 @@ static const setting table[] = {
     {"bars.top", SETTING_TOGGLE, .offset = FIELD(bars.top)},
     {"bars.bottom", SETTING_TOGGLE, .offset = FIELD(bars.bottom)},
     {"bars.battery", SETTING_CHOICE, .options = batteries, .values = battery_values, .offset = FIELD(battery)},
+    {"touch.wheel_px", SETTING_NUMBER, 12, 240, 12, " px", .offset = FIELD(touch.wheel_px)},
+    {"touch.arrows", SETTING_TOGGLE, .offset = FIELD(touch.arrows)},
     {"log.enabled", SETTING_TOGGLE, .offset = FIELD(log.enabled)},
     {"log.session_level", SETTING_CHOICE, .options = levels, .values = levels, .offset = FIELD(log.quiet_sessions)},
     {"log.file_kb", SETTING_NUMBER, 16, 65536, 0, " KB", .offset = FIELD(log.file_kb)},

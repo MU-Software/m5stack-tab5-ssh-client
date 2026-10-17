@@ -47,9 +47,9 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
 - tmux: each session runs in its own `tmux new-session -s tab5-MMMMMM-RRRRRR` (the MAC's last three bytes, then random),
   its name kept in NVS; the next connection attaches to it, or starts another when it is gone. From tmux 3.2 the client
   declares truecolor, strikethrough, overline, underline styles and colours, and kitty images as Unicode placeholders
-  (`-T`); from tmux 3.3 the session's windows allow passthrough, for kitty images from programs in it. Each connection to
-  a host also kills this Tab5's tmux sessions there that no open session uses, unattached and older than a minute. No
-  tmux on the host: a plain shell.
+  (`-T`); from tmux 3.3 the session's windows allow passthrough, for kitty images from programs in it; its `mouse` is
+  on, for touch. Each connection to a host also kills this Tab5's tmux sessions there that no open session uses,
+  unattached and older than a minute. No tmux on the host: a plain shell.
 - Sessions: up to 4 at once, to one host or several, each with its own terminal, kept connected and read while hidden,
   and reopened after a restart. The sessions screen (세션 on the bottom bar) lists them, shows the chosen one (전환) or
   ends it with its tmux session (끊기, not the last one), and opens a new one to a host from its list (hidden while 4 are
@@ -73,11 +73,14 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
 - Logs: on the SD card in `.local/state/tab5-ssh/log/`, a file a day (`YYYY-MM-DD-NN.log`, a new `NN` past `file_kb`), the
   oldest deleted past `keep_mb` or `keep_days`; `log` and `timezone` (POSIX TZ, default `KST-9`) in the configuration.
   The time comes from the RTC, then SNTP (`pool.ntp.org`), which sets the RTC.
-- Screen: a bar above the terminal (host or session tabs, network, battery, time) and one below (buttons for the sessions,
-  network and settings screens, which cover the terminal); touch, or arrows, Tab, Enter and Esc while one is open. The settings
-  screen restarts the Tab5 too. The network screen lists the saved Wi-Fi networks in the order they are tried; one opens to
-  change its password, move it up, join or delete it, 추가 adds one from a scan or typed (연결 saves it once joined).
-  `.config/tab5-ssh/ui.json` on the SD card replaces the built-in `main/ui.json`.
+- Screen: a bar above the terminal (host or session tabs, network, battery, time) and one below (buttons for the
+  sessions, network and settings screens, which cover the terminal); touch, or arrows, Tab, Enter and Esc while one is
+  open. On the terminal a tap clicks and a drag turns the wheel every `touch.wheel_px` (48) for a program that asked for
+  the mouse (tmux, vim with `mouse=a`, htop); otherwise a drag is Up/Down on the alternate screen (`touch.arrows`, as
+  Ghostty's alternate scroll) or scrolls the scrollback until the next key. The settings screen restarts the Tab5 too.
+  The network screen lists the saved Wi-Fi networks in the order they are tried; one opens to change its password, move
+  it up, join or delete it, 추가 adds one from a scan or typed (연결 saves it once joined). `.config/tab5-ssh/ui.json` on
+  the SD card replaces the built-in `main/ui.json`.
 - Fonts: `build/shiroko-host/fonts/` (`*.shrf`, `NOTICE`, `LICENSES/`) to the SD card's `.local/share/tab5-ssh/fonts/`.
 
 ## Development

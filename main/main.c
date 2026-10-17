@@ -47,6 +47,7 @@ static global_state state = {
     .timezone = "KST-9",
     .echo = {true, 50},
     .bars = {true, true},
+    .touch = {48, true},
 };
 
 // Bumped by each change of the terminal's size; the host chosen on the screen at boot, NULL when none waits
@@ -96,13 +97,14 @@ static void message(session* s, const char* text) {
     if (is_shown(s)) usb_terminal_write(text, strlen(text));
 }
 
-// From the keyboards or the USB terminal port, only for the shown session
+// From the keyboards or the USB terminal port, only for the shown session, which then shows the bottom of its scrollback
 static size_t read_input(const session* s, void* buffer, size_t size) {
     size_t n = 0;
     if (!is_shown(s)) return 0;
     xSemaphoreTake(input_lock, portMAX_DELAY);
     if (is_shown(s) && (n = keys_read(buffer, size)) == 0) n = usb_terminal_read(buffer, size);
     xSemaphoreGive(input_lock);
+    if (n > 0) terminal_scroll_to_bottom(s->terminal);
     return n;
 }
 
@@ -158,13 +160,15 @@ int accept_new_host(const ssh_session* connection, const char* name, const char*
 typedef enum { SESSION_CLOSED, SESSION_REFUSED, SESSION_DROPPED, SESSION_MOVED, SESSION_ENDED } session_end;
 
 // Typing that 1 s brings no output pings the host; no answer for another second shows as held until anything arrives.
-// The end of a tmux session's session first tells tmux to kill it, which closes the channel, for up to 3 s.
+// The end of a tmux session's session first tells tmux to kill it, which closes the channel, for up to 3 s. Mouse reports
+// count as typing; those from before the connection are dropped.
 static session_end bridge(session* s, unsigned path, bool tmux_session) {
     uint8_t in[256], out[1024];
     int pending = 0, off = 0;
     TickType_t typed_at = 0, pinged_at = 0, ending = 0;
     bool typed = false, pinged = false, held = false;
     unsigned pongs = 0, size = atomic_load(&resizes);
+    terminal_read_mouse(s->terminal, out, sizeof out);
     for (;;) {
         if (net_generation() != path) return SESSION_MOVED;
         if (atomic_load(&s->end) && (!tmux_session || (ending != 0 && xTaskGetTickCount() - ending >= pdMS_TO_TICKS(3000)))) return SESSION_ENDED;
@@ -175,7 +179,8 @@ static session_end bridge(session* s, unsigned path, bool tmux_session) {
         }
         if (atomic_load(&resizes) != size) size = atomic_load(&resizes), ssh_resize(&state, &s->connection);
         if (pending == 0) {
-            if ((pending = (int)terminal_reply(s->terminal, in, sizeof in)) == 0 && (pending = (int)read_input(s, in, sizeof in)) > 0) {
+            if ((pending = (int)terminal_reply(s->terminal, in, sizeof in)) == 0 &&
+                ((pending = (int)read_input(s, in, sizeof in)) > 0 || (pending = (int)terminal_read_mouse(s->terminal, in, sizeof in)) > 0)) {
                 screen_typed(in, (size_t)pending);
                 if (!typed) typed = true, typed_at = xTaskGetTickCount();
             }

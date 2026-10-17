@@ -14,7 +14,8 @@ bool tmux_command(char* out, size_t size, const char* name, bool attach, const c
         snprintf(start, sizeof start, "tmux new-session -d -s $s || exit $?; ");
     // -T (tmux 3.2) declares what the screen draws beyond xterm-256color's terminfo. The while loop runs in a pipeline's
     // subshell: an error there (an old tmux without a format) leaves the rest. allow-passthrough (tmux 3.3) lets kitty
-    // images reach the screen, for this session's windows only. '=': an exact name, not a prefix (set-hook takes none).
+    // images reach the screen, for this session's windows only; mouse (tmux 2.1) lets touches click and scroll in it.
+    // '=': an exact name, not a prefix (set-hook takes none; set takes a pane, hence '=name:').
     int n = snprintf(out, size,
                      "sh -c 'f=-TRGB,strikethrough,overline,usstyle,kittygraphics; tmux $f -V >/dev/null 2>&1 || f=; s=%s; t=$(date +%%s); "
                      "tmux ls -F \"#{session_name} #{session_attached} #{session_created}\" 2>/dev/null | while read n a c; do "
@@ -22,6 +23,7 @@ bool tmux_command(char* out, size_t size, const char* name, bool attach, const c
                      "tmux kill-session -t \"=$n\";; esac;; esac; done; %s"
                      "tmux set -s \"user-keys[99]\" \"$(printf \"\\033[2712~\")\" 2>/dev/null && tmux bind -n User99 kill-session 2>/dev/null; "
                      "tmux set-hook -t $s after-new-window \"set -w allow-passthrough all\" 2>/dev/null; "
+                     "tmux set -t =$s: mouse on 2>/dev/null; "
                      "for w in $(tmux list-windows -t =$s -F \"#{window_id}\" 2>/dev/null); do tmux set -w -t $w allow-passthrough all; done; "
                      "exec tmux $f attach-session -t =$s'",
                      name, prefix, keep, age_s, start);
