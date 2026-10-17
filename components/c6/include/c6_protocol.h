@@ -3,7 +3,7 @@
 // the kind
 #pragma once
 
-#define C6_PROTOCOL 6
+#define C6_PROTOCOL 7
 
 #define C6_TO_P4 0x54354336u // "T5C6"
 // After P4_KEEP: the C6's protocol version
@@ -43,21 +43,26 @@ enum {
     C6_NVS_SET,
     // [namespace][key], the whole namespace for an empty key, committed
     C6_NVS_ERASE,
+    // [namespace][key][type][size, 4 bytes][offset, 4 bytes][piece], from offset 0 on: written and committed with the last piece
+    C6_NVS_WRITE,
+    // Every entry of every namespace, committed
+    C6_NVS_CLEAR,
 };
 // Most of a request's body and of an answer's
 #define C6_NVS_MESSAGE 1000
-// The first protocol with P4_NVS
-#define C6_NVS_SINCE 6
-#define C6_NVS_U8    0x01
-#define C6_NVS_I8    0x11
-#define C6_NVS_U16   0x02
-#define C6_NVS_I16   0x12
-#define C6_NVS_U32   0x04
-#define C6_NVS_I32   0x14
-#define C6_NVS_U64   0x08
-#define C6_NVS_I64   0x18
-#define C6_NVS_STR   0x21
-#define C6_NVS_BLOB  0x42
+// The first protocol with P4_NVS, and with C6_NVS_WRITE and C6_NVS_CLEAR
+#define C6_NVS_SINCE      6
+#define C6_NVS_LOAD_SINCE 7
+#define C6_NVS_U8         0x01
+#define C6_NVS_I8         0x11
+#define C6_NVS_U16        0x02
+#define C6_NVS_I16        0x12
+#define C6_NVS_U32        0x04
+#define C6_NVS_I32        0x14
+#define C6_NVS_U64        0x08
+#define C6_NVS_I64        0x18
+#define C6_NVS_STR        0x21
+#define C6_NVS_BLOB       0x42
 
 // After each SDIO card init the P4 raises esp_hosted's ESP_RESET (C6_SDIO_RESET) in HOST_TO_SLAVE_INTR: the C6, which may have
 // run on through the P4's restart, closes the data path, restarts its SDIO counters and writes C6_RESET_DONE to its scratch

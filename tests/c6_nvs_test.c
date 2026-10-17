@@ -21,11 +21,12 @@ static void check(int ok, const char* what) {
 // The C6, as tools/c6 answers
 typedef struct {
     char space[16], key[16];
-    uint8_t type, value[256];
+    uint8_t type, value[4096];
     size_t size;
 } entry;
 static entry store[32];
-static int stored, exchanges, fail_with;
+static int stored, exchanges, writes, fail_with;
+static uint8_t pending[4096];
 static size_t answer_limit = C6_NVS_MESSAGE;
 static bool malformed;
 
@@ -79,16 +80,30 @@ static int fake_exchange(const uint8_t* request, size_t request_length, uint8_t*
         *answer_length = malformed ? 3 : 5 + n;
         return 0;
     }
-    if (request[0] == C6_NVS_SET) {
+    *answer_length = 0;
+    if (request[0] == C6_NVS_SET || request[0] == C6_NVS_WRITE) {
+        const uint8_t* value = at + 1;
         size_t size = request_length - (size_t)(at + 1 - request);
+        if (request[0] == C6_NVS_WRITE) {
+            uint32_t total = at[1] | at[2] << 8 | at[3] << 16 | (uint32_t)at[4] << 24,
+                     offset = at[5] | at[6] << 8 | at[7] << 16 | (uint32_t)at[8] << 24;
+            size_t piece = request_length - (size_t)(at + 9 - request);
+            writes++;
+            memcpy(pending + offset, at + 9, piece);
+            if (offset + piece < total) return 0;
+            value = pending, size = total;
+        }
         if (e == NULL) e = &store[stored++];
         snprintf(e->space, sizeof e->space, "%s", space);
         snprintf(e->key, sizeof e->key, "%s", key);
         e->type = at[0];
-        memcpy(e->value, at + 1, size);
+        memcpy(e->value, value, size);
         if (e->type == C6_NVS_STR) e->value[size++] = 0;
         e->size = size;
-        *answer_length = 0;
+        return 0;
+    }
+    if (request[0] == C6_NVS_CLEAR) {
+        stored = 0;
         return 0;
     }
     int erased = 0;
@@ -97,7 +112,6 @@ static int fake_exchange(const uint8_t* request, size_t request_length, uint8_t*
             memmove(&store[i], &store[i + 1], (size_t)(stored - i - 1) * sizeof store[0]);
             stored--, i--, erased++;
         }
-    *answer_length = 0;
     return erased > 0 ? 0 : NOT_FOUND;
 }
 
@@ -105,7 +119,7 @@ static const char* error_name(int error) {
     return error == 0 ? "ESP_OK" : error == NOT_FOUND ? "ESP_ERR_NVS_NOT_FOUND" : error == TIMEOUT ? "ESP_ERR_TIMEOUT" : "?";
 }
 
-static char out[8192];
+static char out[32768];
 static size_t out_length;
 
 static void write_out(void* context, const char* text, size_t length) {
@@ -114,7 +128,24 @@ static void write_out(void* context, const char* text, size_t length) {
     out[out_length] = 0;
 }
 
-static c6_nvs_io io = {C6_NVS_SINCE, fake_exchange, error_name, write_out, NULL};
+static const char* input;
+static size_t input_left;
+
+// A few bytes at a time
+static int read_input(void* context, void* buffer, size_t length) {
+    size_t n = input_left < 7 ? input_left : 7;
+    (void)context;
+    if (n > length) n = length;
+    memcpy(buffer, input, n);
+    input += n, input_left -= n;
+    return (int)n;
+}
+
+static void feed(const char* text) {
+    input = text, input_left = strlen(text);
+}
+
+static c6_nvs_io io = {"c6 nvs", C6_PROTOCOL, fake_exchange, error_name, write_out, read_input, NULL};
 static int status;
 
 static const char* run(const char* arguments) {
@@ -180,7 +211,7 @@ int main(void) {
     expect(" dump other", "other k u8 255\nc6 nvs ESP_OK\n", 0);
     expect(" list test",
            "c6 nvs usage: list | get NAMESPACE KEY | dump [NAMESPACE] | set NAMESPACE KEY u8|i8|u16|i16|u32|i32|u64|i64|str|blob VALUE | "
-           "erase NAMESPACE [KEY]\n",
+           "erase NAMESPACE [KEY] | load [NAMESPACE]\n",
            1);
     answer_limit = C6_NVS_MESSAGE;
 
@@ -207,6 +238,67 @@ int main(void) {
     expect(" dump other", "c6 nvs ESP_OK\n", 0);
     expect(" erase other", "c6 nvs ESP_ERR_NVS_NOT_FOUND\n", 1);
 
+    // load: the dump format back, checked whole first
+    static char dumped[32768], big_line[4200], big_hex[4001];
+    expect(" set other k u8 9", "c6 nvs ESP_OK\n", 0);
+    run(" dump");
+    snprintf(dumped, sizeof dumped, "%s", out);
+    int before = stored;
+    feed(dumped);
+    run(" load");
+    check(status == 0 && strstr(out, " entries\nc6 nvs ESP_OK\n") != NULL && stored == before, "load: a whole dump back");
+    run(" dump");
+    check(strcmp(out, dumped) == 0, "load: dump, load, dump the same");
+    feed("test a u8 7\r\ntest t str a\\\\b\\x01c\ntest e str \n\nc6 nvs ESP_OK\n");
+    expect(" load test", "3 entries\nc6 nvs ESP_OK\n", 0);
+    expect(" dump test", "test a u8 7\ntest t str a\\\\b\\x01c\ntest e str \nc6 nvs ESP_OK\n", 0);
+    expect(" dump other", "other k u8 9\nc6 nvs ESP_OK\n", 0);
+    before = stored;
+    feed("test a u8 1\nother k u8 2\n");
+    expect(" load test", "c6 nvs line 2: another namespace\n", 1);
+    feed("test a u8 1\ntest b u8 300\n");
+    expect(" load", "c6 nvs line 2: not a value of that type\n", 1);
+    feed("test a u8 1\nc6 nvs ESP_ERR_TIMEOUT\n");
+    expect(" load", "c6 nvs line 2: not a type set takes\n", 1);
+    feed("test a u8 1\nnvs ESP_ERR_TIMEOUT\n");
+    expect(" load", "c6 nvs line 2: not NAMESPACE KEY TYPE VALUE\n", 1);
+    feed("test s str a\\qb\n");
+    expect(" load", "c6 nvs line 1: a string with an unknown escape\n", 1);
+    feed("test s str a\\x00b\n");
+    expect(" load", "c6 nvs line 1: a string with \\x00\n", 1);
+    feed("test b blob abc\n");
+    expect(" load", "c6 nvs line 1: not hex\n", 1);
+    check(stored == before, "load: nothing erased for a refused input");
+    expect(" dump test", "test a u8 7\ntest t str a\\\\b\\x01c\ntest e str \nc6 nvs ESP_OK\n", 0);
+    for (int i = 0; i < 2000; i++)
+        snprintf(big_hex + 2 * i, 3, "%02x", (i * 53 + 7) & 0xff);
+    snprintf(big_line, sizeof big_line, "big b blob %s\n", big_hex);
+    feed(big_line);
+    writes = 0;
+    expect(" load big", "1 entries\nc6 nvs ESP_OK\n", 0);
+    check(writes == 3, "load: a 2000-byte value in pieces");
+    snprintf(big_line, sizeof big_line, "%s\nc6 nvs ESP_OK\n", big_hex);
+    expect(" get big b", big_line, 0);
+    feed("");
+    expect(" load big", "0 entries\nc6 nvs ESP_OK\n", 0);
+    expect(" dump big", "c6 nvs ESP_OK\n", 0);
+    feed("");
+    expect(" load nothere", "0 entries\nc6 nvs ESP_OK\n", 0);
+    io.read = NULL;
+    expect(" load", "c6 nvs load reads stdin: over SSH only\n", 1);
+    io.read = read_input;
+    io.protocol = C6_NVS_SINCE;
+    expect(" load", "c6 nvs needs C6 protocol 7, the C6 firmware has 6: make c6-update\n", 1);
+    expect(" get other k", "9\nc6 nvs ESP_OK\n", 0);
+    io.protocol = C6_PROTOCOL;
+    io.name = "nvs";
+    expect(" get other k", "9\nnvs ESP_OK\n", 0);
+    io.name = "c6 nvs";
+    feed("");
+    expect(" load", "0 entries\nc6 nvs ESP_OK\n", 0);
+    check(stored == 0, "load: nothing in, nothing left");
+
+    expect(" set test s str x", "c6 nvs ESP_OK\n", 0);
     malformed = true;
     expect(" get test s", "c6 nvs a malformed answer\n", 1);
     malformed = false;
@@ -225,5 +317,8 @@ int main(void) {
     check(control_loggable(secret) < (int)(strstr(secret, "0011") - secret), "loggable: more spaces cut earlier");
     check(control_loggable("wifi connect home password") == 12, "loggable: wifi connect");
     check(control_loggable("c6 nvs get tab5 wifi") == 20, "loggable: the rest whole");
+    check(control_loggable("nvs set cfg config str {\"x\": 1}") == 22, "loggable: nvs set up to its type");
+    check(control_nvs("nvs list") == 3 && control_nvs("c6 nvs") == 6 && control_nvs("nvsx") == 0 && control_nvs("c6 update 1 2") == 0,
+          "the nvs commands");
     return failures != 0;
 }

@@ -23,6 +23,8 @@
 
 #include "c6.h"
 #include "c6_nvs.h"
+#include "c6_nvs_server.h"
+#include "c6_protocol.h"
 #include "catm.h"
 #include "config.h"
 #include "control.h"
@@ -91,6 +93,18 @@ static void say(sshd_session* s, const char* text) {
 
 static void write_reply(void* context, const char* text, size_t length) {
     sshd_write(context, text, length, WAIT_MS);
+}
+
+// stdin up to its end, each wait at most WAIT_MS
+static int read_input(void* context, void* buffer, size_t length) {
+    for (TickType_t last = xTaskGetTickCount(); xTaskGetTickCount() - last < pdMS_TO_TICKS(WAIT_MS);) {
+        int r = sshd_read(context, buffer, length);
+        if (r > 0) return r;
+        if (r == WS_EOF) return 0;
+        if (r < 0) return -1;
+        sshd_wait(context, 100);
+    }
+    return -1;
 }
 
 // The log from position on, until the client leaves or, with quiet_ms, until that long passes without a line
@@ -220,9 +234,18 @@ static int run(sshd_session* s, after* then) {
     }
     if (strcmp(line, "config") == 0) return print_config(s);
     if (strcmp(line, "config set") == 0) return set_config(s);
-    // Its values go to stdout alone, never to the log
-    if (strcmp(line, "c6 nvs") == 0 || strncmp(line, "c6 nvs ", 7) == 0)
-        return c6_nvs_command(line + 6, &(c6_nvs_io){c6_protocol(), c6_nvs, esp_err_to_name, write_reply, s});
+    // Values go to stdout alone, never to the log
+    if (control_nvs(line) > 0) {
+        bool c6 = line[0] == 'c';
+        c6_nvs_io io = {.name = c6 ? "c6 nvs" : "nvs",
+                        .protocol = c6 ? c6_protocol() : C6_PROTOCOL,
+                        .exchange = c6 ? c6_nvs : c6_nvs_local,
+                        .error_name = esp_err_to_name,
+                        .write = write_reply,
+                        .read = read_input,
+                        .context = s};
+        return c6_nvs_command(line + control_nvs(line), &io);
+    }
     if (strcmp(line, "restart") == 0) {
         *then = RESTART;
         return 0;

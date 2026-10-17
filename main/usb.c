@@ -22,6 +22,8 @@
 
 #include "c6.h"
 #include "c6_nvs.h"
+#include "c6_nvs_server.h"
+#include "c6_protocol.h"
 #include "control.h"
 #include "update.h"
 
@@ -113,9 +115,15 @@ static void command(char* line) {
         int n = snprintf(reply, sizeof reply, "%supdate %s\n", c6 ? "c6 " : "", esp_err_to_name(err));
         put(control_port, reply, (size_t)n);
         if (err == ESP_OK) update_restart(UPDATE_USB);
-    } else if (strcmp(line, "c6 nvs") == 0 || strncmp(line, "c6 nvs ", 7) == 0) {
+    } else if (control_nvs(line) > 0) {
         // The reply alone carries values: the log goes to the SD card and to SSH
-        int failed = c6_nvs_command(line + 6, &(c6_nvs_io){c6_protocol(), c6_nvs, esp_err_to_name, write_reply, NULL});
+        bool c6 = line[0] == 'c';
+        c6_nvs_io io = {.name = c6 ? "c6 nvs" : "nvs",
+                        .protocol = c6 ? c6_protocol() : C6_PROTOCOL,
+                        .exchange = c6 ? c6_nvs : c6_nvs_local,
+                        .error_name = esp_err_to_name,
+                        .write = write_reply};
+        int failed = c6_nvs_command(line + control_nvs(line), &io);
         ESP_LOGI(TAG, "%.*s: %s", control_loggable(line), line, failed ? "failed" : "done");
     } else if (line[0] && !app_command(line)) {
         char help[400];

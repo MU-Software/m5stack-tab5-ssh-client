@@ -11,3 +11,5 @@ typedef enum { CONTROL_USB = 1, CONTROL_SSH = 2 } control_transport;
 void control_help(control_transport transport, char* out, size_t size);
 // How much of a command line a log may show
 int control_loggable(const char* line);
+// The length of its "nvs" or "c6 nvs", 0 for another command
+int control_nvs(const char* line);

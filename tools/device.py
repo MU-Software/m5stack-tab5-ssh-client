@@ -150,14 +150,14 @@ def reply(s: serial.Serial, end: bytes, seconds: float) -> int:
 @app.command()
 def send(command: Annotated[str, typer.Argument(help="any unknown command makes the firmware log the list")]) -> None:
     """Send a control command to the firmware; over SSH, print what it logs until it is quiet for a second.
-    c6 nvs prints its reply, which no log carries."""
+    [c6 ]nvs prints its reply, which no log carries."""
     if host:
         raise SystemExit(subprocess.run(["ssh", host, command]).returncode)
     with serial.Serial(firmware_port(-1), timeout=0.1) as s:
         s.reset_input_buffer()
         s.write(command.encode() + b"\n")
-        if command.split()[:2] == ["c6", "nvs"]:
-            raise SystemExit(reply(s, b"c6 nvs ", 20))
+        if (words := command.split())[:1] == ["nvs"] or words[:2] == ["c6", "nvs"]:
+            raise SystemExit(reply(s, b"nvs " if words[0] == "nvs" else b"c6 nvs ", 20))
 
 
 @app.command()

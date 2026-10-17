@@ -12,9 +12,12 @@
 #include "c6_protocol.h"
 
 #define NAME_LENGTH 15
+#define LOAD_MAX    (256 * 1024)
+// ESP_ERR_NVS_NOT_FOUND
+#define NVS_NOT_FOUND 0x1102
 #define USAGE                                                                                                                      \
     "usage: list | get NAMESPACE KEY | dump [NAMESPACE] | set NAMESPACE KEY u8|i8|u16|i16|u32|i32|u64|i64|str|blob VALUE | erase " \
-    "NAMESPACE [KEY]"
+    "NAMESPACE [KEY] | load [NAMESPACE]"
 
 // The integers first
 static const struct {
@@ -30,6 +33,9 @@ typedef struct {
     const c6_nvs_io* io;
     // NULL until something fails
     const char* failure;
+    char reason[80];
+    // Of the last exchange
+    int error;
     uint8_t request[C6_NVS_MESSAGE], answer[C6_NVS_MESSAGE], entries[C6_NVS_MESSAGE];
     size_t answer_length;
 } job;
@@ -94,7 +100,7 @@ static bool word(const char** at, char* out, size_t size) {
 
 static bool exchange(job* j, size_t length) {
     j->answer_length = sizeof j->answer;
-    int err = j->io->exchange(j->request, length, j->answer, &j->answer_length);
+    int err = j->error = j->io->exchange(j->request, length, j->answer, &j->answer_length);
     if (err != 0) j->failure = j->io->error_name(err);
     return err == 0;
 }
@@ -223,49 +229,169 @@ static int hex_digit(char c) {
     return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
 }
 
+// A value as set and dump write it: a string escaped as dump writes it when escaped, else as it is
+static const char* decode(uint8_t type, const char* text, bool escaped, uint8_t* out, size_t room, size_t* length) {
+    *length = 0;
+    if (is_integer(type)) {
+        *length = type & 0x0fu;
+        return room >= *length && parse_integer(text, type, out) ? NULL : "not a value of that type";
+    }
+    if (type == C6_NVS_BLOB) {
+        text += strspn(text, " ");
+        size_t n = strlen(text);
+        if (n % 2 != 0) return "not hex";
+        if (n / 2 > room) return "too long";
+        for (size_t k = 0; k < n; k += 2, (*length)++) {
+            if (hex_digit(text[k]) < 0 || hex_digit(text[k + 1]) < 0) return "not hex";
+            out[*length] = (uint8_t)(hex_digit(text[k]) << 4 | hex_digit(text[k + 1]));
+        }
+        return NULL;
+    }
+    for (size_t k = 0; text[k] != 0; k++) {
+        uint8_t c = (uint8_t)text[k];
+        if (escaped && c == '\\' && text[k + 1] == '\\') {
+            k++;
+        } else if (escaped && c == '\\') {
+            if (text[k + 1] != 'x' || hex_digit(text[k + 2]) < 0 || hex_digit(text[k + 3]) < 0) return "a string with an unknown escape";
+            if ((c = (uint8_t)(hex_digit(text[k + 2]) << 4 | hex_digit(text[k + 3]))) == 0) return "a string with \\x00";
+            k += 3;
+        }
+        if (*length == room) return "too long";
+        out[(*length)++] = c;
+    }
+    return NULL;
+}
+
 // A string as it is, a blob in hex
 static void set(job* j, const char* space, const char* key, const char* type_text, const char* text) {
     int i = type_index(0, type_text);
+    size_t n = put_name(j->request, put_name(j->request, 1, space), key), length;
     if (i < 0) {
         j->failure = USAGE;
         return;
     }
-    uint8_t type = types[i].type;
-    size_t n = put_name(j->request, put_name(j->request, 1, space), key), length = strlen(text);
     j->request[0] = C6_NVS_SET;
-    j->request[n++] = type;
-    if (type == C6_NVS_BLOB) text += strspn(text, " "), length = strlen(text);
-    if (is_integer(type)) {
-        if (!parse_integer(text, type, j->request + n)) j->failure = "not a value of that type";
-        n += type & 0x0f;
-    } else if ((type == C6_NVS_STR ? length : length / 2) > sizeof j->request - n) {
-        j->failure = "too long";
-    } else if (type == C6_NVS_STR) {
-        memcpy(j->request + n, text, length);
-        n += length;
-    } else {
-        for (size_t k = 0; k < length && j->failure == NULL; k += 2, n++)
-            if (k + 1 >= length || hex_digit(text[k]) < 0 || hex_digit(text[k + 1]) < 0)
-                j->failure = "not hex";
-            else
-                j->request[n] = (uint8_t)(hex_digit(text[k]) << 4 | hex_digit(text[k + 1]));
+    j->request[n++] = types[i].type;
+    if ((j->failure = decode(types[i].type, text, false, j->request + n, sizeof j->request - n, &length)) == NULL) exchange(j, n + length);
+}
+
+static void wipe(void* memory, size_t size) {
+    for (volatile uint8_t* p = memory; size-- > 0; p++)
+        *p = 0;
+}
+
+// "NAMESPACE KEY TYPE VALUE", its value decoded
+static const char* parse_line(const char* line, char* space, char* key, uint8_t* type, uint8_t* value, size_t room, size_t* length) {
+    char type_text[NAME_LENGTH + 1];
+    const char* at = line;
+    if (!word(&at, space, NAME_LENGTH + 1) || !word(&at, key, NAME_LENGTH + 1) || !word(&at, type_text, sizeof type_text))
+        return "not NAMESPACE KEY TYPE VALUE";
+    int i = type_index(0, type_text);
+    if (i < 0) return "not a type set takes";
+    *type = types[i].type;
+    return decode(*type, at[0] == ' ' ? at + 1 : at, true, value, room, length);
+}
+
+// The next line, NULL past the last, counted in *number; a dump's own status line is skipped
+static char* next_line(char** at, const char* end, unsigned* number) {
+    for (char* line; *at < end;) {
+        line = *at;
+        *at += strlen(line) + 1;
+        ++*number;
+        if (line[0] != 0 && line[strlen(line) - 1] == '\r') line[strlen(line) - 1] = 0;
+        if (line[0] != 0 && strcmp(line, "c6 nvs ESP_OK") != 0 && strcmp(line, "nvs ESP_OK") != 0) return line;
     }
-    if (j->failure == NULL) exchange(j, n);
+    return NULL;
+}
+
+// Twice the room, the old copy wiped
+static char* grow(char* text, size_t size, size_t* capacity) {
+    size_t more = *capacity == 0 ? 4096 : *capacity * 2;
+    char* bigger = more <= LOAD_MAX ? malloc(more) : NULL;
+    if (bigger == NULL) return NULL;
+    if (text != NULL) {
+        memcpy(bigger, text, size);
+        wipe(text, *capacity);
+        free(text);
+    }
+    *capacity = more;
+    return bigger;
+}
+
+// Each value in pieces from offset 0 on, the last one written
+static void write_value(job* j, const char* space, const char* key, uint8_t type, const uint8_t* value, size_t length) {
+    size_t header = put_name(j->request, put_name(j->request, 1, space), key), room = sizeof j->request - header - 9;
+    j->request[0] = C6_NVS_WRITE;
+    j->request[header] = type;
+    put_number(j->request, header + 1, length, 4);
+    for (size_t offset = 0, piece; offset == 0 || offset < length; offset += piece) {
+        piece = length - offset < room ? length - offset : room;
+        put_number(j->request, header + 5, offset, 4);
+        memcpy(j->request + header + 9, value + offset, piece);
+        if (!exchange(j, header + 9 + piece) || length == 0) return;
+    }
+}
+
+// The dump format from the input, checked whole before anything is erased: then the namespace, or all, holds it alone
+static void load(job* j, const char* only) {
+    const c6_nvs_io* io = j->io;
+    char *text = NULL, *at, space[NAME_LENGTH + 1], key[NAME_LENGTH + 1];
+    const char* line;
+    uint8_t *bytes = NULL, type = 0;
+    size_t size = 0, capacity = 0, length = 0;
+    unsigned count = 0, number = 0;
+    if (io->read == NULL) {
+        j->failure = "load reads stdin: over SSH only";
+        return;
+    }
+    for (int n = 1; j->failure == NULL && n > 0;) {
+        char* bigger = size + 1 >= capacity ? grow(text, size, &capacity) : text;
+        if (bigger == NULL) {
+            j->failure = capacity * 2 > LOAD_MAX ? "an input of 256 KiB or more" : "out of memory";
+        } else if ((n = io->read(io->context, (text = bigger) + size, capacity - size - 1)) < 0) {
+            j->failure = "no end of input";
+        } else {
+            size += (size_t)n;
+        }
+    }
+    if (j->failure == NULL && (bytes = malloc(size + 1)) == NULL) j->failure = "out of memory";
+    if (j->failure == NULL) {
+        text[size] = 0;
+        for (char* p = text; p < text + size; p++)
+            if (*p == '\n') *p = 0;
+    }
+    for (at = text; j->failure == NULL && (line = next_line(&at, text + size, &number)) != NULL; count++) {
+        const char* bad = parse_line(line, space, key, &type, bytes, size, &length);
+        if (bad == NULL && only != NULL && strcmp(space, only) != 0) bad = "another namespace";
+        if (bad != NULL) {
+            snprintf(j->reason, sizeof j->reason, "line %u: %s", number, bad);
+            j->failure = j->reason;
+        }
+    }
+    if (j->failure == NULL) {
+        size_t header = only != NULL ? put_name(j->request, put_name(j->request, 1, only), "") : 1;
+        j->request[0] = only != NULL ? C6_NVS_ERASE : C6_NVS_CLEAR;
+        // A namespace that is not there is empty already
+        if (!exchange(j, header) && only != NULL && j->error == NVS_NOT_FOUND) j->failure = NULL;
+    }
+    for (at = text; j->failure == NULL && (line = next_line(&at, text + size, &number)) != NULL;) {
+        parse_line(line, space, key, &type, bytes, size, &length);
+        write_value(j, space, key, type, bytes, length);
+    }
+    if (j->failure == NULL) say(j, "%u entries\n", count);
+    if (bytes != NULL) wipe(bytes, size + 1);
+    if (text != NULL) wipe(text, capacity);
+    free(bytes);
+    free(text);
 }
 
 int c6_nvs_command(const char* arguments, const c6_nvs_io* io) {
     char words[4][NAME_LENGTH + 1] = {{0}};
     const char* at = arguments;
     int count = 0;
-    if (io->protocol < C6_NVS_SINCE) {
-        char text[96];
-        int n = snprintf(text, sizeof text, "c6 nvs needs C6 protocol %d, the C6 firmware has %u: make c6-update\n", C6_NVS_SINCE, io->protocol);
-        io->write(io->context, text, (size_t)n);
-        return 1;
-    }
     job* j = calloc(1, sizeof *j);
     if (j == NULL) {
-        io->write(io->context, "c6 nvs out of memory\n", 21);
+        io->write(io->context, "out of memory\n", 14);
         return 1;
     }
     j->io = io;
@@ -273,7 +399,11 @@ int c6_nvs_command(const char* arguments, const c6_nvs_io* io) {
         count++;
     const char *operation = words[0], *space = words[1], *key = words[2];
     bool rest = at[strspn(at, " ")] != 0;
-    if (count == 1 && !rest && strcmp(operation, "list") == 0) {
+    int since = strcmp(operation, "load") == 0 ? C6_NVS_LOAD_SINCE : C6_NVS_SINCE;
+    if (io->protocol < (unsigned)since) {
+        snprintf(j->reason, sizeof j->reason, "needs C6 protocol %d, the C6 firmware has %u: make c6-update", since, io->protocol);
+        j->failure = j->reason;
+    } else if (count == 1 && !rest && strcmp(operation, "list") == 0) {
         entries(j, NULL, false);
     } else if ((count == 1 || count == 2) && !rest && strcmp(operation, "dump") == 0) {
         entries(j, count == 2 ? space : NULL, true);
@@ -281,6 +411,8 @@ int c6_nvs_command(const char* arguments, const c6_nvs_io* io) {
         value(j, space, key, false);
     } else if (count == 4 && strcmp(operation, "set") == 0) {
         set(j, space, key, words[3], at[0] == ' ' ? at + 1 : at);
+    } else if ((count == 1 || count == 2) && !rest && strcmp(operation, "load") == 0) {
+        load(j, count == 2 ? space : NULL);
     } else if ((count == 2 || count == 3) && !rest && strcmp(operation, "erase") == 0) {
         size_t n = put_name(j->request, put_name(j->request, 1, space), key);
         j->request[0] = C6_NVS_ERASE;
@@ -289,9 +421,8 @@ int c6_nvs_command(const char* arguments, const c6_nvs_io* io) {
         j->failure = USAGE;
     }
     bool ok = j->failure == NULL;
-    say(j, "c6 nvs %s\n", ok ? io->error_name(0) : j->failure);
-    for (volatile uint8_t* p = (volatile uint8_t*)j; p < (volatile uint8_t*)(j + 1); p++)
-        *p = 0;
+    say(j, "%s %s\n", io->name, ok ? io->error_name(0) : j->failure);
+    wipe(j, sizeof *j);
     free(j);
     return !ok;
 }

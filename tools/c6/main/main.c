@@ -22,6 +22,7 @@
 #include <nvs.h>
 #include <nvs_flash.h>
 
+#include "c6_nvs_server.h"
 #include "c6_protocol.h"
 
 #define RING 4096
@@ -471,198 +472,15 @@ static void join_known(void* arg) {
     }
 }
 
-_Static_assert(C6_NVS_U8 == NVS_TYPE_U8 && C6_NVS_I8 == NVS_TYPE_I8 && C6_NVS_U16 == NVS_TYPE_U16 && C6_NVS_I16 == NVS_TYPE_I16 &&
-                   C6_NVS_U32 == NVS_TYPE_U32 && C6_NVS_I32 == NVS_TYPE_I32 && C6_NVS_U64 == NVS_TYPE_U64 && C6_NVS_I64 == NVS_TYPE_I64 &&
-                   C6_NVS_STR == NVS_TYPE_STR && C6_NVS_BLOB == NVS_TYPE_BLOB,
-               "nvs_type_t");
-
-// [length][name] at *at; an empty one only when empty is allowed
-static bool take_name(const uint8_t* body, size_t size, size_t* at, char name[NVS_KEY_NAME_MAX_SIZE], bool empty) {
-    if (*at >= size || body[*at] >= NVS_KEY_NAME_MAX_SIZE || (body[*at] == 0 && !empty) || *at + 1 + body[*at] > size) return false;
-    memcpy(name, body + *at + 1, body[*at]);
-    name[body[*at]] = 0;
-    *at += 1 + body[*at];
-    return true;
-}
-
-static void put_number(uint8_t* out, uint32_t n) {
-    for (int i = 0; i < 4; i++)
-        out[i] = (uint8_t)(n >> 8 * i);
-}
-
-// Before a free, which a memset would not outlive
-static void wipe(void* memory, size_t size) {
-    for (volatile uint8_t* p = memory; size-- > 0; p++)
-        *p = 0;
-}
-
-static esp_err_t get_integer(nvs_handle_t nvs, const char* key, nvs_type_t type, void* out) {
-    switch (type) {
-    case NVS_TYPE_U8:
-        return nvs_get_u8(nvs, key, out);
-    case NVS_TYPE_I8:
-        return nvs_get_i8(nvs, key, out);
-    case NVS_TYPE_U16:
-        return nvs_get_u16(nvs, key, out);
-    case NVS_TYPE_I16:
-        return nvs_get_i16(nvs, key, out);
-    case NVS_TYPE_U32:
-        return nvs_get_u32(nvs, key, out);
-    case NVS_TYPE_I32:
-        return nvs_get_i32(nvs, key, out);
-    case NVS_TYPE_U64:
-        return nvs_get_u64(nvs, key, out);
-    case NVS_TYPE_I64:
-        return nvs_get_i64(nvs, key, out);
-    default:
-        return ESP_ERR_NVS_TYPE_MISMATCH;
-    }
-}
-
-static esp_err_t set_integer(nvs_handle_t nvs, const char* key, nvs_type_t type, uint64_t n) {
-    switch (type) {
-    case NVS_TYPE_U8:
-        return nvs_set_u8(nvs, key, (uint8_t)n);
-    case NVS_TYPE_I8:
-        return nvs_set_i8(nvs, key, (int8_t)n);
-    case NVS_TYPE_U16:
-        return nvs_set_u16(nvs, key, (uint16_t)n);
-    case NVS_TYPE_I16:
-        return nvs_set_i16(nvs, key, (int16_t)n);
-    case NVS_TYPE_U32:
-        return nvs_set_u32(nvs, key, (uint32_t)n);
-    case NVS_TYPE_I32:
-        return nvs_set_i32(nvs, key, (int32_t)n);
-    case NVS_TYPE_U64:
-        return nvs_set_u64(nvs, key, n);
-    case NVS_TYPE_I64:
-        return nvs_set_i64(nvs, key, (int64_t)n);
-    default:
-        return ESP_ERR_NVS_TYPE_MISMATCH;
-    }
-}
-
-// A string's with its terminator
-static size_t value_size(nvs_handle_t nvs, const char* key, nvs_type_t type) {
-    size_t size = type & 0x0f;
-    if (type == NVS_TYPE_STR) nvs_get_str(nvs, key, NULL, &size);
-    if (type == NVS_TYPE_BLOB) nvs_get_blob(nvs, key, NULL, &size);
-    return size;
-}
-
-static esp_err_t list_entries(const uint8_t* body, size_t size, uint8_t* out, size_t* length) {
-    nvs_iterator_t it = NULL;
-    nvs_entry_info_t info;
-    nvs_handle_t nvs;
-    unsigned skip = size >= 2 ? body[0] | body[1] << 8 : 0;
-    esp_err_t err = nvs_entry_find(NVS_DEFAULT_PART_NAME, NULL, NVS_TYPE_ANY, &it);
-    for (; err == ESP_OK; err = nvs_entry_next(&it)) {
-        nvs_entry_info(it, &info);
-        size_t space = strlen(info.namespace_name), key = strlen(info.key), value = info.type & 0x0f;
-        if (skip > 0) {
-            skip--;
-            continue;
-        }
-        if (*length + 7 + space + key > C6_NVS_MESSAGE) break;
-        if ((info.type == NVS_TYPE_STR || info.type == NVS_TYPE_BLOB) && nvs_open(info.namespace_name, NVS_READONLY, &nvs) == ESP_OK) {
-            value = value_size(nvs, info.key, info.type);
-            nvs_close(nvs);
-        }
-        out[(*length)++] = (uint8_t)info.type;
-        out[(*length)++] = (uint8_t)space;
-        memcpy(out + *length, info.namespace_name, space);
-        out[*length += space] = (uint8_t)key;
-        memcpy(out + ++*length, info.key, key);
-        put_number(out + (*length += key), value);
-        *length += 4;
-    }
-    nvs_release_iterator(it);
-    return err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
-}
-
-static esp_err_t get_value(nvs_handle_t nvs, const char* key, uint32_t offset, uint8_t* out, size_t* length) {
-    nvs_type_t type;
-    uint64_t number = 0;
-    esp_err_t err = nvs_find_key(nvs, key, &type);
-    if (err != ESP_OK) return err;
-    size_t size = value_size(nvs, key, type);
-    uint8_t* value = type == NVS_TYPE_STR || type == NVS_TYPE_BLOB ? malloc(size + 1) : (uint8_t*)&number;
-    if (value == NULL) return ESP_ERR_NO_MEM;
-    if (type == NVS_TYPE_STR)
-        err = nvs_get_str(nvs, key, (char*)value, &size);
-    else if (type == NVS_TYPE_BLOB)
-        err = nvs_get_blob(nvs, key, value, &size);
-    else
-        err = get_integer(nvs, key, type, value);
-    out[0] = (uint8_t)type;
-    put_number(out + 1, size);
-    *length = 5;
-    if (err == ESP_OK && offset < size) {
-        size_t n = size - offset < C6_NVS_MESSAGE - 5 ? size - offset : C6_NVS_MESSAGE - 5;
-        memcpy(out + 5, value + offset, n);
-        *length += n;
-    }
-    if (value != (uint8_t*)&number) {
-        wipe(value, size);
-        free(value);
-    }
-    return err;
-}
-
-static esp_err_t set_value(nvs_handle_t nvs, const char* key, const uint8_t* body, size_t size) {
-    uint64_t number = 0;
-    if (size < 1) return ESP_ERR_INVALID_SIZE;
-    nvs_type_t type = body[0];
-    if (type == NVS_TYPE_BLOB) return nvs_set_blob(nvs, key, body + 1, size - 1);
-    if (type != NVS_TYPE_STR) {
-        if (size - 1 != (type & 0x0f)) return ESP_ERR_INVALID_SIZE;
-        memcpy(&number, body + 1, size - 1);
-        return set_integer(nvs, key, type, number);
-    }
-    char* text = calloc(1, size);
-    if (text == NULL) return ESP_ERR_NO_MEM;
-    memcpy(text, body + 1, size - 1);
-    esp_err_t err = nvs_set_str(nvs, key, text);
-    wipe(text, size);
-    free(text);
-    return err;
-}
-
-// The answer's own buffer: esp_hosted runs this on a 4 KiB stack. Values never go to the log
+// The answer's own buffer: esp_hosted runs this on a 4 KiB stack
 static void nvs_request(uint8_t sequence, uint8_t operation, const uint8_t* body, size_t size) {
     static uint8_t answer[6 + C6_NVS_MESSAGE];
-    char space[NVS_KEY_NAME_MAX_SIZE], key[NVS_KEY_NAME_MAX_SIZE];
-    size_t at = 0, length = 0;
-    nvs_handle_t nvs;
-    esp_err_t err = ESP_ERR_INVALID_ARG;
-    if (operation == C6_NVS_LIST) {
-        err = list_entries(body, size, answer + 6, &length);
-    } else if (operation <= C6_NVS_ERASE && take_name(body, size, &at, space, false) && take_name(body, size, &at, key, operation == C6_NVS_ERASE)) {
-        // Read-only first: a read-write open makes a namespace that is not there
-        err = nvs_open(space, NVS_READONLY, &nvs);
-        if (err == ESP_OK && operation != C6_NVS_GET) {
-            nvs_close(nvs);
-            err = nvs_open(space, NVS_READWRITE, &nvs);
-        }
-        if (err == ESP_ERR_NVS_NOT_FOUND && operation == C6_NVS_SET) err = nvs_open(space, NVS_READWRITE, &nvs);
-        if (err == ESP_OK) {
-            if (operation == C6_NVS_GET)
-                err = at + 4 <= size
-                          ? get_value(nvs, key, body[at] | body[at + 1] << 8 | body[at + 2] << 16 | (uint32_t)body[at + 3] << 24, answer + 6, &length)
-                          : ESP_ERR_INVALID_ARG;
-            else if (operation == C6_NVS_SET)
-                err = set_value(nvs, key, body + at, size - at);
-            else
-                err = key[0] ? nvs_erase_key(nvs, key) : nvs_erase_all(nvs);
-            if (err == ESP_OK && operation != C6_NVS_GET) err = nvs_commit(nvs);
-            nvs_close(nvs);
-        }
-        if (operation == C6_NVS_SET) ESP_LOGI(TAG, "NVS set %s %s: %s", space, key, esp_err_to_name(err));
-        if (operation == C6_NVS_ERASE) ESP_LOGI(TAG, "NVS erase %s %s: %s", space, key[0] ? key : "(all)", esp_err_to_name(err));
-    }
+    esp_err_t err;
+    size_t length = c6_nvs_serve(operation, body, size, answer + 6, &err);
     answer[0] = C6_NVS;
     answer[1] = sequence;
-    put_number(answer + 2, (uint32_t)err);
+    for (int i = 0; i < 4; i++)
+        answer[2 + i] = (uint8_t)((uint32_t)err >> 8 * i);
     send_to_p4(answer, 6 + length);
     memset(answer, 0, sizeof answer);
 }
