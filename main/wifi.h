@@ -8,8 +8,8 @@
 
 #include "state.h"
 
-// Powers the C6 and starts the station without joining
-esp_err_t wifi_start(void);
+// Powers the C6 and starts the station when on, without joining
+esp_err_t wifi_start(bool on);
 // The networks in reach, freed by the caller; ends the retries of a joined network that has gone
 esp_err_t wifi_scan(wifi_ap_record_t** records, uint16_t* count);
 // Joins the first of networks but except that a scan sees, leaving any network joined before

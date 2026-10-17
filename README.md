@@ -20,8 +20,8 @@ make c6-update  # the ESP32-C6's esp_hosted (tools/c6), over USB (logged at boot
 
 The C6 keeps a new image once the Tab5 reaches it through esp_hosted, else it boots the one before after a minute: its
 bootloader has no rollback, and it can only be reflashed otherwise through the back-cover pads. Its log shows as `C6`.
-It stays joined through restarts of the Tab5, which then only gets an address again, and keeps a copy of the known
-networks.
+It keeps a copy of the known networks and joins them itself (the first one a scan sees, in their order; again after a
+drop), so it stays joined through restarts of the Tab5, which then only gets an address again.
 
 USB-C is TinyUSB: a terminal port and a control port (`tools/device.py`). An OTA image is kept once it has run 10 s
 and USB came up: one that USB never comes up with rolls back after 30 s, one that crashes before at the next restart.

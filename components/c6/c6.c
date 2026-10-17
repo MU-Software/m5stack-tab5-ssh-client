@@ -26,6 +26,10 @@ static void* bus;
 static volatile unsigned protocol;
 // The C6 was reset this boot, so its SDIO counters start from zero
 static bool reset_done;
+static c6_wifi_status wifi_status;
+static unsigned wifi_reports;
+static void (*wifi_listener)(void);
+static portMUX_TYPE wifi_lock = portMUX_INITIALIZER_UNLOCKED;
 // Set by the restart that follows a C6 that did not come up, so one that stays silent is reset only once
 static RTC_NOINIT_ATTR uint32_t restarted;
 
@@ -43,6 +47,15 @@ static void from_c6(uint32_t id, const uint8_t* data, size_t size, void* context
     (void)id, (void)context;
     const char *line = (const char*)data + 1, *end = (const char*)data + size, *eol;
     if (size >= 2 && data[0] == C6_HELLO) ESP_LOGI(TAG, "protocol %u", protocol = data[1]);
+    if (size >= 5 && data[0] == C6_WIFI_STATE && data[4] <= 32 && size == 5u + data[4]) {
+        c6_wifi_status s = {.state = data[1], .reason = data[2], .rssi = (int8_t)data[3]};
+        memcpy(s.ssid, data + 5, data[4]);
+        taskENTER_CRITICAL(&wifi_lock);
+        wifi_status = s;
+        wifi_reports++;
+        taskEXIT_CRITICAL(&wifi_lock);
+        if (wifi_listener != NULL) wifi_listener();
+    }
     for (; size >= 1 && data[0] == C6_LOG && line < end; line = eol + 1) {
         eol = memchr(line, '\n', (size_t)(end - line));
         if (eol == NULL) eol = end;
@@ -122,6 +135,18 @@ unsigned c6_protocol(void) {
 
 esp_err_t c6_send(const uint8_t* message, size_t size) {
     return eh_host_peer_data_send(P4_TO_C6, message, size);
+}
+
+unsigned c6_wifi_state(c6_wifi_status* status) {
+    taskENTER_CRITICAL(&wifi_lock);
+    unsigned reports = wifi_reports;
+    if (status != NULL) *status = wifi_status;
+    taskEXIT_CRITICAL(&wifi_lock);
+    return reports;
+}
+
+void c6_on_wifi_state(void (*listener)(void)) {
+    wifi_listener = listener;
 }
 
 esp_err_t c6_update(const uint8_t* image, size_t size) {

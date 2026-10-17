@@ -4,14 +4,20 @@
 #include <string.h>
 
 #include <driver/sdio_slave.h>
+#include <eh_cp_core.h>
 #include <eh_cp_feat_peer_data.h>
+#include <eh_cp_feat_wifi.h>
 #include <eh_transport_cp.h>
 #include <esp_attr.h>
 #include <esp_event.h>
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 #include <esp_system.h>
+#include <esp_timer.h>
+#include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/event_groups.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <nvs.h>
 #include <nvs_flash.h>
@@ -28,6 +34,15 @@ static portMUX_TYPE ring_lock = portMUX_INITIALIZER_UNLOCKED;
 static vprintf_like_t uart;
 static TaskHandle_t sender;
 static volatile bool p4_reached;
+// The logs, the answers to the P4 and the joining task all send
+static SemaphoreHandle_t send_lock;
+
+static esp_err_t send_to_p4(const uint8_t* message, size_t size) {
+    xSemaphoreTake(send_lock, portMAX_DELAY);
+    esp_err_t err = eh_cp_feat_peer_data_send(C6_TO_P4, message, size);
+    xSemaphoreGive(send_lock);
+    return err;
+}
 
 static int capture(const char* format, va_list args) {
     char line[160];
@@ -67,7 +82,7 @@ static void send_logs(void* arg) {
         head = (head + n) % RING, used -= n;
         portEXIT_CRITICAL(&ring_lock);
         message[0] = C6_LOG;
-        if (n > 0 && eh_cp_feat_peer_data_send(C6_TO_P4, message, n + 1) != ESP_OK) p4_reached = false;
+        if (n > 0 && send_to_p4(message, n + 1) != ESP_OK) p4_reached = false;
     }
 }
 
@@ -141,29 +156,328 @@ static int networks(const uint8_t* list, size_t size) {
     return at == size ? list[1] : -1;
 }
 
+// Wakes the joining task
+#define STARTED      BIT0
+#define STOPPED      BIT1
+#define CONNECTED    BIT2
+#define DISCONNECTED BIT3
+#define SCAN_DONE    BIT4
+#define NEW_LIST     BIT5
+#define HOLD         BIT6
+// Ends a scan or a join early
+#define INTERRUPT (STOPPED | NEW_LIST | HOLD)
+
+#define RSSI_FLOOR (-85)
+#define JOIN_MS    15000
+#define HOLD_MS    60000
+#define SECOND     1000000LL
+
+typedef enum { JOINED, FAILED, INTERRUPTED } join_result;
+// A known network's strongest access point in a scan
+typedef struct {
+    int8_t rssi;
+    uint8_t channel, bssid[6];
+} sighting;
+
+static StaticSemaphore_t send_lock_memory, list_lock_memory;
+static StaticEventGroup_t radio_memory;
+static SemaphoreHandle_t list_lock;
+static EventGroupHandle_t radio;
+// The known networks as the P4 last sent them (P4_WIFI_LIST), and kept in NVS
+static uint8_t known[2 + C6_NETWORKS * 98];
+static size_t known_size;
+static volatile unsigned list_version, planned_version;
+static volatile bool held, hold_answer_due;
+static volatile int64_t held_until;
+static volatile uint8_t last_reason;
+static const char* const state_names[] = {"stopped", "scanning", "joining", "connected", "none in range", "join failed", "held"};
+// What C6_WIFI_STATE last said, for P4_READY; until the task planned for a new list, its next report answers instead
+static uint8_t state_message[5 + 32];
+static size_t state_size;
+static volatile bool state_due;
+static portMUX_TYPE state_lock = portMUX_INITIALIZER_UNLOCKED;
+
 static void keep_list(const uint8_t* list, size_t size) {
-    static uint8_t kept[2 + C6_NETWORKS * 98];
-    size_t length = sizeof kept;
     nvs_handle_t nvs;
     int count = networks(list, size);
     if (count < 0 || nvs_open("tab5", NVS_READWRITE, &nvs) != ESP_OK) {
         ESP_LOGW(TAG, "known networks refused");
         return;
     }
-    bool same = nvs_get_blob(nvs, "wifi", kept, &length) == ESP_OK && length == size && memcmp(kept, list, size) == 0;
+    xSemaphoreTake(list_lock, portMAX_DELAY);
+    bool same = size == known_size && memcmp(known, list, size) == 0;
+    if (!same) {
+        memset(known, 0, sizeof known);
+        memcpy(known, list, known_size = size);
+        list_version++;
+    }
+    xSemaphoreGive(list_lock);
     esp_err_t err = same ? ESP_OK : nvs_set_blob(nvs, "wifi", list, size);
     if (err == ESP_OK && !same) err = nvs_commit(nvs);
     nvs_close(nvs);
-    memset(kept, 0, sizeof kept);
+    if (!same) xEventGroupSetBits(radio, NEW_LIST);
     ESP_LOGI(TAG, "%d known networks, Wi-Fi %s: %s", count, list[0] ? "on" : "off", same ? "unchanged" : esp_err_to_name(err));
+}
+
+static void load_list(void) {
+    nvs_handle_t nvs;
+    size_t size = sizeof known;
+    if (nvs_open("tab5", NVS_READONLY, &nvs) != ESP_OK) return;
+    if (nvs_get_blob(nvs, "wifi", known, &size) == ESP_OK && networks(known, size) >= 0) known_size = size;
+    nvs_close(nvs);
+}
+
+// Network index of the known ones, at its SSID length; the caller holds list_lock
+static const uint8_t* known_network(int index) {
+    const uint8_t* at = known + 2;
+    if (known_size < 2 || index >= known[1]) return NULL;
+    for (int i = 0; i < index; i++)
+        at += 1 + at[0], at += 1 + at[0];
+    return at;
+}
+
+static int known_index(const char* ssid) {
+    const uint8_t* n;
+    int found = -1;
+    xSemaphoreTake(list_lock, portMAX_DELAY);
+    for (int i = 0; found < 0 && (n = known_network(i)) != NULL; i++)
+        if (strlen(ssid) == n[0] && memcmp(ssid, n + 1, n[0]) == 0) found = i;
+    xSemaphoreGive(list_lock);
+    return found;
+}
+
+// An answer is sent even when nothing changed
+static void report(uint8_t state, const char* ssid, int8_t rssi, bool answer) {
+    uint8_t message[sizeof state_message] = {C6_WIFI_STATE, state, last_reason, (uint8_t)rssi, (uint8_t)strnlen(ssid, 32)};
+    size_t size = 5 + message[4];
+    memcpy(message + 5, ssid, message[4]);
+    portENTER_CRITICAL(&state_lock);
+    bool same = size == state_size && memcmp(message, state_message, size) == 0;
+    memcpy(state_message, message, state_size = size);
+    portEXIT_CRITICAL(&state_lock);
+    if (!same) ESP_LOGI(TAG, "Wi-Fi %s %s, reason %u, %d dBm", state_names[state], ssid, last_reason, rssi);
+    if ((!same || answer || state_due) && p4_reached) state_due = false, send_to_p4(message, size);
+}
+
+static EventBits_t await(EventBits_t bits, int64_t us) {
+    return xEventGroupWaitBits(radio, bits, pdTRUE, pdFALSE, us < 0 ? portMAX_DELAY : pdMS_TO_TICKS(us / 1000) + 1);
+}
+
+static void on_wifi(void* arg, esp_event_base_t base, int32_t id, void* data) {
+    (void)arg, (void)base;
+    if (id == WIFI_EVENT_STA_DISCONNECTED) last_reason = (uint8_t)((wifi_event_sta_disconnected_t*)data)->reason;
+    EventBits_t bit = id == WIFI_EVENT_STA_START          ? STARTED
+                      : id == WIFI_EVENT_STA_STOP         ? STOPPED
+                      : id == WIFI_EVENT_STA_CONNECTED    ? CONNECTED
+                      : id == WIFI_EVENT_STA_DISCONNECTED ? DISCONNECTED
+                      : id == WIFI_EVENT_SCAN_DONE        ? SCAN_DONE
+                                                          : 0;
+    if (bit != 0) xEventGroupSetBits(radio, bit);
+}
+
+// Each known network's strongest access point, at INT8_MIN when out of reach; ESP_ERR_INVALID_STATE when a stop, a new list or a
+// hold ended it
+static esp_err_t scan(sighting seen[C6_NETWORKS]) {
+    const uint8_t* n;
+    wifi_ap_record_t ap;
+    uint16_t count = 0;
+    char line[120];
+    int length = 0;
+    for (int k = 0; k < C6_NETWORKS; k++)
+        seen[k].rssi = INT8_MIN;
+    xEventGroupClearBits(radio, SCAN_DONE);
+    esp_err_t err = esp_wifi_scan_start(NULL, false);
+    if (err != ESP_OK) return err;
+    EventBits_t bits = await(SCAN_DONE | INTERRUPT, 10 * SECOND);
+    if (!(bits & SCAN_DONE)) {
+        esp_wifi_scan_stop();
+        await(SCAN_DONE, SECOND);
+        esp_wifi_clear_ap_list();
+        return (bits & INTERRUPT) ? ESP_ERR_INVALID_STATE : ESP_ERR_TIMEOUT;
+    }
+    esp_wifi_scan_get_ap_num(&count);
+    xSemaphoreTake(list_lock, portMAX_DELAY);
+    for (uint16_t i = 0; i < count && esp_wifi_scan_get_ap_record(&ap) == ESP_OK; i++)
+        for (int k = 0; (n = known_network(k)) != NULL; k++)
+            if (strlen((const char*)ap.ssid) == n[0] && memcmp(ap.ssid, n + 1, n[0]) == 0 && ap.rssi > seen[k].rssi) {
+                seen[k] = (sighting){.rssi = ap.rssi, .channel = ap.primary};
+                memcpy(seen[k].bssid, ap.bssid, sizeof ap.bssid);
+            }
+    for (int k = 0; (n = known_network(k)) != NULL; k++)
+        if (seen[k].rssi != INT8_MIN && length < (int)sizeof line)
+            length += snprintf(line + length, sizeof line - length, " %.*s %d", n[0], n + 1, seen[k].rssi);
+    xSemaphoreGive(list_lock);
+    esp_wifi_clear_ap_list();
+    ESP_LOGI(TAG, "scan: %u networks, known in reach:%s", count, length > 0 ? line : " none");
+    return ESP_OK;
+}
+
+// At the access point a scan just saw, which spares the scan of every channel a join makes; the strongest when at is NULL
+static join_result join(int index, const sighting* at, char ssid[33]) {
+    wifi_config_t cfg = {.sta = {.scan_method = at != NULL ? WIFI_FAST_SCAN : WIFI_ALL_CHANNEL_SCAN,
+                                 .sort_method = WIFI_CONNECT_AP_BY_SIGNAL,
+                                 .pmf_cfg.capable = true,
+                                 .bssid_set = at != NULL,
+                                 .channel = at != NULL ? at->channel : 0}};
+    if (at != NULL) memcpy(cfg.sta.bssid, at->bssid, sizeof cfg.sta.bssid);
+    xSemaphoreTake(list_lock, portMAX_DELAY);
+    const uint8_t* n = known_network(index);
+    if (n != NULL) {
+        memcpy(cfg.sta.ssid, n + 1, n[0]);
+        memcpy(cfg.sta.password, n + 2 + n[0], n[1 + n[0]]);
+        cfg.sta.threshold.authmode = n[1 + n[0]] > 0 ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    }
+    xSemaphoreGive(list_lock);
+    if (n == NULL) return FAILED;
+    memcpy(ssid, cfg.sta.ssid, 32);
+    ssid[32] = 0;
+    report(C6_WIFI_JOINING, ssid, at != NULL ? at->rssi : 0, false);
+    xEventGroupClearBits(radio, CONNECTED | DISCONNECTED);
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &cfg);
+    memset(&cfg, 0, sizeof cfg);
+    if (err == ESP_OK) err = esp_wifi_connect();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "join %s: %s", ssid, esp_err_to_name(err));
+        return FAILED;
+    }
+    EventBits_t bits = await(CONNECTED | DISCONNECTED | INTERRUPT, JOIN_MS * 1000LL);
+    if (bits & CONNECTED) return JOINED;
+    if (bits & DISCONNECTED) return FAILED;
+    // The P4 sees this disconnect, so it never holds a lease of another network
+    esp_wifi_disconnect();
+    await(DISCONNECTED, SECOND);
+    // For the disconnect to reach the P4 before the answer to its hold
+    if (bits & HOLD) vTaskDelay(pdMS_TO_TICKS(100));
+    return (bits & INTERRUPT) ? INTERRUPTED : FAILED;
+}
+
+// Reasons a wrong password gives back off longer
+static int64_t backoff(uint8_t reason, uint8_t failures) {
+    bool refused = reason == WIFI_REASON_AUTH_EXPIRE || reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT || reason == WIFI_REASON_AUTH_FAIL ||
+                   reason == WIFI_REASON_HANDSHAKE_TIMEOUT || reason == WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY ||
+                   reason == WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD;
+    int64_t wait = (refused ? 60 : 10) * SECOND << (failures < 5 ? failures : 5);
+    return wait < 300 * SECOND ? wait : 300 * SECOND;
+}
+
+// The first known network in list order a scan sees above RSSI_FLOOR, the next when it fails; none rescans after 5 s doubling
+// to 60 s. No scans while joined (they would stall SSH), and a drop retries the network once first. Joins whenever Wi-Fi was
+// started, by itself or by the P4's wifi on, while the list says on
+static void join_known(void* arg) {
+    static const int rescans[] = {5, 10, 20, 40, 60};
+    int64_t backoff_until[C6_NETWORKS] = {0};
+    uint8_t failures[C6_NETWORKS] = {0};
+    unsigned version = planned_version = list_version;
+    bool was_on = known_size >= 2 && known[0];
+    int rescan = 0;
+    char ssid[33] = "";
+    bool retry = false;
+    (void)arg;
+    // esp_hosted's event handlers, which forward the joins to the P4, register in its own init task
+    while (g_auto_feat_init_done_eg == NULL)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    xEventGroupWaitBits(g_auto_feat_init_done_eg, EH_CP_FEAT_INIT_DONE_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+    // The P4's esp_wifi_init then finds the same parameters (CONFIG_WIFI_RMT_* equal to these)
+    wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
+    esp_err_t err = esp_wifi_init(&init);
+    // The default flash storage would keep the passwords in nvs.net80211 too
+    if (err == ESP_OK) err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    if (err == ESP_OK) err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err == ESP_OK) err = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi, NULL);
+    if (err == ESP_OK && known_size >= 2 && known[0]) err = esp_wifi_start();
+    ESP_LOGI(TAG, "Wi-Fi %s, heap %u free", esp_err_to_name(err), (unsigned)esp_get_free_heap_size());
+    if (err != ESP_OK) vTaskDelete(NULL);
+    for (;;) {
+        bool on = known_size >= 2 && known[0], started = eh_cp_feat_wifi_is_started(), connected = eh_cp_feat_wifi_is_station_connected();
+        wifi_ap_record_t ap = {0};
+        sighting seen[C6_NETWORKS];
+        if (connected && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) strlcpy(ssid, (const char*)ap.ssid, sizeof ssid);
+        if (version != list_version) {
+            version = planned_version = list_version;
+            memset(backoff_until, 0, sizeof backoff_until);
+            memset(failures, 0, sizeof failures);
+            rescan = 0;
+            // Only a change of the saved state stops or starts Wi-Fi: the P4 may start it for its own join before the list says
+            // on, and its wifi off without save lasts until its restart
+            if (on != was_on && on != started) {
+                was_on = on;
+                on ? esp_wifi_start() : esp_wifi_stop();
+                await(on ? STARTED : STOPPED, SECOND);
+                continue;
+            }
+            was_on = on;
+        }
+        if (held && esp_timer_get_time() >= held_until) held = false;
+        if (held) {
+            report(connected ? C6_WIFI_CONNECTED : C6_WIFI_HELD, connected ? ssid : "", ap.rssi, hold_answer_due);
+            hold_answer_due = false;
+            int64_t left = held_until - esp_timer_get_time();
+            await(STARTED | STOPPED | NEW_LIST | HOLD | CONNECTED | DISCONNECTED, left > 0 ? left : 0);
+            rescan = 0, retry = false;
+            continue;
+        }
+        if (!started || !on) {
+            report(C6_WIFI_STOPPED, "", 0, false);
+            await(STARTED | NEW_LIST | HOLD, -1);
+            rescan = 0, retry = false;
+            continue;
+        }
+        if (connected) {
+            report(C6_WIFI_CONNECTED, ssid, ap.rssi, false);
+            // An old disconnect, from before this join, is no drop
+            retry = (await(DISCONNECTED | INTERRUPT, -1) & DISCONNECTED) && !eh_cp_feat_wifi_is_station_connected();
+            rescan = 0;
+            continue;
+        }
+        join_result result = FAILED;
+        int index = retry ? known_index(ssid) : -1;
+        retry = false;
+        if (index >= 0 && (result = join(index, NULL, ssid)) != FAILED) continue;
+        report(C6_WIFI_SCANNING, "", 0, false);
+        err = scan(seen);
+        bool tried = false;
+        for (int i = 0; err == ESP_OK && i < C6_NETWORKS && result == FAILED; i++) {
+            if (seen[i].rssi < RSSI_FLOOR || esp_timer_get_time() < backoff_until[i]) continue;
+            tried = true;
+            result = join(i, &seen[i], ssid);
+            if (result == JOINED) failures[i] = 0;
+            if (result == FAILED) backoff_until[i] = esp_timer_get_time() + backoff(last_reason, failures[i]++);
+        }
+        if (result != FAILED || err == ESP_ERR_INVALID_STATE) continue;
+        if (err != ESP_OK)
+            ESP_LOGW(TAG, "scan: %s", esp_err_to_name(err));
+        else
+            report(tried ? C6_WIFI_JOIN_FAILED : C6_WIFI_NONE_IN_RANGE, "", 0, false);
+        await(INTERRUPT | STARTED, rescans[rescan] * SECOND);
+        if (rescan < 4) rescan++;
+    }
 }
 
 static void from_p4(uint32_t id, const uint8_t* data, size_t size, void* context) {
     (void)id, (void)context;
     if (size >= 1 && data[0] == P4_WIFI_LIST) keep_list(data + 1, size - 1);
+    if (size >= 2 && data[0] == P4_WIFI_HOLD) {
+        held_until = esp_timer_get_time() + HOLD_MS * 1000LL;
+        held = hold_answer_due = data[1] != 0;
+        xEventGroupSetBits(radio, HOLD);
+    }
+    if (size >= 1 && data[0] == P4_READY) {
+        uint8_t message[sizeof state_message];
+        size_t length;
+        held = false;
+        xEventGroupSetBits(radio, HOLD);
+        eh_cp_feat_wifi_replay_connected_event_if_needed();
+        portENTER_CRITICAL(&state_lock);
+        memcpy(message, state_message, length = state_size);
+        portEXIT_CRITICAL(&state_lock);
+        if (length > 0 && planned_version == list_version)
+            send_to_p4(message, length);
+        else
+            state_due = true;
+    }
     if (size < 1 || data[0] != P4_KEEP) return;
     if (unchecked() && esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) ESP_LOGI(TAG, "image kept");
-    eh_cp_feat_peer_data_send(C6_TO_P4, (const uint8_t[]){C6_HELLO, C6_PROTOCOL}, 2);
+    send_to_p4((const uint8_t[]){C6_HELLO, C6_PROTOCOL}, 2);
     p4_reached = true;
 }
 
@@ -184,6 +498,9 @@ static void await_p4(void* arg) {
 }
 
 void app_main(void) {
+    send_lock = xSemaphoreCreateMutexStatic(&send_lock_memory);
+    list_lock = xSemaphoreCreateMutexStatic(&list_lock_memory);
+    radio = xEventGroupCreateStatic(&radio_memory);
     xTaskCreate(send_logs, "send logs", 3072, NULL, 2, &sender);
     uart = esp_log_set_vprintf(capture);
     esp_err_t err = nvs_flash_init();
@@ -203,6 +520,9 @@ void app_main(void) {
         ESP_LOGI(TAG, "NVS %u of %u entries free, heap %u free", (unsigned)stats.free_entries, (unsigned)stats.total_entries,
                  (unsigned)esp_get_free_heap_size());
     if (state != ESP_OTA_IMG_VALID) xTaskCreate(await_p4, "await P4", 3072, NULL, 2, NULL);
+    load_list();
     ESP_ERROR_CHECK(eh_cp_feat_peer_data_init());
     ESP_ERROR_CHECK(eh_cp_feat_peer_data_register_callback(P4_TO_C6, from_p4, NULL));
+    // Last, so nothing it does can keep a new image from being kept
+    if (xTaskCreate(join_known, "join known", 4096, NULL, 5, NULL) != pdPASS) ESP_LOGE(TAG, "no joining task");
 }

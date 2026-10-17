@@ -37,13 +37,16 @@
 #define WIFI_REJOIN  (60 * SECOND)
 #define CHECK_MS     5000
 #define JOIN_MS      15000
-#define READY        BIT0
-#define MAX_VISIBLE  16
+// LTE waits this long at most for the C6's first try of the known networks
+#define FIRST_TRY   (20 * SECOND)
+#define READY       BIT0
+#define MAX_VISIBLE 16
 
 typedef enum { PATH_NONE, PATH_WIFI, PATH_LTE } path;
 
 static const char* TAG = "net";
 static const char* const path_names[] = {"none", "Wi-Fi", "LTE"};
+static const char* const c6_wifi_names[] = {"stopped", "scanning", "joining", "connected", "none in range", "join failed", "held"};
 static const global_state* state;
 static TaskHandle_t manager, lte;
 static EventGroupHandle_t paths;
@@ -145,6 +148,32 @@ static void join_known(const char* except, TickType_t wait) {
     xSemaphoreGive(lock);
 }
 
+// From protocol 5 the C6 joins the known networks and rejoins them by itself; this chip's scans and joins hold it meanwhile
+static bool c6_joins(void) {
+    return c6_protocol() >= 5;
+}
+
+// Waits for the C6 to answer, once it stopped its own scan or join
+static void hold_c6(bool hold) {
+    unsigned before = c6_wifi_state(NULL);
+    if (!c6_joins() || c6_send((const uint8_t[]){P4_WIFI_HOLD, hold}, 2) != ESP_OK) return;
+    for (int i = 0; hold && i < 40 && c6_wifi_state(NULL) == before; i++)
+        vTaskDelay(pdMS_TO_TICKS(50));
+}
+
+static void notify_manager(void) {
+    if (manager != NULL) xTaskNotifyGive(manager);
+}
+
+// Joined with an address, or the C6 found none of the known networks to join
+static void await_first_try(void) {
+    c6_wifi_status c6 = {0};
+    int64_t start = esp_timer_get_time();
+    for (; wifi_enabled && !wifi_connected() && esp_timer_get_time() - start < FIRST_TRY; ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500)))
+        if (c6_wifi_state(&c6) > 0 && c6.state != C6_WIFI_SCANNING && c6.state != C6_WIFI_JOINING && c6.state != C6_WIFI_CONNECTED) break;
+    ESP_LOGI(TAG, "C6 first try: %s %s after %lld ms", wifi_connected() ? "joined" : c6_wifi_names[c6.state % 7], c6.ssid, since(start));
+}
+
 static int stronger(const void* a, const void* b) {
     return ((const net_visible_network*)b)->rssi - ((const net_visible_network*)a)->rssi;
 }
@@ -156,7 +185,9 @@ static void scan(void) {
     net_visible_network found[MAX_VISIBLE] = {0};
     size_t count = 0;
     bool was_up = wifi_connected();
+    hold_c6(true);
     esp_err_t err = wifi_scan(&aps, &n);
+    hold_c6(false);
     for (uint16_t i = 0; err == ESP_OK && i < n; i++) {
         size_t k = 0;
         while (k < count && strcmp(found[k].ssid, (const char*)aps[i].ssid) != 0)
@@ -197,12 +228,16 @@ static void send_list(void) {
 
 static void manage(void* arg) {
     (void)arg;
-    wifi_started = wifi_start() == ESP_OK;
+    wifi_started = wifi_start(wifi_enabled) == ESP_OK;
     if (!wifi_started) ESP_LOGE(TAG, "no Wi-Fi");
     if (wifi_started && !wifi_enabled) wifi_off();
     if (wifi_started && c6_protocol() >= 4) send_list();
+    if (wifi_started && c6_joins() && c6_send((const uint8_t[]){P4_READY}, 1) != ESP_OK) ESP_LOGW(TAG, "the C6 was not told this chip is ready");
     // LTE waits for the first try, so a boot does not connect over LTE only to move to Wi-Fi
-    if (wifi_started) join_known(NULL, portMAX_DELAY);
+    if (wifi_started && c6_joins())
+        await_first_try();
+    else if (wifi_started)
+        join_known(NULL, portMAX_DELAY);
     bool was_up = false;
     for (;;) {
         if (atomic_exchange(&list_changed, false) && wifi_started && c6_protocol() >= 4) send_list();
@@ -227,7 +262,7 @@ static void manage(void* arg) {
             scan();
             xSemaphoreGive(lock);
         }
-        if (wifi_started && wifi_enabled && !up && now - wifi_tried >= WIFI_REJOIN) join_known(NULL, 0);
+        if (wifi_started && wifi_enabled && !up && !c6_joins() && now - wifi_tried >= WIFI_REJOIN) join_known(NULL, 0);
         if (suspect) {
             int reached = up && current == PATH_WIFI ? wifi_reaches_host(pdMS_TO_TICKS(CHECK_MS)) : -1;
             if (reached >= 0) {
@@ -244,8 +279,8 @@ static void manage(void* arg) {
                 wifi_ok = reached;
                 wifi_checked = esp_timer_get_time();
             }
-            // Joined but not getting through twice: another known network, if a scan sees one
-            if (reached == 0 && ++wifi_failures >= 2) {
+            // Joined but not getting through twice: another known network, if a scan sees one (the C6's own from stage S4)
+            if (reached == 0 && !c6_joins() && ++wifi_failures >= 2) {
                 wifi_ap_record_t ap = {0};
                 wifi_failures = 0;
                 if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) join_known((const char*)ap.ssid, 0);
@@ -336,6 +371,7 @@ esp_err_t net_start(const global_state* global) {
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL);
     esp_event_handler_register(IP_EVENT, IP_EVENT_PPP_GOT_IP, on_event, NULL);
     esp_event_handler_register(NETIF_PPP_STATUS, NETIF_PPP_PHASE_DEAD, on_event, NULL);
+    c6_on_wifi_state(notify_manager);
     // Stack in PSRAM: a task there must never write flash
     if (xTaskCreatePinnedToCoreWithCaps(manage, "net", 6144, NULL, 5, &manager, 1, MALLOC_CAP_SPIRAM) != pdPASS ||
         xTaskCreatePinnedToCoreWithCaps(run_lte, "lte", 4096, NULL, 5, &lte, 1, MALLOC_CAP_SPIRAM) != pdPASS)
@@ -386,12 +422,16 @@ void net_keepalive(int fd) {
 
 esp_err_t net_join(const wifi_network* network) {
     if (!wifi_started) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    // Before Wi-Fi starts, or the C6 would try the known networks meanwhile; with the list, which says on now
+    hold_c6(true);
+    if (c6_protocol() >= 4) send_list();
     if (!wifi_enabled) {
         wifi_enabled = true;
         wifi_on();
     }
-    xSemaphoreTake(lock, portMAX_DELAY);
     esp_err_t err = wifi_join(network, NULL, JOIN_MS);
+    hold_c6(false);
     // A failed join may have dropped the network joined before: the known ones are tried again now
     wifi_tried = err == ESP_OK ? esp_timer_get_time() : 0;
     xSemaphoreGive(lock);
@@ -420,13 +460,16 @@ bool net_visible(size_t index, net_visible_network* out) {
 static void status(void) {
     esp_netif_ip_info_t ip = {0};
     wifi_ap_record_t ap = {0};
-    char address[16], c6[24] = "off";
+    char address[16], c6[80] = "off";
     if (wifi_connected()) {
         esp_wifi_sta_get_ap_info(&ap);
         esp_netif_get_ip_info(wifi_netif(), &ip);
     }
     esp_ip4addr_ntoa(&ip.ip, address, sizeof address);
     if (wifi_started) c6_version(c6, sizeof c6);
+    c6_wifi_status joins;
+    if (c6_joins() && c6_wifi_state(&joins) > 0)
+        snprintf(c6 + strlen(c6), sizeof c6 - strlen(c6), ", %s %s", c6_wifi_names[joins.state % 7], joins.ssid);
     ESP_LOGI(TAG, "path %s (%u); Wi-Fi %s %s %s %s (C6 %s); LTE %s %s", path_names[current], generation, wifi_enabled ? "on" : "off",
              (const char*)ap.ssid, address, wifi_connected() ? (wifi_ok ? "reaches the host" : "not reaching the host yet") : "not joined", c6,
              lte_enabled ? "on" : "off", catm_connected() ? "connected" : "not connected");

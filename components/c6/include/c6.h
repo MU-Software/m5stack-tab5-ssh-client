@@ -14,3 +14,13 @@ esp_err_t c6_update(const uint8_t* image, size_t size);
 unsigned c6_protocol(void);
 // A P4_TO_C6 message, its kind first
 esp_err_t c6_send(const uint8_t* message, size_t size);
+typedef struct {
+    // C6_WIFI_* of c6_protocol.h
+    uint8_t state, reason;
+    int8_t rssi;
+    char ssid[33];
+} c6_wifi_status;
+// The last C6_WIFI_STATE into status when it is not NULL; how many came this boot
+unsigned c6_wifi_state(c6_wifi_status* status);
+// Called from esp_hosted's task after each C6_WIFI_STATE
+void c6_on_wifi_state(void (*listener)(void));

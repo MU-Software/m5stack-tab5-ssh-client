@@ -21,7 +21,7 @@
 static const char* TAG = "wifi";
 static EventGroupHandle_t events;
 static esp_netif_t* netif;
-// Joined since the last join or stop: a disconnect is then retried rather than reported
+// Joined since the last join or stop: a disconnect is then retried rather than reported, unless the C6 rejoins by itself
 static atomic_bool joined;
 
 static void on_event(void* arg, esp_event_base_t base, int32_t id, void* data) {
@@ -29,7 +29,7 @@ static void on_event(void* arg, esp_event_base_t base, int32_t id, void* data) {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGW(TAG, "disconnected (%d)", ((wifi_event_sta_disconnected_t*)data)->reason);
         xEventGroupClearBits(events, GOT_IP);
-        if (joined)
+        if (joined && c6_protocol() < 5)
             esp_wifi_connect();
         else
             xEventGroupSetBits(events, FAILED);
@@ -64,26 +64,29 @@ static esp_err_t join(const char* ssid, const char* password, int timeout_ms) {
     return ESP_FAIL;
 }
 
-esp_err_t wifi_start(void) {
+esp_err_t wifi_start(bool on) {
     events = xEventGroupCreate();
     ESP_RETURN_ON_FALSE(events != NULL, ESP_ERR_NO_MEM, TAG, "events");
-    ESP_RETURN_ON_ERROR(c6_start(), TAG, "C6");
+    // Before the C6 answers: one that started Wi-Fi by itself says so once, and esp_hosted passes on only the first
     netif = esp_netif_create_default_wifi_sta();
+    ESP_RETURN_ON_ERROR(c6_start(), TAG, "C6");
     // Registered with it, it would stop the C6's Wi-Fi at each restart of this chip
     if (esp_unregister_shutdown_handler((shutdown_handler_t)esp_wifi_stop) != ESP_OK) ESP_LOGW(TAG, "esp_wifi_stop still runs at restarts");
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&init), TAG, "init");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, on_event, NULL), TAG, "events");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL), TAG, "events");
-    // The default flash storage would keep the password in the C6's NVS
+    // The default flash storage would keep the password in the C6's NVS; esp_hosted's host drops it, so the C6 firmware sets
+    // it itself from protocol 5
     ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "storage");
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "mode");
-    return esp_wifi_start();
+    return on ? esp_wifi_start() : ESP_OK;
 }
 
 esp_err_t wifi_scan(wifi_ap_record_t** records, uint16_t* count) {
-    // A network out of reach is retried at each disconnect, and the scan fails while it is
-    if (!(xEventGroupGetBits(events) & GOT_IP)) {
+    // A network out of reach is retried at each disconnect, and the scan fails while it is; the C6's own tries stop for the
+    // scan (P4_WIFI_HOLD)
+    if (!(xEventGroupGetBits(events) & GOT_IP) && c6_protocol() < 5) {
         joined = false;
         esp_wifi_disconnect();
     }
