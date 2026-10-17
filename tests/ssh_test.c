@@ -117,17 +117,20 @@ static int exec_status(const char* command) {
     return exec_on(&other, command);
 }
 
-// Attached to tmux session `name` as the device is for 1.5 s, with the mouse on, then whether the end keys ended it with
-// status 0
+// Attached to tmux session `name` as the device is for 1.5 s, with the mouse on and the wheel's arrow keys, then whether
+// the end keys ended it with status 0
 static bool attach_and_end(const char* name, bool attach, const char* old, const char* keep, int age_s) {
-    char command[1400], buf[2048], mouse[128];
-    if (!tmux_command(command, sizeof command, name, attach, old, "tab5-test01-", keep, age_s)) return false;
+    char command[1400], buf[2048], mouse[256];
+    if (!tmux_command(command, sizeof command, name, attach, old, "tab5-test01-", keep, age_s, true)) return false;
     other = (ssh_session){.host = &host, .known_hosts = known_hosts, .private_key = private_key, .command = command};
     if (ssh_open(&state, &other) != WS_SUCCESS) return false;
     int r = WS_WANT_READ, status = -1;
     for (long start = now_ms(); now_ms() - start < 1500 && (r >= 0 || r == WS_WANT_READ);)
         if ((r = ssh_read(&other, buf, sizeof buf)) == WS_WANT_READ) usleep(1000);
-    snprintf(mouse, sizeof mouse, "[ \"$(tmux show -t =%s: -v mouse)\" = on ]", name);
+    snprintf(mouse, sizeof mouse,
+             "[ \"$(tmux show -t =%s: -v mouse)\" = on ] && [ \"$(tmux show -t =%s: -v @tab5_arrows)\" = 1 ] && "
+             "tmux list-keys -T root WheelUpPane | grep -q tab5_arrows",
+             name, name);
     bool held = (r >= 0 || r == WS_WANT_READ) && exec_on(&probe, mouse) == 0;
     for (long start = now_ms();
          r != WS_CHANNEL_CLOSED && ssh_write(&other, tmux_end_keys, strlen(tmux_end_keys)) == WS_WANT_WRITE && now_ms() - start < 1000;)
@@ -158,7 +161,7 @@ static void tmux_sessions(void) {
               attach_and_end("tab5-test01-eeeeee", true, "tab5-0ldname", " tab5-test01-eeeeee ", 60) &&
               exec_status("tmux has-session -t =tab5-0ldname") == 1,
           "a name from before the prefix renamed and attached");
-    check(tmux_command(command, sizeof command, "tab5-test01-ffffff", true, NULL, "tab5-test01-", " ", 60) && exec_status(command) == 1,
+    check(tmux_command(command, sizeof command, "tab5-test01-ffffff", true, NULL, "tab5-test01-", " ", 60, true) && exec_status(command) == 1,
           "attaching to a session that has gone fails");
     exec_status("tmux kill-server");
 }

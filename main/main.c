@@ -310,7 +310,8 @@ static session_end tmux(session* s, const ssh_host* h, unsigned path) {
             set_tmux(s, name);
         }
         kept(h, keep, sizeof keep);
-        if (!tmux_command(command, sizeof command, s->tmux, attach, renamed ? old : NULL, tmux_prefix, keep, 60)) return SESSION_REFUSED;
+        if (!tmux_command(command, sizeof command, s->tmux, attach, renamed ? old : NULL, tmux_prefix, keep, 60, state.touch.arrows))
+            return SESSION_REFUSED;
         int exit_status;
         session_end end = run(s, h, command, true, path, &exit_status);
         if (end != SESSION_CLOSED || atomic_load(&s->end)) return end;

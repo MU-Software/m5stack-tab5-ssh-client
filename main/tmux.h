@@ -8,5 +8,7 @@ extern const char tmux_end_keys[];
 
 // The command of an SSH session attached to tmux session `name`: started first unless `attach`, or renamed from `old`
 // when that is not NULL. Before that, the host's sessions named `prefix`... that are not in `keep` (" a b ", spaces
-// around each), have no client and are older than age_s seconds are killed. False when out is too small.
-bool tmux_command(char* out, size_t size, const char* name, bool attach, const char* old, const char* prefix, const char* keep, int age_s);
+// around each), have no client and are older than age_s seconds are killed. With `arrows`, the wheel sends arrow keys to
+// programs on the alternate screen that take no mouse. False when out is too small.
+bool tmux_command(char* out, size_t size, const char* name, bool attach, const char* old, const char* prefix, const char* keep, int age_s,
+                  bool arrows);
