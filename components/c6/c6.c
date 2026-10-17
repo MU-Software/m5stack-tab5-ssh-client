@@ -2,15 +2,19 @@
 #include "c6.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <sys/param.h>
 
 #include <bsp/m5stack_tab5.h>
+#include <eh_host_feat_peer_data.h>
 #include <eh_host_sys.h>
 #include <esp_check.h>
 #include <esp_hosted.h>
 #include <esp_hosted_host_fw_ver.h>
 #include <esp_hosted_ota.h>
 #include <esp_log.h>
+
+#include "c6_protocol.h"
 
 static const char* TAG = "c6";
 
@@ -24,6 +28,17 @@ bool c6_version(char* version, size_t size) {
     return v.major1 == ESP_HOSTED_VERSION_MAJOR_1;
 }
 
+static void from_c6(uint32_t id, const uint8_t* data, size_t size, void* context) {
+    (void)id, (void)context;
+    const char *line = (const char*)data + 1, *end = (const char*)data + size, *eol;
+    if (size >= 2 && data[0] == C6_HELLO) ESP_LOGI(TAG, "protocol %u", data[1]);
+    for (; size >= 1 && data[0] == C6_LOG && line < end; line = eol + 1) {
+        eol = memchr(line, '\n', (size_t)(end - line));
+        if (eol == NULL) eol = end;
+        if (eol > line) ESP_LOGI("C6", "%.*s", (int)(eol - line), line);
+    }
+}
+
 esp_err_t c6_start(void) {
     char version[24];
     // esp_hosted retries against an unpowered C6 and starves other drivers
@@ -34,6 +49,9 @@ esp_err_t c6_start(void) {
         ESP_LOGI(TAG, "firmware %s", version);
     else
         ESP_LOGW(TAG, "firmware %s, host %d.x: make c6-update", version, ESP_HOSTED_VERSION_MAJOR_1);
+    // The C6 keeps a new image only once this reaches it
+    if (eh_host_peer_data_register(C6_TO_P4, from_c6, NULL) != ESP_OK || eh_host_peer_data_send(P4_TO_C6, (const uint8_t[]){P4_KEEP}, 1) != ESP_OK)
+        ESP_LOGW(TAG, "a C6 firmware without tools/c6's messages: make c6-update");
     return ESP_OK;
 }
 

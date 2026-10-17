@@ -74,7 +74,7 @@ def update(image: Path, c6: Annotated[bool, typer.Option(help="an ESP32-C6 esp_h
         else:
             raise SystemExit("the Tab5 did not come back on USB" if present else "the Tab5 did not restart")
     print(
-        "updated; the C6 keeps the image once it has run 30 s"
+        "updated; the C6 keeps the image once the Tab5 reaches it, else boots the one before after a minute"
         if c6
         else "updated; the new image keeps itself once this computer configures its USB"
     )

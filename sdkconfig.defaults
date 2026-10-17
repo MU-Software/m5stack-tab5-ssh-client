@@ -51,3 +51,6 @@ CONFIG_LOG_TIMESTAMP_SOURCE_SYSTEM=y
 
 # esp_hosted's SDIO transport buffers in PSRAM (the SDMMC DMA reaches it): Wi-Fi as fast, about 28 KB more internal RAM
 CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM=y
+
+# The C6 firmware of tools/c6 talks through it (components/c6/include/c6_protocol.h)
+CONFIG_ESP_HOSTED_HOST_FEAT_PEER_DATA=y

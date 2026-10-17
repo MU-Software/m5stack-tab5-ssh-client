@@ -15,8 +15,11 @@ make build
 make flash      # OTA over USB; esptool while the Tab5 shows USB-Serial/JTAG
 make monitor    # logs
 make sd-on      # SD card as USB mass storage, until make sd-off
-make c6-update  # the ESP32-C6's esp_hosted, over USB (logged at boot when it differs)
+make c6-update  # the ESP32-C6's esp_hosted (tools/c6), over USB (logged at boot when it differs)
 ```
+
+The C6 keeps a new image once the Tab5 reaches it through esp_hosted, else it boots the one before after a minute: its
+bootloader has no rollback, and it can only be reflashed otherwise through the back-cover pads. Its log shows as `C6`.
 
 USB-C is TinyUSB: a terminal port and a control port (`tools/device.py`). An OTA image is kept once it has run 10 s
 and USB came up: one that USB never comes up with rolls back after 30 s, one that crashes before at the next restart.
