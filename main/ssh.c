@@ -56,21 +56,20 @@ static int io_send(WOLFSSH* ssh, void* buf, word32 sz, void* ctx) {
 }
 
 static int check_same_host_key(const byte* key, word32 size, void* ctx) {
-    const global_state* state = ctx;
+    const ssh_session* s = ctx;
     byte hash[WC_SHA256_DIGEST_SIZE];
-    return wc_Sha256Hash(key, size, hash) == 0 && memcmp(hash, state->session->host_key_sha256, sizeof hash) == 0 ? 0 : -1;
+    return wc_Sha256Hash(key, size, hash) == 0 && memcmp(hash, s->host_key_sha256, sizeof hash) == 0 ? 0 : -1;
 }
 
 static int check_host_key(const byte* key, word32 size, void* ctx) {
-    const global_state* state = ctx;
-    ssh_session* s = state->session;
-    const ssh_host* h = state->current_host;
+    ssh_session* s = ctx;
+    const ssh_host* h = s->host;
     char name[264], fingerprint[64], line[2048];
     snprintf(name, sizeof name, h->port == 22 ? "%s" : "[%s]:%u", h->hostname, h->port);
     host_state found = s->known_hosts != NULL ? known_hosts_check(s->known_hosts, name, key, size) : HOST_UNKNOWN;
     if (found == HOST_CHANGED) return -1;
     if (found == HOST_UNKNOWN && (ssh_fingerprint(fingerprint, sizeof fingerprint, key, size) != 0 ||
-                                  known_hosts_line(line, sizeof line, name, key, size) != 0 || !accept_new_host(state, name, fingerprint, line)))
+                                  known_hosts_line(line, sizeof line, name, key, size) != 0 || !accept_new_host(s, name, fingerprint, line)))
         return -1;
     return wc_Sha256Hash(key, size, s->host_key_sha256) == 0 ? 0 : -1;
 }
@@ -90,8 +89,7 @@ static int read_key(ssh_session* s, WS_UserAuthData_PublicKey* pk) {
 
 // wolfSSH calls again once the server refused what was offered; each is offered once
 static int user_auth(byte type, WS_UserAuthData* d, void* ctx) {
-    const global_state* state = ctx;
-    ssh_session* s = state->session;
+    ssh_session* s = ctx;
     if (type == WOLFSSH_USERAUTH_PASSWORD && s->password != NULL) {
         d->sf.password.password = (const byte*)s->password;
         d->sf.password.passwordSz = (word32)strlen(s->password);
@@ -152,11 +150,11 @@ static int code(const ssh_session* s, int r) {
     return r == WS_FATAL_ERROR ? wolfSSH_get_error(s->ssh) : r;
 }
 
-int ssh_open(const global_state* state) {
-    ssh_session* s = state->session;
-    const ssh_host* h = state->current_host;
+int ssh_open(const global_state* state, ssh_session* s) {
+    const ssh_host* h = s->host;
     const terminal_size* size = &state->terminal_size;
-    *s = (ssh_session){.known_hosts = s->known_hosts,
+    *s = (ssh_session){.host = h,
+                       .known_hosts = s->known_hosts,
                        .private_key = s->private_key,
                        .password = s->password,
                        .command = s->command,
@@ -182,8 +180,8 @@ int ssh_open(const global_state* state) {
 
     s->ssh = wolfSSH_new(s->ctx);
     if (s->ssh == NULL) goto done;
-    wolfSSH_SetPublicKeyCheckCtx(s->ssh, (void*)state);
-    wolfSSH_SetUserAuthCtx(s->ssh, (void*)state);
+    wolfSSH_SetPublicKeyCheckCtx(s->ssh, s);
+    wolfSSH_SetUserAuthCtx(s->ssh, s);
     wolfSSH_SetReqSuccessCtx(s->ssh, s);
     wolfSSH_SetReqFailureCtx(s->ssh, s);
     if (wolfSSH_set_fd(s->ssh, s->fd) != WS_SUCCESS || wolfSSH_SetUsername(s->ssh, h->user) != WS_SUCCESS ||
@@ -212,12 +210,11 @@ int ssh_open(const global_state* state) {
 done:
     forget_key(s);
     s->known_hosts = s->private_key = s->password = NULL;
-    if (rc != WS_SUCCESS) ssh_close(state, NULL);
+    if (rc != WS_SUCCESS) ssh_close(s, NULL);
     return rc;
 }
 
-int ssh_read(const global_state* state, void* buffer, size_t length) {
-    ssh_session* s = state->session;
+int ssh_read(ssh_session* s, void* buffer, size_t length) {
     int r = wolfSSH_stream_read(s->ssh, buffer, (word32)length);
     if (r == WS_EXTDATA) r = wolfSSH_extended_data_read(s->ssh, buffer, (word32)length);
     if (r > 0) return r;
@@ -239,8 +236,7 @@ int ssh_read(const global_state* state, void* buffer, size_t length) {
     }
 }
 
-int ssh_write(const global_state* state, const void* buffer, size_t length) {
-    ssh_session* s = state->session;
+int ssh_write(ssh_session* s, const void* buffer, size_t length) {
     int r = wolfSSH_stream_send(s->ssh, (byte*)buffer, (word32)length);
     if (r > 0) return r;
     int e = code(s, r);
@@ -256,22 +252,21 @@ int ssh_write(const global_state* state, const void* buffer, size_t length) {
     }
 }
 
-void ssh_ping(const global_state* state) {
+void ssh_ping(ssh_session* s) {
     static const char name[] = "keepalive@openssh.com";
-    SendGlobalRequest(state->session->ssh, (const unsigned char*)name, sizeof name - 1, 1, NULL);
+    SendGlobalRequest(s->ssh, (const unsigned char*)name, sizeof name - 1, 1, NULL);
 }
 
-void ssh_resize(const global_state* state) {
+void ssh_resize(const global_state* state, ssh_session* s) {
     const terminal_size* size = &state->terminal_size;
-    wolfSSH_ChangeTerminalSize(state->session->ssh, size->columns, size->rows, size->width_pixels, size->height_pixels);
+    wolfSSH_ChangeTerminalSize(s->ssh, size->columns, size->rows, size->width_pixels, size->height_pixels);
 }
 
-void ssh_wait(const global_state* state, int timeout_ms) {
-    poll(&(struct pollfd){.fd = state->session->fd, .events = POLLIN}, 1, timeout_ms);
+void ssh_wait(ssh_session* s, int timeout_ms) {
+    poll(&(struct pollfd){.fd = s->fd, .events = POLLIN}, 1, timeout_ms);
 }
 
-void ssh_close(const global_state* state, int* exit_status) {
-    ssh_session* s = state->session;
+void ssh_close(ssh_session* s, int* exit_status) {
     if (exit_status != NULL) *exit_status = s->ssh != NULL ? wolfSSH_GetExitStatus(s->ssh) : 0;
     if (s->ssh != NULL) {
         wolfSSH_shutdown(s->ssh);

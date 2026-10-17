@@ -9,10 +9,12 @@
 #include <esp_event.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <esp_mac.h>
 #include <esp_netif.h>
 #include <esp_random.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <nvs_flash.h>
 #include <wolfssl/wolfcrypt/memory.h>
 
@@ -33,10 +35,10 @@
 #include "ssh.h"
 #include "storage.h"
 #include "terminal.h"
+#include "tmux.h"
 #include "usb.h"
 
 static const char* TAG = "main";
-static ssh_session session;
 static global_state state = {
     .terminal_type = "xterm-256color",
     .terminal_size = {.columns = 106, .rows = 30, .width_pixels = 1272, .height_pixels = 720},
@@ -46,22 +48,78 @@ static global_state state = {
     .bars = {true, true},
 };
 
-// Bumped by each change of the terminal's size; the host chosen on the screen, NULL when none waits
+// Bumped by each change of the terminal's size; the host chosen on the screen at boot, NULL when none waits
 static atomic_uint resizes;
 static _Atomic(const ssh_host*) wanted_host;
 
-static void message(const char* text) {
-    terminal_write(text, strlen(text));
-    usb_terminal_write(text, strlen(text));
+// An SSH session with its own terminal, kept connected by its own task. The main loop opens, shows and ends them, and keeps
+// them in NVS across restarts; session number n is sessions[n - 1].
+typedef struct {
+    // Tells its NVS saves from those of a session opened before under the same number
+    unsigned id;
+    terminal* terminal;
+    // Set once, by its task for the first session chosen at boot
+    _Atomic(const ssh_host*) host;
+    // Its tmux session, "" before one runs; written by its task under names_lock
+    char tmux[24];
+    ssh_session connection;
+    _Atomic(session_status) status;
+    // What it waits for and since when, shown while it is
+    _Atomic(const char*) waiting;
+    atomic_uint waiting_since;
+    // Asked to end; its task has ended
+    atomic_bool end, ended;
+    bool used;
+    // The session's end ended its tmux session
+    bool tmux_ended;
+} session;
+static session sessions[MAX_SESSIONS];
+static _Atomic(session*) shown;
+// keys_read and its Hangul composition serve one task at a time
+static SemaphoreHandle_t input_lock, names_lock;
+// This device's tmux sessions are named tab5-MMMMMM-RRRRRR: the MAC's last three bytes, then random
+static char tmux_prefix[16];
+// Sessions connected: while any is, logs may be quieter
+static atomic_int connected;
+
+static int number(const session* s) {
+    return (int)(s - sessions) + 1;
 }
 
-// From the keyboards or the USB terminal port, on the screen and the port
-static void read_line(const char* prompt, char* buf, size_t size, int echo) {
-    message(prompt);
+static bool is_shown(const session* s) {
+    return atomic_load(&shown) == s;
+}
+
+static void message(session* s, const char* text) {
+    terminal_write(s->terminal, text, strlen(text));
+    if (is_shown(s)) usb_terminal_write(text, strlen(text));
+}
+
+// From the keyboards or the USB terminal port, only for the shown session
+static size_t read_input(const session* s, void* buffer, size_t size) {
     size_t n = 0;
-    for (;;) {
+    if (!is_shown(s)) return 0;
+    xSemaphoreTake(input_lock, portMAX_DELAY);
+    if (is_shown(s) && (n = keys_read(buffer, size)) == 0) n = usb_terminal_read(buffer, size);
+    xSemaphoreGive(input_lock);
+    return n;
+}
+
+// As screen_waiting, for the screen while s is shown
+static void waiting(session* s, const char* what, TickType_t since) {
+    if (what == NULL || what != atomic_load(&s->waiting)) atomic_store(&s->waiting_since, since);
+    atomic_store(&s->waiting, what);
+    if (is_shown(s)) screen_waiting(what, since);
+}
+
+// On the session's terminal, typed once it is shown; empty when the session is to end
+static void read_line(session* s, const char* prompt, char* buf, size_t size, int echo) {
+    session_status was = atomic_exchange(&s->status, SESSION_ASKING);
+    message(s, prompt);
+    size_t n = 0;
+    while (!atomic_load(&s->end)) {
         char c;
-        if (keys_read(&c, 1) != 1 && usb_terminal_read(&c, 1) != 1) {
+        if (read_input(s, &c, 1) != 1) {
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -69,54 +127,62 @@ static void read_line(const char* prompt, char* buf, size_t size, int echo) {
         if (c == 0x7f || c == '\b') {
             if (n == 0) continue;
             n--;
-            if (echo) message("\b \b");
+            if (echo) message(s, "\b \b");
         } else if (n + 1 < size) {
             buf[n++] = c;
-            if (echo) message((char[]){c, 0});
+            if (echo) message(s, (char[]){c, 0});
         }
     }
     buf[n] = 0;
-    message("\r\n");
+    message(s, "\r\n");
+    atomic_store(&s->status, was);
 }
 
-int accept_new_host(const global_state* state, const char* name, const char* fingerprint, const char* line) {
-    (void)state;
+int accept_new_host(const ssh_session* connection, const char* name, const char* fingerprint, const char* line) {
+    session* s = NULL;
+    for (size_t i = 0; i < MAX_SESSIONS; i++)
+        if (&sessions[i].connection == connection) s = &sessions[i];
+    if (s == NULL) return 0;
     char prompt[512], answer[8];
     snprintf(prompt, sizeof prompt,
              "The authenticity of host '%s' can't be established.\r\nKey fingerprint is %s.\r\n"
              "Are you sure you want to continue connecting (yes/no)? ",
              name, fingerprint);
-    read_line(prompt, answer, sizeof answer, 1);
+    read_line(s, prompt, answer, sizeof answer, 1);
     if (strcmp(answer, "yes") != 0) return 0;
     if (storage_add_known_host(line) != 0) ESP_LOGW(TAG, "could not add %s to " SD "/.ssh/known_hosts", name);
     return 1;
 }
 
-typedef enum { SESSION_CLOSED, SESSION_REFUSED, SESSION_DROPPED, SESSION_MOVED, SESSION_SWITCHED } session_end;
+typedef enum { SESSION_CLOSED, SESSION_REFUSED, SESSION_DROPPED, SESSION_MOVED, SESSION_ENDED } session_end;
 
-// Typing that 1 s brings no output pings the host; no answer for another second shows as held until anything arrives
-static session_end bridge(unsigned path) {
+// Typing that 1 s brings no output pings the host; no answer for another second shows as held until anything arrives.
+// The end of a tmux session's session first tells tmux to kill it, which closes the channel, for up to 3 s.
+static session_end bridge(session* s, unsigned path, bool tmux_session) {
     uint8_t in[256], out[1024];
     int pending = 0, off = 0;
-    TickType_t typed_at = 0, pinged_at = 0;
+    TickType_t typed_at = 0, pinged_at = 0, ending = 0;
     bool typed = false, pinged = false, held = false;
     unsigned pongs = 0, size = atomic_load(&resizes);
     for (;;) {
         if (net_generation() != path) return SESSION_MOVED;
-        if (atomic_load(&wanted_host) != NULL) return SESSION_SWITCHED;
-        if (atomic_load(&resizes) != size) size = atomic_load(&resizes), ssh_resize(&state);
+        if (atomic_load(&s->end) && (!tmux_session || (ending != 0 && xTaskGetTickCount() - ending >= pdMS_TO_TICKS(3000)))) return SESSION_ENDED;
+        if (atomic_load(&s->end) && ending == 0) {
+            ending = xTaskGetTickCount() | 1;
+            pending = (int)strlen(tmux_end_keys), off = 0;
+            memcpy(in, tmux_end_keys, (size_t)pending);
+        }
+        if (atomic_load(&resizes) != size) size = atomic_load(&resizes), ssh_resize(&state, &s->connection);
         if (pending == 0) {
-            if ((pending = (int)terminal_reply(in, sizeof in)) == 0) {
-                if ((pending = (int)keys_read((char*)in, sizeof in)) == 0) pending = (int)usb_terminal_read(in, sizeof in);
-                if (pending > 0) {
-                    screen_typed(in, (size_t)pending);
-                    if (!typed) typed = true, typed_at = xTaskGetTickCount();
-                }
+            if ((pending = (int)terminal_reply(s->terminal, in, sizeof in)) == 0 && (pending = (int)read_input(s, in, sizeof in)) > 0) {
+                screen_typed(in, (size_t)pending);
+                if (!typed) typed = true, typed_at = xTaskGetTickCount();
             }
             off = 0;
         }
-        int sent = pending > 0 ? ssh_write(&state, in + off, (size_t)pending) : WS_WANT_WRITE;
-        int got = ssh_read(&state, out, sizeof out);
+        int sent = pending > 0 ? ssh_write(&s->connection, in + off, (size_t)pending) : WS_WANT_WRITE;
+        int got = ssh_read(&s->connection, out, sizeof out);
+        s->tmux_ended |= ending != 0 && got == WS_CHANNEL_CLOSED;
         if (got == WS_CHANNEL_CLOSED) return SESSION_CLOSED;
         if ((sent < 0 && sent != WS_WANT_WRITE) || (got < 0 && got != WS_WANT_READ)) return SESSION_DROPPED;
         if (sent > 0) {
@@ -124,42 +190,43 @@ static session_end bridge(unsigned path) {
             pending -= sent;
         }
         TickType_t now = xTaskGetTickCount();
-        if (got > 0 || (pinged && session.pongs != pongs)) {
+        if (got > 0 || (pinged && s->connection.pongs != pongs)) {
             typed = pinged = false;
-            if (held) screen_waiting(NULL, 0), held = false;
+            if (held) waiting(s, NULL, 0), held = false;
         } else if (typed && !pinged && now - typed_at >= pdMS_TO_TICKS(1000)) {
-            pongs = session.pongs, pinged = true, pinged_at = now;
-            ssh_ping(&state);
+            pongs = s->connection.pongs, pinged = true, pinged_at = now;
+            ssh_ping(&s->connection);
         } else if (pinged && !held && now - pinged_at >= pdMS_TO_TICKS(1000)) {
-            screen_waiting("held", typed_at);
+            waiting(s, "held", typed_at);
             held = true;
         }
         if (got > 0) {
-            terminal_write(out, (size_t)got);
-            usb_terminal_write(out, (size_t)got);
+            terminal_write(s->terminal, out, (size_t)got);
+            if (is_shown(s)) usb_terminal_write(out, (size_t)got);
         } else if (sent < 0)
-            ssh_wait(&state, 10);
+            ssh_wait(&s->connection, 10);
     }
 }
 
 // The exit status counts only for SESSION_CLOSED
-static session_end run(const ssh_host* h, const char* command, unsigned path, int* exit_status) {
+static session_end run(session* s, const ssh_host* h, const char* command, bool tmux_session, unsigned path, int* exit_status) {
     char* private_key = storage_get_private_key(h->identity_file);
     char password[128] = "";
     if (private_key == NULL) {
         char prompt[300];
         snprintf(prompt, sizeof prompt, "%s@%s's password: ", h->user, h->hostname);
-        read_line(prompt, password, sizeof password, 0);
+        read_line(s, prompt, password, sizeof password, 0);
     }
     char* known_hosts = storage_get_known_hosts();
-    session = (ssh_session){.known_hosts = known_hosts,
-                            .private_key = private_key,
-                            .password = password[0] ? password : NULL,
-                            .command = command,
-                            .local_address = net_local_address(),
-                            .timeout_ms = net_on_lte() ? 30000 : 10000};
-    state.session = &session;
-    int rc = ssh_open(&state);
+    s->connection = (ssh_session){.host = h,
+                                  .known_hosts = known_hosts,
+                                  .private_key = private_key,
+                                  .password = password[0] ? password : NULL,
+                                  .command = command,
+                                  .local_address = net_local_address(),
+                                  .timeout_ms = net_on_lte() ? 30000 : 10000};
+    atomic_store(&s->status, SESSION_CONNECTING);
+    int rc = ssh_open(&state, &s->connection);
     if (private_key != NULL) wc_ForceZero(private_key, strlen(private_key));
     free(private_key);
     free(known_hosts);
@@ -168,90 +235,102 @@ static session_end run(const ssh_host* h, const char* command, unsigned path, in
     session_end end = rc == WS_SOCKET_ERROR_E ? SESSION_DROPPED : SESSION_REFUSED;
     *exit_status = 0;
     if (rc == WS_SUCCESS) {
-        net_keepalive(session.fd);
-        screen_waiting(NULL, 0);
-        ESP_LOGI(TAG, "connected to %s: %s", h->hostname, command != NULL ? command : "shell");
-        if (state.log.quiet_sessions) {
+        net_keepalive(s->connection.fd);
+        waiting(s, NULL, 0);
+        atomic_store(&s->status, SESSION_CONNECTED);
+        ESP_LOGI(TAG, "session %d connected to %s: %s", number(s), h->hostname, command != NULL ? command : "shell");
+        if (atomic_fetch_add(&connected, 1) == 0 && state.log.quiet_sessions) {
             esp_log_level_set("*", ESP_LOG_WARN);
             // They answer control commands
             for (size_t i = 0; i < 5; i++)
                 esp_log_level_set((const char* const[]){"catm", "main", "net", "power", "wifi"}[i], ESP_LOG_INFO);
         }
-        end = bridge(path);
-        screen_typed(NULL, 0);
-        esp_log_level_set("*", ESP_LOG_INFO);
-        ssh_close(&state, exit_status);
-        ESP_LOGI(TAG, "session %s, exit status %d", (const char* const[]){"closed", "refused", "dropped", "moved", "switched"}[end], *exit_status);
+        end = bridge(s, path, tmux_session);
+        if (is_shown(s)) screen_typed(NULL, 0);
+        if (atomic_fetch_sub(&connected, 1) == 1) esp_log_level_set("*", ESP_LOG_INFO);
+        ssh_close(&s->connection, exit_status);
+        atomic_store(&s->status, SESSION_CONNECTING);
+        ESP_LOGI(TAG, "session %d %s, exit status %d", number(s), (const char* const[]){"closed", "refused", "dropped", "moved", "ended"}[end],
+                 *exit_status);
     } else {
-        ESP_LOGE(TAG, "ssh %s@%s:%u: %s", h->user, h->hostname, h->port, wolfSSH_ErrorToName(rc));
+        ESP_LOGE(TAG, "session %d: ssh %s@%s:%u: %s", number(s), h->user, h->hostname, h->port, wolfSSH_ErrorToName(rc));
     }
-    state.session = NULL;
     return end;
 }
 
-// NVS writes from the session task, whose stack is in PSRAM: writing flash needs an internal stack, main's loop does them
+// NVS writes from the session tasks, whose stacks are in PSRAM: writing flash needs an internal stack, main's loop does them
 typedef struct {
+    // Of session `number`, or the last host for 0
+    unsigned id;
+    int number;
     const ssh_host* host;
-    bool tmux;
-    char name[16];
+    char tmux[24];
 } save;
 static QueueHandle_t saves;
 
-static void save_tmux(const ssh_host* h, const char* name) {
-    save s = {h, true, ""};
-    if (name != NULL) snprintf(s.name, sizeof s.name, "%s", name);
-    xQueueSend(saves, &s, portMAX_DELAY);
+static void save_session(const session* s) {
+    save v = {s->id, number(s), atomic_load(&s->host), ""};
+    memcpy(v.tmux, s->tmux, sizeof v.tmux);
+    xQueueSend(saves, &v, portMAX_DELAY);
 }
 
-static void save_last_host(const ssh_host* h) {
-    save s = {h, false, ""};
-    xQueueSend(saves, &s, portMAX_DELAY);
+static void set_tmux(session* s, const char* name) {
+    xSemaphoreTake(names_lock, portMAX_DELAY);
+    snprintf(s->tmux, sizeof s->tmux, "%s", name);
+    xSemaphoreGive(names_lock);
+    save_session(s);
 }
 
-// Attaches to the host's tmux session kept in NVS, or starts one when there is none or it has gone
-static session_end tmux(const ssh_host* h, unsigned path) {
-    char name[16], command[400];
-    bool attach = storage_get_tmux_session(h->alias, name, sizeof name) == ESP_OK;
+// " a b ": the tmux sessions of the open sessions to h, which a connection to h leaves; those of sessions to end not
+static void kept(const ssh_host* h, char* out, size_t size) {
+    size_t n = (size_t)snprintf(out, size, " ");
+    xSemaphoreTake(names_lock, portMAX_DELAY);
+    for (size_t i = 0; i < MAX_SESSIONS; i++)
+        if (sessions[i].used && !atomic_load(&sessions[i].end) && atomic_load(&sessions[i].host) == h && sessions[i].tmux[0] != 0 && n < size)
+            n += (size_t)snprintf(out + n, size - n, "%s ", sessions[i].tmux);
+    xSemaphoreGive(names_lock);
+}
+
+// Attaches to the session's tmux session, or starts one when there is none or it has gone; a name from before the
+// device's prefix is renamed into it. Every connection also kills this device's tmux sessions on the host that no open
+// session uses, unattached for a minute: those of sessions ended while the host could not be reached.
+static session_end tmux(session* s, const ssh_host* h, unsigned path) {
+    char name[24], old[24], keep[MAX_SESSIONS * 24 + 2], command[1400];
+    snprintf(old, sizeof old, "%s", s->tmux);
+    bool attach = old[0] != 0, renamed = attach && strncmp(old, tmux_prefix, strlen(tmux_prefix)) != 0;
     for (;;) {
-        if (!attach) {
-            snprintf(name, sizeof name, "tab5-%08" PRIx32, esp_random());
-            save_tmux(h, name);
+        if (!attach || renamed) {
+            snprintf(name, sizeof name, "%s%06" PRIx32, tmux_prefix, esp_random() & 0xffffff);
+            set_tmux(s, name);
         }
-        // -T (tmux 3.2) declares what the screen draws beyond xterm-256color's terminfo. allow-passthrough (tmux 3.3) lets
-        // kitty images reach the screen, for this session's windows only. '=': an exact name, not a prefix (set-hook takes none).
-        snprintf(command, sizeof command,
-                 "sh -c 'f=-TRGB,strikethrough,overline,usstyle,kittygraphics; tmux $f -V >/dev/null 2>&1 || f=; s=%s; %s"
-                 "tmux set-hook -t $s after-new-window \"set -w allow-passthrough all\" 2>/dev/null; "
-                 "for w in $(tmux list-windows -t =$s -F \"#{window_id}\" 2>/dev/null); do tmux set -w -t $w allow-passthrough all; done; "
-                 "exec tmux $f attach-session -t =$s'",
-                 name, attach ? "" : "tmux new-session -d -s $s || exit $?; ");
+        kept(h, keep, sizeof keep);
+        if (!tmux_command(command, sizeof command, s->tmux, attach, renamed ? old : NULL, tmux_prefix, keep, 60)) return SESSION_REFUSED;
         int exit_status;
-        session_end end = run(h, command, path, &exit_status);
-        if (end != SESSION_CLOSED) return end;
+        session_end end = run(s, h, command, true, path, &exit_status);
+        if (end != SESSION_CLOSED || atomic_load(&s->end)) return end;
         if (exit_status == 127) {
-            save_tmux(h, NULL);
-            message("\r\n\x1b[33mNo tmux on this host: a plain shell, lost when the connection drops\x1b[m\r\n");
-            return run(h, NULL, path, &exit_status);
+            set_tmux(s, "");
+            message(s, "\r\n\x1b[33mNo tmux on this host: a plain shell, lost when the connection drops\x1b[m\r\n");
+            return run(s, h, NULL, false, path, &exit_status);
         }
         if (!attach || exit_status == 0) return end;
-        save_tmux(h, NULL);
-        attach = false;
+        attach = renamed = false;
     }
 }
 
-// Or until another host is chosen
-static void wait_enter(void) {
-    while (atomic_load(&wanted_host) == NULL) {
+// Or until the session is to end
+static void wait_enter(session* s) {
+    while (!atomic_load(&s->end)) {
         char in[64];
-        size_t n = keys_read(in, sizeof in);
-        if (n == 0) n = usb_terminal_read(in, sizeof in);
+        size_t n = read_input(s, in, sizeof in);
         if (memchr(in, '\r', n) != NULL) return;
         if (n == 0) vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
-// Until there is a path, what LTE is doing; Enter tries LTE at once, the other keys are dropped
-static unsigned wait_path(void) {
+// Until there is a path, what LTE is doing; Enter tries LTE at once, the other keys are dropped. False when the session
+// is to end.
+static bool wait_path(session* s, unsigned* path) {
     static const char* const states[] = {
         [NET_LTE_OFF] = "no network: LTE off, Enter turns it on",
         [NET_LTE_NO_MODEM] = "no network: no LTE modem",
@@ -260,39 +339,35 @@ static unsigned wait_path(void) {
         [NET_LTE_WAITING] = "no network: LTE waits, Enter retries",
         [NET_LTE_UP] = "no network",
     };
-    unsigned path;
     TickType_t since = xTaskGetTickCount();
-    while (!net_wait_for(200, &path)) {
+    while (!net_wait_for(200, path)) {
+        if (atomic_load(&s->end)) return false;
         char in[64];
-        size_t n = keys_read(in, sizeof in);
-        if (n == 0) n = usb_terminal_read(in, sizeof in);
+        size_t n = read_input(s, in, sizeof in);
         if (memchr(in, '\r', n) != NULL) net_command("lte on");
-        screen_waiting(states[net_lte()], since);
+        waiting(s, states[net_lte()], since);
     }
-    return path;
+    return !atomic_load(&s->end);
 }
 
-// Reconnects after a drop or a change of path at once (tmux keeps the screen), after a closed session on Enter; another
-// host chosen on the screen ends the session
-static void sessions(const ssh_host* h) {
+// Reconnects after a drop or a change of path at once (tmux keeps the screen), after a closed session on Enter; until the
+// session is to end
+static void keep_connected(session* s) {
     int retry_ms = 1000;
-    for (;;) {
-        const ssh_host* chosen = atomic_exchange(&wanted_host, NULL);
-        if (chosen != NULL) {
-            h = state.current_host = chosen;
-            save_last_host(h);
-            message("\x1b[2J\x1b[H");
-        }
-        session_end end = tmux(h, wait_path());
-        if (end == SESSION_SWITCHED) continue;
-        screen_waiting(end == SESSION_DROPPED || end == SESSION_MOVED ? "reconnecting" : NULL, xTaskGetTickCount());
+    unsigned path;
+    while (wait_path(s, &path)) {
+        session_end end = tmux(s, atomic_load(&s->host), path);
+        if (end == SESSION_ENDED) break;
+        waiting(s, end == SESSION_DROPPED || end == SESSION_MOVED ? "reconnecting" : NULL, xTaskGetTickCount());
         if (end == SESSION_CLOSED || end == SESSION_REFUSED) {
-            message(end == SESSION_CLOSED ? "\r\n[Session closed. Enter connects again.]\r\n" : "\r\n[Not connected. Enter tries again.]\r\n");
-            wait_enter();
+            atomic_store(&s->status, SESSION_STOPPED);
+            message(s, end == SESSION_CLOSED ? "\r\n[Session closed. Enter connects again.]\r\n" : "\r\n[Not connected. Enter tries again.]\r\n");
+            wait_enter(s);
+            atomic_store(&s->status, SESSION_CONNECTING);
         } else if (end == SESSION_DROPPED) {
             net_suspect();
             // A new path is worth trying at once
-            for (unsigned path = net_generation(), waited = 0; waited < retry_ms && net_generation() == path; waited += 100)
+            for (unsigned at = net_generation(), waited = 0; waited < retry_ms && net_generation() == at && !atomic_load(&s->end); waited += 100)
                 vTaskDelay(pdMS_TO_TICKS(100));
             retry_ms = retry_ms < 16000 ? retry_ms * 2 : 30000;
             continue;
@@ -310,7 +385,7 @@ static const ssh_host* choose_host(void) {
     if (state.hosts == NULL || state.hosts->next == NULL) return state.current_host;
     screen_input();
     state.host_deadline_us = esp_timer_get_time() + 10 * 1000000LL;
-    screen_open("hosts");
+    screen_open("sessions");
     while (screen_panel_open() && atomic_load(&wanted_host) == NULL) {
         if (state.host_deadline_us != 0 && screen_input()) state.host_deadline_us = 0;
         if (state.host_deadline_us != 0 && esp_timer_get_time() >= state.host_deadline_us) break;
@@ -319,7 +394,7 @@ static const ssh_host* choose_host(void) {
     state.host_deadline_us = 0;
     const ssh_host* chosen = atomic_exchange(&wanted_host, NULL);
     if (chosen != NULL) state.current_host = chosen;
-    if (state.current_host != NULL) save_last_host(state.current_host);
+    if (state.current_host != NULL) xQueueSend(saves, &(save){.host = state.current_host}, portMAX_DELAY);
     screen_open(NULL);
     return state.current_host;
 }
@@ -347,17 +422,6 @@ static void load_config(void) {
     state.current_host = state.hosts;
     state.wifi_off = storage_get_off("wifi");
     state.lte_off = storage_get_off("lte");
-}
-
-static void connect(void) {
-    ESP_LOGI(TAG, "internal DMA RAM: %u free, %u in one block", heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
-             heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
-    const ssh_host* h = choose_host();
-    if (h == NULL || !h->user[0]) {
-        ESP_LOGE(TAG, "incomplete configuration: a Host with a User in the SD card's .ssh/config");
-        return;
-    }
-    sessions(h);
 }
 
 // wifi connect SSID [PASSWORD], "SSID" when it has spaces; saved once joined
@@ -611,16 +675,163 @@ static bool command(const char* line) {
     return net_command(line);
 }
 
+// The session the main loop shows from now on
+static void show(session* s) {
+    if (is_shown(s)) return;
+    atomic_store(&shown, s);
+    terminal_show(s->terminal);
+    screen_show(s->terminal);
+    screen_waiting(NULL, 0);
+    screen_waiting(atomic_load(&s->waiting), (TickType_t)atomic_load(&s->waiting_since));
+    if (atomic_load(&s->host) != NULL) state.current_host = atomic_load(&s->host);
+}
+
+static void run_session(void* arg) {
+    session* s = arg;
+    const ssh_host* h = atomic_load(&s->host);
+    // The first, at boot
+    if (h == NULL) {
+        ESP_LOGI(TAG, "internal DMA RAM: %u free, %u in one block", heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+                 heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+        if ((h = choose_host()) != NULL) atomic_store(&s->host, h);
+    }
+    if (h == NULL || !h->user[0])
+        ESP_LOGE(TAG, "incomplete configuration: a Host with a User in the SD card's .ssh/config");
+    else
+        keep_connected(s);
+    if (atomic_load(&s->end) && s->tmux[0] != 0)
+        ESP_LOGI(TAG, "session %d: tmux session %s %s", number(s), s->tmux,
+                 s->tmux_ended ? "ended" : "left on the host, for the next connection to it to end");
+    atomic_store(&s->status, SESSION_STOPPED);
+    atomic_store(&s->ended, true);
+    vTaskDeleteWithCaps(NULL);
+}
+
+// Session n (the first free one for 0) to h, or the boot's host when NULL, on tmux session `tmux` ("" for a new
+// one); NULL when all sessions are open or memory is short
+static session* open_session(int n, const ssh_host* h, const char* tmux) {
+    static unsigned opened;
+    session* s = n > 0 ? &sessions[n - 1] : sessions;
+    while (n == 0 && s < sessions + MAX_SESSIONS && s->used)
+        s++;
+    terminal* t = s < sessions + MAX_SESSIONS && !s->used ? terminal_new(&state.terminal_size) : NULL;
+    if (t == NULL) return NULL;
+    xSemaphoreTake(names_lock, portMAX_DELAY);
+    memset(s, 0, sizeof *s);
+    s->used = true, s->id = ++opened, s->terminal = t;
+    atomic_store(&s->host, h);
+    snprintf(s->tmux, sizeof s->tmux, "%s", tmux);
+    xSemaphoreGive(names_lock);
+    char name[24];
+    snprintf(name, sizeof name, "session %d", number(s));
+    // Ghostty's measured stack is 27-33 KiB, as fast in PSRAM; flash writes go through saves
+    if (xTaskCreatePinnedToCoreWithCaps(run_session, name, 48 * 1024, s, 5, NULL, 1, MALLOC_CAP_SPIRAM) != pdPASS) {
+        terminal_free(t);
+        s->used = false;
+        return NULL;
+    }
+    ESP_LOGI(TAG, "session %d opened%s%s%s%s", number(s), h != NULL ? " to " : "", h != NULL ? h->alias : "", tmux[0] != 0 ? ", tmux " : "", tmux);
+    return s;
+}
+
+static bool is_open(const session* s) {
+    return s->used && !atomic_load(&s->end);
+}
+
+// Open session `index` in the screens' order, NULL past the last
+static session* open_at(size_t index) {
+    for (size_t i = 0; i < MAX_SESSIONS; i++)
+        if (is_open(&sessions[i]) && index-- == 0) return &sessions[i];
+    return NULL;
+}
+
+// Its task closes the connection and stops; the last one open stays
+static void end_session(session* s) {
+    session* other = NULL;
+    for (size_t i = 0; i < MAX_SESSIONS; i++)
+        if (&sessions[i] != s && is_open(&sessions[i]) && (other == NULL || &sessions[i] < s)) other = &sessions[i];
+    if (other == NULL) return;
+    if (is_shown(s)) show(other);
+    atomic_store(&s->end, true);
+    storage_set_session(number(s), NULL, NULL);
+    ESP_LOGI(TAG, "session %d ending", number(s));
+}
+
+// Frees the sessions whose tasks ended as asked, and tells the screens about the others
+static void tend_sessions(void) {
+    state.session_count = 0;
+    for (size_t i = 0; i < MAX_SESSIONS; i++) {
+        session* s = &sessions[i];
+        if (s->used && atomic_load(&s->end) && atomic_load(&s->ended)) {
+            terminal_free(s->terminal);
+            s->used = false;
+            ESP_LOGI(TAG, "session %d ended", number(s));
+        }
+        if (!is_open(s)) continue;
+        if (is_shown(s)) state.shown_session = state.session_count;
+        state.sessions[state.session_count++] = (session_info){number(s), atomic_load(&s->host), atomic_load(&s->status)};
+    }
+}
+
+// The sessions open before the restart, on their tmux sessions; the first, NULL for none. Those whose host left the
+// configuration are forgotten.
+static session* restore_sessions(void) {
+    session* first = NULL;
+    storage_migrate_sessions();
+    for (int n = 1; n <= MAX_SESSIONS; n++) {
+        char alias[sizeof state.hosts->alias], name[24];
+        const ssh_host* h = NULL;
+        if (storage_get_session(n, alias, sizeof alias, name, sizeof name) != ESP_OK) continue;
+        for (h = state.hosts; h != NULL && strcmp(h->alias, alias) != 0; h = h->next)
+            ;
+        session* s = h != NULL ? open_session(n, h, name) : NULL;
+        if (h == NULL) storage_set_session(n, NULL, NULL);
+        if (first == NULL) first = s;
+    }
+    return first;
+}
+
 // From the screen's task, whose stack in internal RAM lets it write NVS
 static void apply(const ui_event* e) {
     char text[80];
+    int n;
+    session* s = atomic_load(&shown);
     if (wifi_screen(e) || (e->kind == UI_SET && e->setting == NULL)) return;
-    if (e->kind == UI_ACTION && strcmp(e->name, "connect") == 0) {
+    if (e->kind == UI_ACTION && strcmp(e->name, "open") == 0) {
         const ssh_host* h = state.hosts;
         for (size_t i = 0; h != NULL && i < e->index; i++)
             h = h->next;
-        if (h != NULL && h != state.current_host) atomic_store(&wanted_host, h);
-        if (h != NULL) screen_open(NULL);
+        if (h == NULL) return;
+        // At boot the first session's task waits for the choice
+        if (atomic_load(&s->host) == NULL)
+            atomic_store(&wanted_host, h);
+        else if ((s = open_session(0, h, "")) != NULL) {
+            storage_set_session(number(s), h->alias, "");
+            storage_set_last_host(h->alias);
+            show(s);
+        } else
+            ESP_LOGW(TAG, "no session opened to %s: %d open at most, or no memory", h->alias, MAX_SESSIONS);
+        screen_open(NULL);
+        return;
+    }
+    // The list only chooses the session that the buttons for it act on
+    if (e->kind == UI_ACTION && strcmp(e->name, "session select") == 0) return;
+    if (e->kind == UI_ACTION && strcmp(e->name, "session show") == 0) {
+        if ((s = open_at(e->index)) != NULL) show(s);
+        screen_open(NULL);
+        return;
+    }
+    if (e->kind == UI_ACTION && strcmp(e->name, "session end") == 0) {
+        if ((s = open_at(e->index)) != NULL) end_session(s);
+        return;
+    }
+    // A session's tab: the shown one's opens the sessions screen
+    if (e->kind == UI_ACTION && sscanf(e->name, "session %d", &n) == 1) {
+        if (n < 1 || n > MAX_SESSIONS || !is_open(&sessions[n - 1])) return;
+        if (is_shown(&sessions[n - 1]))
+            screen_open("sessions");
+        else
+            show(&sessions[n - 1]);
         return;
     }
     if (e->kind == UI_ACTION && strcmp(e->name, "reboot") == 0) {
@@ -662,12 +873,6 @@ static void keep_image_later(void) {
         usb_keep_image();
 }
 
-static void run_session(void* arg) {
-    (void)arg;
-    connect();
-    vTaskDeleteWithCaps(NULL);
-}
-
 void app_main(void) {
     cJSON_InitHooks(&(cJSON_Hooks){psram_malloc, free});
     memory_log_start();
@@ -691,20 +896,32 @@ void app_main(void) {
     if (net_start(&state) != ESP_OK) ESP_LOGE(TAG, "no network");
     esp_err_t screen = screen_start(&state);
     if (screen == ESP_OK) screen_resized(&state.terminal_size);
-    ESP_ERROR_CHECK(terminal_start(&state.terminal_size));
     keep_image_later();
     saves = xQueueCreate(4, sizeof(save));
-    // Ghostty's measured stack is 27-33 KiB, as fast in PSRAM; flash writes go through saves
-    if (saves == NULL || xTaskCreatePinnedToCoreWithCaps(run_session, "session", 48 * 1024, NULL, 5, NULL, 1, MALLOC_CAP_SPIRAM) != pdPASS)
-        ESP_LOGE(TAG, "no session");
+    input_lock = xSemaphoreCreateMutex();
+    // Held for good: the sessions' own Init and Cleanup then never tear wolfCrypt down under one another
+    if (wolfSSH_Init() != WS_SUCCESS) ESP_LOGE(TAG, "no wolfSSH");
+    names_lock = xSemaphoreCreateMutex();
+    uint8_t mac[6] = {0};
+    esp_efuse_mac_get_default(mac);
+    snprintf(tmux_prefix, sizeof tmux_prefix, "tab5-%02x%02x%02x-", mac[3], mac[4], mac[5]);
+    session* first = saves != NULL && input_lock != NULL && names_lock != NULL ? restore_sessions() : NULL;
+    if (first == NULL && saves != NULL && input_lock != NULL && names_lock != NULL) first = open_session(1, NULL, "");
+    ESP_ERROR_CHECK(first != NULL ? ESP_OK : ESP_ERR_NO_MEM);
+    show(first);
     if (screen != ESP_OK) ESP_LOGE(TAG, "no screen");
     for (;;) {
         ui_event e;
         terminal_size size;
         save s;
         if (atomic_load(&join.step) == JOIN_DONE) joined_wifi();
-        while (saves != NULL && xQueueReceive(saves, &s, 0))
-            s.tmux ? storage_set_tmux_session(s.host->alias, s.name[0] != 0 ? s.name : NULL) : storage_set_last_host(s.host->alias);
+        // Not for a session asked to end, whose record is gone
+        while (xQueueReceive(saves, &s, 0))
+            if (s.number == 0)
+                storage_set_last_host(s.host->alias);
+            else if (sessions[s.number - 1].id == s.id && is_open(&sessions[s.number - 1]))
+                storage_set_session(s.number, s.host->alias, s.tmux);
+        tend_sessions();
         memory_log();
         if (screen == ESP_OK) {
             screen_draw();
@@ -717,6 +934,8 @@ void app_main(void) {
             memset(&e, 0, sizeof e);
             if (screen_resized(&size)) {
                 state.terminal_size = size;
+                for (size_t i = 0; i < MAX_SESSIONS; i++)
+                    if (sessions[i].used) terminal_resize(sessions[i].terminal, &size);
                 atomic_fetch_add(&resizes, 1);
             }
         }

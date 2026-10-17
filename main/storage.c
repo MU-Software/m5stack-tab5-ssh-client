@@ -128,30 +128,59 @@ char* storage_get_private_key(const char* identity_file) {
     return text;
 }
 
-// NVS keys are at most 15 characters: the alias's CRC
-static void tmux_key(const char* alias, char key[9]) {
-    snprintf(key, 9, "%08" PRIx32, esp_rom_crc32_le(0, (const uint8_t*)alias, strlen(alias)));
-}
-
-esp_err_t storage_get_tmux_session(const char* alias, char* name, size_t size) {
+static esp_err_t set_string(const char* key, const char* value) {
     nvs_handle_t h;
-    char key[9];
-    tmux_key(alias, key);
-    esp_err_t err = nvs_open("tmux", NVS_READONLY, &h);
+    esp_err_t err = nvs_open("sessions", NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
-    err = nvs_get_str(h, key, name, &size);
+    err = value != NULL ? nvs_set_str(h, key, value) : nvs_erase_key(h, key);
+    if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) err = nvs_commit(h);
     nvs_close(h);
     return err;
 }
 
-void storage_set_tmux_session(const char* alias, const char* name) {
+esp_err_t storage_get_session(int number, char* alias, size_t alias_size, char* tmux, size_t tmux_size) {
     nvs_handle_t h;
-    char key[9];
-    tmux_key(alias, key);
+    char key[4], value[sizeof(((ssh_host*)0)->alias) + 32];
+    size_t size = sizeof value;
+    snprintf(key, sizeof key, "%d", number);
+    esp_err_t err = nvs_open("sessions", NVS_READONLY, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_get_str(h, key, value, &size);
+    nvs_close(h);
+    char* line = err == ESP_OK ? strchr(value, '\n') : NULL;
+    if (line == NULL) return err != ESP_OK ? err : ESP_ERR_INVALID_STATE;
+    *line = 0;
+    snprintf(alias, alias_size, "%s", value);
+    snprintf(tmux, tmux_size, "%s", line + 1);
+    return ESP_OK;
+}
+
+void storage_set_session(int number, const char* alias, const char* tmux) {
+    char key[4], value[sizeof(((ssh_host*)0)->alias) + 32];
+    snprintf(key, sizeof key, "%d", number);
+    snprintf(value, sizeof value, "%s\n%s", alias != NULL ? alias : "", tmux != NULL ? tmux : "");
+    esp_err_t err = set_string(key, alias != NULL ? value : NULL);
+    if (err != ESP_OK) ESP_LOGW(TAG, "session %d: %s", number, esp_err_to_name(err));
+}
+
+// An older firmware kept the last host and a tmux session per host, under the alias's CRC, in NVS "tmux"
+void storage_migrate_sessions(void) {
+    nvs_handle_t h;
+    char last[sizeof(((ssh_host*)0)->alias)] = "", tmux[16] = "", key[9], alias[sizeof last], name[24];
+    size_t size = sizeof last;
+    // Read only, which creates nothing, until there is something to move
+    if (nvs_open("tmux", NVS_READONLY, &h) != ESP_OK) return;
+    esp_err_t found = nvs_get_str(h, "last", last, &size);
+    snprintf(key, sizeof key, "%08" PRIx32, esp_rom_crc32_le(0, (const uint8_t*)last, strlen(last)));
+    size = sizeof tmux;
+    if (found != ESP_OK || nvs_get_str(h, key, tmux, &size) != ESP_OK) tmux[0] = 0;
+    nvs_close(h);
+    if (found != ESP_OK) return;
+    storage_set_last_host(last);
+    if (tmux[0] != 0 && storage_get_session(1, alias, sizeof alias, name, sizeof name) != ESP_OK) storage_set_session(1, last, tmux);
+    ESP_LOGI(TAG, "moved the last host %s%s%s", last, tmux[0] != 0 ? " and its tmux session " : "", tmux);
     if (nvs_open("tmux", NVS_READWRITE, &h) != ESP_OK) return;
-    esp_err_t err = name != NULL ? nvs_set_str(h, key, name) : nvs_erase_key(h, key);
-    if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) err = nvs_commit(h);
-    if (err != ESP_OK) ESP_LOGW(TAG, "tmux session for %s: %s", alias, esp_err_to_name(err));
+    if (nvs_erase_all(h) == ESP_OK) nvs_commit(h);
     nvs_close(h);
 }
 
@@ -180,18 +209,14 @@ void storage_set_off(const char* what, bool off) {
 void storage_get_last_host(char* alias, size_t size) {
     nvs_handle_t h;
     alias[0] = 0;
-    if (nvs_open("tmux", NVS_READONLY, &h) != ESP_OK) return;
+    if (nvs_open("sessions", NVS_READONLY, &h) != ESP_OK) return;
     if (nvs_get_str(h, "last", alias, &size) != ESP_OK) alias[0] = 0;
     nvs_close(h);
 }
 
 void storage_set_last_host(const char* alias) {
-    nvs_handle_t h;
-    if (nvs_open("tmux", NVS_READWRITE, &h) != ESP_OK) return;
-    esp_err_t err = nvs_set_str(h, "last", alias);
-    if (err == ESP_OK) err = nvs_commit(h);
+    esp_err_t err = set_string("last", alias);
     if (err != ESP_OK) ESP_LOGW(TAG, "last host: %s", esp_err_to_name(err));
-    nvs_close(h);
 }
 
 // Indented on the SD card, where people edit it; the text holds Wi-Fi passwords, cleared before it is freed

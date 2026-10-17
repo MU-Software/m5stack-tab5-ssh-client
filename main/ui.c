@@ -406,6 +406,13 @@ static ui_event commit(bool always) {
     return e;
 }
 
+// The chosen item of the panel's list `name`
+static size_t chosen_in(const char* name) {
+    for (size_t i = 0; panel.screen != NULL && i < panel.screen->count; i++)
+        if (panel.screen->nodes[i].kind == LAYOUT_LIST && strcmp(panel.screen->nodes[i].name, name) == 0) return chosen[i];
+    return 0;
+}
+
 // A widget used: by a touch at `column`, or by Enter with column -1
 static ui_event activate(const layout_node* n, int32_t column) {
     const setting* s = n->name != NULL ? settings_find(n->name) : NULL;
@@ -414,7 +421,7 @@ static ui_event activate(const layout_node* n, int32_t column) {
         if (strcmp(n->action, "close") == 0 || (panel.screen != NULL && strcmp(n->action, panel_name) == 0))
             ui_open(NULL);
         else if (!ui_open(n->action))
-            return (ui_event){.kind = UI_ACTION, .name = n->action};
+            return (ui_event){.kind = UI_ACTION, .name = n->action, .index = n->name != NULL ? chosen_in(n->name) : 0};
         return (ui_event){.kind = UI_NONE};
     }
     size_t i = panel.screen != NULL ? (size_t)(n - panel.screen->nodes) : 0;

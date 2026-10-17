@@ -6,10 +6,14 @@
 #include <freertos/FreeRTOS.h>
 
 #include "state.h"
+#include "terminal.h"
 #include "ui.h"
 
-// Shiroko's calls stay on the task that calls these: screen_start, screen_draw, screen_event and screen_resized
+// Shiroko's calls stay on the task that calls these: screen_start, screen_draw, screen_event, screen_resized and
+// screen_show
 esp_err_t screen_start(const global_state* state);
+// The terminal to draw, before the first screen_draw; drawn whole after a change
+void screen_show(terminal* t);
 // Draws what the terminal and the UI changed; touches, and keys while a panel is open, go to the UI
 void screen_draw(void);
 // What the UI asks for: settings to change, actions to take

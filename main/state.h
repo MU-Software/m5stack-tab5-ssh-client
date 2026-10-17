@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <wolfssh/ssh.h>
@@ -21,6 +22,7 @@ typedef struct wifi_network {
 } wifi_network;
 
 typedef struct {
+    const ssh_host* host;
     // Set by the caller, NULL once used
     const char *known_hosts, *private_key, *password;
     // Run with the terminal instead of a shell, if not NULL
@@ -63,13 +65,28 @@ typedef struct {
     bool deleting;
 } wifi_edit;
 
+enum { MAX_SESSIONS = 4 };
+
+typedef enum { SESSION_CONNECTING, SESSION_CONNECTED, SESSION_ASKING, SESSION_STOPPED } session_status;
+
+// An open SSH session as the screens show it
+typedef struct {
+    int number;
+    // NULL while the first chooses one at boot
+    const ssh_host* host;
+    session_status status;
+} session_info;
+
 typedef struct {
     wifi_network* wifi;
     ssh_host* hosts;
+    // The shown session's
     const ssh_host* current_host;
     const char* terminal_type;
     terminal_size terminal_size;
-    ssh_session* session;
+    // The open sessions, numbered from 1 in this order
+    session_info sessions[MAX_SESSIONS];
+    size_t session_count, shown_session;
     // Kept across boots: Wi-Fi or LTE stays off from boot
     bool wifi_off, lte_off;
     log_settings log;

@@ -32,13 +32,20 @@ The ROM loader needs a BOOT reset.
 - Wi-Fi and settings: `.config/tab5-ssh/config.json` on the SD card, else NVS (`tools/config.py write`, ROM loader).
   Schema: `tools/config.schema.json`. The settings screen saves each change there, under the same keys.
 - SSH: the SD card's `.ssh/` as `~/.ssh/`: the non-pattern `Host`s in `config`, `known_hosts`, keys
-  (`id_ed25519`, `id_ecdsa`, `id_rsa`). No key: password prompt. Unknown host: yes/no prompt. With two hosts or more a
-  list opens at boot and connects to the last one after 10 s, unless touched or typed into first.
-- tmux: the session runs in `tmux new-session -s tab5-XXXXXXXX`, its name kept in NVS per `Host`; the next connection
-  attaches to it, or starts another when it is gone. From tmux 3.2 the client declares truecolor, strikethrough,
-  overline, underline styles and colours, and kitty images as Unicode placeholders (`-T`); from tmux 3.3 the session's
-  windows allow passthrough, for kitty images from programs in it. No tmux on the host: a plain shell.
-- Network: Wi-Fi while it reaches the SSH host, else LTE through a Stamp CAT-M (Tab5 TX G6, RX G46), kept connected
+  (`id_ed25519`, `id_ecdsa`, `id_rsa`). No key: password prompt. Unknown host: yes/no prompt. With two hosts or more and
+  no session to restore, a list opens at boot and connects to the last one after 10 s, unless touched or typed into first.
+- tmux: each session runs in its own `tmux new-session -s tab5-MMMMMM-RRRRRR` (the MAC's last three bytes, then random),
+  its name kept in NVS; the next connection attaches to it, or starts another when it is gone. From tmux 3.2 the client
+  declares truecolor, strikethrough, overline, underline styles and colours, and kitty images as Unicode placeholders
+  (`-T`); from tmux 3.3 the session's windows allow passthrough, for kitty images from programs in it. Each connection to
+  a host also kills this Tab5's tmux sessions there that no open session uses, unattached and older than a minute. No
+  tmux on the host: a plain shell.
+- Sessions: up to 4 at once, to one host or several, each with its own terminal, kept connected and read while hidden,
+  and reopened after a restart. The sessions screen (세션 on the bottom bar) lists them, shows the chosen one (전환) or
+  ends it with its tmux session (끊기, not the last one), and opens a new one to a host from its list (hidden while 4 are
+  open). From two on, each also has a tab on the top bar in place of the host, which shows it, or opens the sessions
+  screen when it is shown (`?`: it waits for a password or a host key, asked only once it is shown).
+- Network: Wi-Fi while it reaches the SSH host (the shown session's), else LTE through a Stamp CAT-M (Tab5 TX G6, RX G46), kept connected
   in the background; LTE keeps redialing (waits of 90-960 s) unless no modem answered or spoke since boot. Without a path the
   top right says what LTE does, and Enter dials at once. A dropped or moved session reconnects to its tmux session; a
   closed one on Enter. Control commands: `wifi on|off` (`wifi off save`: also after restarts, until `wifi on` or
@@ -55,8 +62,8 @@ The ROM loader needs a BOOT reset.
 - Logs: on the SD card in `.local/state/tab5-ssh/log/`, a file a day (`YYYY-MM-DD-NN.log`, a new `NN` past `file_kb`), the
   oldest deleted past `keep_mb` or `keep_days`; `log` and `timezone` (POSIX TZ, default `KST-9`) in the configuration.
   The time comes from the RTC, then SNTP (`pool.ntp.org`), which sets the RTC.
-- Screen: a bar above the terminal (host, network, battery, time) and one below (buttons for the hosts, network and
-  settings screens, which cover the terminal); touch, or arrows, Tab, Enter and Esc while one is open. The settings
+- Screen: a bar above the terminal (host or session tabs, network, battery, time) and one below (buttons for the sessions,
+  network and settings screens, which cover the terminal); touch, or arrows, Tab, Enter and Esc while one is open. The settings
   screen restarts the Tab5 too. The network screen lists the saved Wi-Fi networks in the order they are tried; one opens to
   change its password, move it up, join or delete it, 추가 adds one from a scan or typed (연결 saves it once joined).
   `.config/tab5-ssh/ui.json` on the SD card replaces the built-in `main/ui.json`.

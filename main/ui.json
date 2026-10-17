@@ -7,7 +7,11 @@
           "when": "bars.top",
           "style": "bar",
           "columns": [
-            {"text": " {host}"},
+            {"when": "sessions.one", "text": " {host}"},
+            {"when": "session.1", "button": "session 1", "text": " {session.1}"},
+            {"when": "session.2", "button": "session 2", "text": " {session.2}"},
+            {"when": "session.3", "button": "session 3", "text": " {session.3}"},
+            {"when": "session.4", "button": "session 4", "text": " {session.4}"},
             {"width": 22, "align": "right", "style": "alert", "text": "{status}"},
             {"width": 30, "align": "right", "text": "{network}"},
             {"width": 7, "align": "right", "text": "{battery}"},
@@ -20,26 +24,41 @@
           "when": "bars.bottom",
           "style": "bar",
           "columns": [
-            {"button": "hosts", "text": "호스트"},
+            {"button": "sessions", "text": "세션"},
             {"button": "network", "text": "망"},
             {"button": "settings", "text": "설정"}
           ]
         }
       ]
     },
-    "hosts": {
+    "sessions": {
       "style": "panel",
       "rows": [
         {
           "height": 1,
           "columns": [
-            {"style": "title", "text": " 호스트"},
+            {"style": "title", "text": " 세션"},
+            {"width": 10, "when": "sessions.open", "style": "button", "button": "session show", "for": "sessions", "text": "전환"},
+            {"width": 1, "when": "sessions.open", "text": ""},
+            {"width": 10, "when": "sessions.many", "style": "button", "button": "session end", "for": "sessions", "text": "끊기"},
+            {"width": 1, "when": "sessions.many", "text": ""},
             {"width": 10, "style": "button", "button": "close", "text": "닫기"}
           ]
         },
-        {"height": 1, "style": "hint", "text": " ↑↓ 고르기 · Enter 접속 · Esc 닫기"},
+        {"height": 1, "style": "hint", "text": " Tab·↑↓ 이동 · Enter 고르기·접속 · Esc 닫기"},
         {"height": 1, "style": "alert", "text": " {countdown}"},
-        {"list": "hosts", "item": "  {alias:16}{user}@{hostname}:{port:7}{current}", "action": "connect"}
+        {
+          "height": 6,
+          "when": "sessions.open",
+          "rows": [
+            {"height": 1, "style": "section", "text": " 열린 세션 {sessions} · 고른 세션으로 전환 · 끊기는 그 tmux 세션까지 끝냄"},
+            {"height": 4, "list": "sessions", "item": "  {number:3}{alias:16}{user}@{hostname}:{port:7}{status:14}{current}", "action": "session select"},
+            {"height": 1, "text": ""}
+          ]
+        },
+        {"height": 1, "when": "sessions.full", "style": "hint", "text": " 세션 4개가 모두 열려 있음 · 하나를 끊으면 새로 열 수 있음"},
+        {"height": 1, "when": "sessions.room", "style": "section", "text": " 새 세션"},
+        {"when": "sessions.room", "rows": [{"list": "hosts", "item": "  {alias:16}{user}@{hostname}:{port}", "action": "open"}]}
       ]
     },
     "network": {

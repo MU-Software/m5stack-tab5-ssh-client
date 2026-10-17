@@ -70,6 +70,7 @@ static const struct {
     int rssi;
     bool open;
 } visible[] = {{"MU_GL_XE3000", -48, false}, {"KT_GiGA_5G_3F21", -61, false}, {"YGYguest", -70, true}, {"DIRECT-7B-HP M28w", -77, false}};
+static const char* const session_states[] = {"연결 중", "연결됨", "입력 기다림", "끊김 · Enter"};
 
 static shr_status acquire(void* user, shr_surface* out) {
     (void)user;
@@ -118,6 +119,26 @@ static const char* wifi_text(const char* name) {
 static const char* text(void* user, const char* name) {
     (void)user;
     time_t now = time(NULL);
+    static char tab[64];
+    int number;
+    if (sscanf(name, "session.%d", &number) == 1) {
+        for (size_t i = 0; state.session_count > 1 && i < state.session_count; i++)
+            if (state.sessions[i].number == number) {
+                snprintf(tab, sizeof tab, "%s %d %s%s", i == state.shown_session ? "●" : "○", number, state.sessions[i].host->alias,
+                         state.sessions[i].status == SESSION_ASKING ? " ?" : "");
+                return tab;
+            }
+        return NULL;
+    }
+    if (strcmp(name, "sessions.many") == 0) return state.session_count > 1 ? "1" : NULL;
+    if (strcmp(name, "sessions.one") == 0) return state.session_count <= 1 ? "1" : NULL;
+    if (strcmp(name, "sessions.open") == 0) return state.session_count > 0 ? "1" : NULL;
+    if (strcmp(name, "sessions.room") == 0) return state.session_count < MAX_SESSIONS ? "1" : NULL;
+    if (strcmp(name, "sessions.full") == 0) return state.session_count >= MAX_SESSIONS ? "1" : NULL;
+    if (strcmp(name, "sessions") == 0) {
+        snprintf(tab, sizeof tab, "%zu/%d", state.session_count, MAX_SESSIONS);
+        return tab;
+    }
     if (strcmp(name, "host") == 0) return state.current_host->alias;
     if (strcmp(name, "status") == 0) return now / 3 % 2 ? "held 2 s" : NULL;
     if (strcmp(name, "network") == 0) return state.wifi_off ? "LTE" : "Wi-Fi MU_GL_XE3000";
@@ -148,6 +169,7 @@ static const char* text(void* user, const char* name) {
 static size_t count(void* user, const char* name) {
     (void)user;
     if (strcmp(name, "visible") == 0) return sizeof visible / sizeof visible[0];
+    if (strcmp(name, "sessions") == 0) return state.session_count;
     return strcmp(name, "hosts") == 0 ? sizeof hosts / sizeof hosts[0] : strcmp(name, "wifi") == 0 ? sizeof networks / sizeof networks[0] : 0;
 }
 
@@ -164,7 +186,11 @@ static const char* item(void* user, const char* name, size_t index, const char* 
         if (strcmp(field, "saved") == 0) return index == 0 || index == 2 ? "저장됨" : NULL;
         return NULL;
     }
-    const ssh_host* h = &hosts[index];
+    const session_info* s = strcmp(name, "sessions") == 0 ? &state.sessions[index] : NULL;
+    if (s != NULL && strcmp(field, "number") == 0) return snprintf(number, sizeof number, "%d", s->number), number;
+    if (s != NULL && strcmp(field, "status") == 0) return session_states[s->status];
+    if (s != NULL && strcmp(field, "current") == 0) return index == state.shown_session ? "← 지금" : NULL;
+    const ssh_host* h = s != NULL ? s->host : &hosts[index];
     if (strcmp(field, "alias") == 0) return h->alias;
     if (strcmp(field, "hostname") == 0) return h->hostname;
     if (strcmp(field, "user") == 0) return h->user;
@@ -179,7 +205,7 @@ static const char* item(void* user, const char* name, size_t index, const char* 
 
 static size_t chosen(void* user, const char* name) {
     (void)user;
-    return strcmp(name, "hosts") == 0 ? (size_t)(state.current_host - hosts) : 0;
+    return strcmp(name, "hosts") == 0 ? (size_t)(state.current_host - hosts) : strcmp(name, "sessions") == 0 ? state.shown_session : 0;
 }
 
 static void get(void* user, const setting* s, setting_value* out) {
@@ -244,9 +270,25 @@ static void handle(const ui_event* e) {
         snprintf(action, sizeof action, "set %s %s%s", e->name, value, ok ? "" : " (refused)");
     } else if (e->kind == UI_ACTION) {
         snprintf(action, sizeof action, "%s %zu", e->name, e->index);
-        if (strcmp(e->name, "connect") == 0) {
+        if (strcmp(e->name, "open") == 0 && state.session_count < MAX_SESSIONS) {
+            state.sessions[state.session_count] =
+                (session_info){state.sessions[state.session_count - 1].number + 1, &hosts[e->index], SESSION_CONNECTING};
+            state.shown_session = state.session_count++;
             state.current_host = &hosts[e->index];
             ui_open(NULL);
+        }
+        int number = 0;
+        bool tab = sscanf(e->name, "session %d", &number) == 1;
+        for (size_t i = 0; i < state.session_count; i++)
+            if ((strcmp(e->name, "session show") == 0 && i == e->index) || (tab && state.sessions[i].number == number)) {
+                if (tab && i == state.shown_session) ui_open("sessions");
+                state.shown_session = i, state.current_host = state.sessions[i].host;
+            }
+        if (strcmp(e->name, "session show") == 0) ui_open(NULL);
+        if (strcmp(e->name, "session end") == 0 && state.session_count > 1 && e->index < state.session_count) {
+            memmove(&state.sessions[e->index], &state.sessions[e->index + 1], (--state.session_count - e->index) * sizeof state.sessions[0]);
+            if (state.shown_session >= state.session_count || state.shown_session == e->index) state.shown_session = 0;
+            state.current_host = state.sessions[state.shown_session].host;
         }
         if (strcmp(e->name, "wifi on") == 0 || strcmp(e->name, "wifi off") == 0) state.wifi_off = e->name[6] == 'f';
     } else {
@@ -346,6 +388,10 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i + 1 < sizeof hosts / sizeof hosts[0]; i++)
         hosts[i].next = &hosts[i + 1];
     state.hosts = hosts, state.current_host = hosts;
+    // A second session, which waits for a password
+    state.sessions[0] = (session_info){1, &hosts[0], SESSION_CONNECTED};
+    state.sessions[1] = (session_info){2, &hosts[1], SESSION_ASKING};
+    state.session_count = 2;
     SDL_Window* window;
     if (!SDL_Init(SDL_INIT_VIDEO) || !SDL_CreateWindowAndRenderer("tab5-ssh sim", WIDTH, HEIGHT, SDL_WINDOW_RESIZABLE, &window, &renderer) ||
         !SDL_SetRenderLogicalPresentation(renderer, WIDTH, HEIGHT, SDL_LOGICAL_PRESENTATION_LETTERBOX) ||
@@ -376,7 +422,7 @@ int main(int argc, char** argv) {
         return 1;
     reload();
     // As at boot with more than one host
-    ui_open("hosts");
+    ui_open("sessions");
     if (input != NULL) run_input(input);
     layout_area shown_terminal = {0};
     for (bool running = true; running;) {

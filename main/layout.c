@@ -115,6 +115,7 @@ static bool node(parser* p, layout_node* n, const cJSON* item, const layout_styl
             n->action = list->valuestring;
         else if (list != NULL)
             n->name = list->valuestring;
+        if (n->kind == LAYOUT_BUTTON && !string(p, item, "for", &n->name)) return false;
         return true;
     }
     list = field(item, keys[found].key);

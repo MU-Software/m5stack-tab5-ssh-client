@@ -95,6 +95,11 @@ int main(void) {
     check(w != NULL && w[2].kind == LAYOUT_FIELD && strcmp(w[2].name, "timezone") == 0 && w[2].align == LAYOUT_LEFT && !w[2].secret, "a field");
     check(w != NULL && w[3].kind == LAYOUT_FIELD && w[3].secret, "a secret field");
     free(l);
+    l = screen("{\"rows\": [{\"button\": \"session end\", \"for\": \"sessions\", \"text\": \"끊기\"}, {\"button\": \"close\", \"text\": \"닫기\"}]}",
+               10, 2);
+    check(l != NULL && strcmp(l->nodes[1].action, "session end") == 0 && strcmp(l->nodes[1].name, "sessions") == 0 && l->nodes[2].name == NULL,
+          "a button for a list");
+    free(l);
 
     check(refused("{\"columns\": [{\"width\": \"3x\", \"text\": \"a\"}]}", "size 3x"), "a size without a unit refused");
     check(refused("{\"columns\": [{\"width\": \"120%\", \"text\": \"a\"}]}", "size"), "more than 100% refused");

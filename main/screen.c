@@ -60,10 +60,16 @@ static atomic_bool open_asked, panel_open, input_seen;
 static TickType_t fonts_again;
 static bool see_through; // the grid lets z < 0 images show under its default background
 static GhosttyKittyGraphicsPlacementIterator placements;
+// The terminal drawn, and how many times another was shown: the first draw after drawing the cells of the one before
+// draws all of them
+static terminal* shown_terminal;
+static unsigned shows, drawn_shows;
 
-// A kitty image as drawn: its source rect scaled to width x height
+// A kitty image as drawn: its source rect scaled to width x height; its id and generation are those of the terminal
+// shown at `show`
 typedef struct {
     uint32_t id, source_x, source_y, source_width, source_height, width, height;
+    unsigned show;
     uint64_t generation;
     shr_pl_res_image* image;
     bool used;
@@ -379,12 +385,13 @@ static picture* make_picture(GhosttyKittyGraphicsImage image, uint32_t id, const
     GhosttyKittyImageFormat format = GHOSTTY_KITTY_IMAGE_FORMAT_PNG;
     const uint8_t* pixels = NULL;
     ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_GENERATION, &generation);
-    picture key = {id, r->source_x, r->source_y, r->source_width, r->source_height, r->pixel_width, r->pixel_height, generation, NULL, true};
+    picture key = {id, r->source_x, r->source_y, r->source_width, r->source_height, r->pixel_width, r->pixel_height, shows, generation, NULL, true};
     picture* free_slot = NULL;
     for (size_t i = 0; i < sizeof made / sizeof made[0]; i++) {
         picture* p = &made[i];
         if (p->image != NULL && p->id == id && p->generation == generation && p->source_x == key.source_x && p->source_y == key.source_y &&
-            p->source_width == key.source_width && p->source_height == key.source_height && p->width == key.width && p->height == key.height) {
+            p->source_width == key.source_width && p->source_height == key.source_height && p->width == key.width && p->height == key.height &&
+            p->show == shows) {
             p->used = true;
             return p;
         }
@@ -836,7 +843,7 @@ static void draw_ui(void) {
     layout_area a = terminal_area();
     if (a.columns == columns && a.rows == rows_count && a.column * SHR_CELL_WIDTH == origin_x && a.row * SHR_CELL_HEIGHT == origin_y) return;
     place_terminal();
-    terminal_resize(&size);
+    terminal_resize(shown_terminal, &size);
     forget_guesses(false);
 }
 
@@ -868,6 +875,11 @@ bool screen_input(void) {
     return atomic_exchange(&input_seen, false);
 }
 
+void screen_show(terminal* t) {
+    shown_terminal = t;
+    shows++;
+}
+
 void screen_draw(void) {
     // A font that failed to load is tried again a second later, not only after Shiroko's three quick retries
     if (fonts_again != 0 && (int32_t)(xTaskGetTickCount() - fonts_again) >= 0) {
@@ -875,7 +887,13 @@ void screen_draw(void) {
         shr_asset_ready(context);
     }
     draw_ui();
-    GhosttyRenderState render = terminal_update(find_pictures);
+    bool whole = drawn_shows != shows;
+    if (whole) {
+        drawn_shows = shows, shown_count = -1;
+        forget_guesses(false);
+        xStreamBufferReset(typed);
+    }
+    GhosttyRenderState render = terminal_update(shown_terminal, find_pictures);
     GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
     GhosttyRenderStateCursor now = GHOSTTY_INIT_SIZED(GhosttyRenderStateCursor);
     ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors);
@@ -884,10 +902,11 @@ void screen_draw(void) {
     GhosttyRenderStateDirty dirty = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
     ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty);
     ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_ROW_MOVES, &moves);
-    for (int32_t i = 0; i < moves.count; i++)
+    for (int32_t i = 0; !whole && i < moves.count; i++)
         shr_pl_lyr_tilemap_scroll(grid, moves.moves[i].top, moves.moves[i].bottom, moves.moves[i].n, (shr_text_style){0});
     ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, (void*)&rows);
-    for (uint16_t y; ghostty_render_state_row_iterator_next_dirty(rows, &y);) {
+    // y counts the rows only when all are drawn
+    for (uint16_t y = 0; whole ? ghostty_render_state_row_iterator_next(rows) : ghostty_render_state_row_iterator_next_dirty(rows, &y); y++) {
         ghostty_render_state_row_get(rows, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, (void*)&cells);
         draw_row(y, &colors);
     }
@@ -895,7 +914,7 @@ void screen_draw(void) {
     check_guesses(render, &now, &colors);
     if (draw_guesses(&colors)) now.viewport_x = (uint16_t)(guess.col + (int32_t)guess.count), now.wide_tail = false;
     // The cell under the cursor may have changed with any row
-    if (dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE || now.visible != shown_cursor.visible ||
+    if (whole || dirty != GHOSTTY_RENDER_STATE_DIRTY_FALSE || now.visible != shown_cursor.visible ||
         now.viewport_has_value != shown_cursor.viewport_has_value || now.viewport_x != shown_cursor.viewport_x ||
         now.viewport_y != shown_cursor.viewport_y || now.wide_tail != shown_cursor.wide_tail || now.visual_style != shown_cursor.visual_style)
         draw_cursor(render, &now, &colors);
