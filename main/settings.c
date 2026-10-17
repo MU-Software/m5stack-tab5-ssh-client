@@ -11,6 +11,8 @@ static const char* const levels[] = {"info", "warn", NULL};
 static const char *const batteries[] = {"전압", "퍼센트", NULL}, *const battery_values[] = {"volts", "percent", NULL};
 
 static const setting table[] = {
+    {"network.wifi.enabled", SETTING_TOGGLE, .offset = FIELD(wifi_enabled)},
+    {"network.lte.enabled", SETTING_TOGGLE, .offset = FIELD(lte_enabled)},
     {"echo.enabled", SETTING_TOGGLE, .offset = FIELD(echo.enabled)},
     {"echo.delay_ms", SETTING_NUMBER, 0, 1000, 10, " ms", .offset = FIELD(echo.delay_ms)},
     {"bars.top", SETTING_TOGGLE, .offset = FIELD(bars.top)},

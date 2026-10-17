@@ -213,7 +213,7 @@ static void scan(void) {
 static void send_list(void) {
     uint8_t message[3 + C6_NETWORKS * (2 + sizeof state->wifi->ssid + sizeof state->wifi->password)];
     size_t size = 3;
-    message[0] = P4_WIFI_LIST, message[1] = !state->wifi_off, message[2] = 0;
+    message[0] = P4_WIFI_LIST, message[1] = state->wifi_enabled, message[2] = 0;
     for (const wifi_network* w = state->wifi; w != NULL && message[2] < C6_NETWORKS; w = w->next) {
         if (!w->ssid[0]) continue;
         message[size++] = (uint8_t)strlen(w->ssid);
@@ -361,8 +361,8 @@ static void on_event(void* arg, esp_event_base_t base, int32_t id, void* data) {
 
 esp_err_t net_start(const global_state* global) {
     state = global;
-    wifi_enabled = !global->wifi_off;
-    lte_enabled = !global->lte_off;
+    wifi_enabled = global->wifi_enabled;
+    lte_enabled = global->lte_enabled;
     paths = xEventGroupCreate();
     lock = xSemaphoreCreateMutex();
     suspected = xSemaphoreCreateBinary();

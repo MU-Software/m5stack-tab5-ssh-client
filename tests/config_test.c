@@ -11,6 +11,9 @@
 #define KEY_A "AAAAC3NzaC1lZDI1NTE5AAAAICbE1A0PJ7viNG9J0Nzl0LQlsLg2rPaKlcBX3JMMIsVz"
 #define KEY_B "AAAAC3NzaC1lZDI1NTE5AAAAIPUdXA3sKedRzejH2g/944l1NqLPjLvpkL2p+s3Eu4t5"
 
+// A configuration with this Wi-Fi list
+#define APS(list) "{\"network\": {\"wifi\": {\"access_points\": " list "}}}"
+
 static int failures;
 
 static void check(int ok, const char* what) {
@@ -42,7 +45,8 @@ static const char* set_wifi(const char* json, const char* ssid, const char* new_
     out[0] = 0;
     if (config_set_wifi(config, ssid, new_ssid != NULL ? &network : NULL, move) != 0) snprintf(out, sizeof out, "!");
     const cJSON* item;
-    cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(config, "wifi")) {
+    const cJSON* list = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(config, "network"), "wifi");
+    cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(list, "access_points")) {
         const cJSON* p = cJSON_GetObjectItemCaseSensitive(item, "password");
         snprintf(out + strlen(out), sizeof out - strlen(out), "%s%s%s ", cJSON_GetObjectItemCaseSensitive(item, "ssid")->valuestring,
                  p != NULL ? "=" : "", p != NULL ? p->valuestring : "");
@@ -81,21 +85,24 @@ static const ssh_host* find(const ssh_host* hosts, const char* alias) {
 
 int main(void) {
     wifi_network* w;
-    check(wifi("{\"wifi\": [{\"ssid\": \"home\", \"password\": \"secret\"}, {\"ssid\": \"cafe\"}]}", &w) == 0 && count(w) == 2 &&
+    check(wifi(APS("[{\"ssid\": \"home\", \"password\": \"secret\"}, {\"ssid\": \"cafe\"}]"), &w) == 0 && count(w) == 2 &&
               strcmp(w->ssid, "home") == 0 && strcmp(w->password, "secret") == 0 && strcmp(w->next->ssid, "cafe") == 0 && w->next->password[0] == 0,
           "wifi: networks in order, with and without a password");
     free(w);
     check(wifi("{}", &w) == 0 && w == NULL, "no wifi key, no networks");
-    check(wifi("{\"wifi\": [{\"ssid\": \"0123456789abcdef0123456789abcdef\"}]}", &w) == 0 && count(w) == 1, "32-character SSID");
+    check(wifi(APS("[{\"ssid\": \"0123456789abcdef0123456789abcdef\"}]"), &w) == 0 && count(w) == 1, "32-character SSID");
     free(w);
-    check(wifi("{\"wifi\": [{\"ssid\": \"0123456789abcdef0123456789abcdef0\"}]}", &w) != 0 && w == NULL, "33-character SSID refused");
-    check(wifi("{\"wifi\": [{\"ssid\": \"a\"}, {}]}", &w) != 0 && w == NULL, "network without ssid refuses the whole list");
-    check(wifi("{\"wifi\": [{\"ssid\": 1}]}", &w) != 0, "ssid as a number refused");
-    check(wifi("{\"wifi\": []}", &w) == 0 && w == NULL, "empty list, no networks");
-    check(wifi("{\"wifi\": {}}", &w) != 0, "wifi as an object refused");
+    check(wifi(APS("[{\"ssid\": \"0123456789abcdef0123456789abcdef0\"}]"), &w) != 0 && w == NULL, "33-character SSID refused");
+    check(wifi(APS("[{\"ssid\": \"a\"}, {}]"), &w) != 0 && w == NULL, "network without ssid refuses the whole list");
+    check(wifi(APS("[{\"ssid\": 1}]"), &w) != 0, "ssid as a number refused");
+    check(wifi(APS("[]"), &w) == 0 && w == NULL, "empty list, no networks");
+    check(wifi(APS("{}"), &w) != 0, "access_points as an object refused");
+    check(wifi("{\"network\": {\"lte\": {\"enabled\": false}}}", &w) == 0 && w == NULL, "no wifi object, no networks");
+    check(wifi("{\"network\": []}", &w) != 0 && wifi("{\"network\": {\"wifi\": 1}}", &w) != 0, "network or wifi not an object refused");
+    check(wifi("{\"wifi\": [{\"ssid\": \"old\"}]}", &w) == 0 && w == NULL, "the old top-level list is not read");
     check(wifi("{\"host\": ", &w) != 0 && wifi("[]", &w) != 0, "malformed or non-object JSON refused");
 
-    static const char three[] = "{\"wifi\": [{\"ssid\": \"a\", \"password\": \"aaaaaaaa\"}, {\"ssid\": \"b\"}, {\"ssid\": \"c\"}]}";
+    static const char three[] = APS("[{\"ssid\": \"a\", \"password\": \"aaaaaaaa\"}, {\"ssid\": \"b\"}, {\"ssid\": \"c\"}]");
     check(strcmp(set_wifi(three, "b", "b", "bbbbbbbb", 0), "a=aaaaaaaa b=bbbbbbbb c ") == 0, "set_wifi: a new password in place");
     check(strcmp(set_wifi(three, "a", "a", "", 0), "a b c ") == 0, "set_wifi: an empty password leaves none");
     check(strcmp(set_wifi(three, "d", "d", "", 0), "d a=aaaaaaaa b c ") == 0, "set_wifi: a new network first");
@@ -108,10 +115,13 @@ int main(void) {
     check(strcmp(set_wifi(three, "c", "c", "", -2147483647 - 1), "c a=aaaaaaaa b ") == 0, "set_wifi: moved first");
     check(strcmp(set_wifi(three, "b", "e", "", 0), "a=aaaaaaaa e c ") == 0, "set_wifi: renamed in place");
     check(strcmp(set_wifi(three, "c", "a", "", 0), "b a ") == 0, "set_wifi: renamed onto another, which goes");
-    check(strcmp(set_wifi("{\"wifi\": [{\"ssid\": \"a\"}, {\"ssid\": \"b\"}, {\"ssid\": \"a\"}]}", "a", "a", "", 0), "a b ") == 0,
+    check(strcmp(set_wifi(APS("[{\"ssid\": \"a\"}, {\"ssid\": \"b\"}, {\"ssid\": \"a\"}]"), "a", "a", "", 0), "a b ") == 0,
           "set_wifi: duplicates go");
-    check(strcmp(set_wifi("{}", "a", "a", "", 0), "a ") == 0 && strcmp(set_wifi("{\"wifi\": 1}", "a", "a", "", 0), "a ") == 0,
+    check(strcmp(set_wifi("{}", "a", "a", "", 0), "a ") == 0 && strcmp(set_wifi(APS("1"), "a", "a", "", 0), "a ") == 0,
           "set_wifi: a list made when absent or not a list");
+    check(strcmp(set_wifi("{\"network\": {\"wifi\": 1, \"lte\": {}}}", "a", "a", "", 0), "a ") == 0 &&
+              strcmp(set_wifi("{\"network\": 1}", "a", "a", "", 0), "a ") == 0,
+          "set_wifi: network and wifi objects made in place of anything else");
     check(strcmp(set_wifi("[]", "a", "a", "", 0), "!") == 0, "set_wifi: refused for a configuration that is not an object");
     check(valid("a", "") && valid("a", "12345678") && valid("0123456789abcdef0123456789abcdef", "") &&
               valid("a", "012345678901234567890123456789012345678901234567890123456789012") &&

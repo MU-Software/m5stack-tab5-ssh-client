@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "In NVS (tools/config.py write) or on the SD card as .config/tab5-ssh/config.json, which wins. Where to connect comes from the SD card's .ssh/config.",
+  "description": "The SD card's .config/tab5-ssh/config.json; without it the Tab5 runs on the defaults. Where to connect comes from the SD card's .ssh/config.",
   "properties": {
     "$schema": {
       "type": "string"
@@ -87,6 +87,59 @@
       },
       "type": "object"
     },
+    "network": {
+      "additionalProperties": false,
+      "properties": {
+        "lte": {
+          "additionalProperties": false,
+          "description": "Through a Stamp CAT-M",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "description": "On from boot; lte on|off save",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "wifi": {
+          "additionalProperties": false,
+          "properties": {
+            "access_points": {
+              "description": "Tried in this order; only networks a scan sees",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "password": {
+                    "description": "Absent for an open network",
+                    "maxLength": 64,
+                    "type": "string"
+                  },
+                  "ssid": {
+                    "maxLength": 32,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "ssid"
+                ],
+                "type": "object"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "enabled": {
+              "default": true,
+              "description": "On from boot; wifi on|off save",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
     "remote": {
       "additionalProperties": false,
       "description": "The control commands over SSH on port 22, for the keys in the SD card's .ssh/authorized_keys",
@@ -134,30 +187,6 @@
         }
       },
       "type": "object"
-    },
-    "wifi": {
-      "description": "Tried in this order; only networks a scan sees",
-      "items": {
-        "additionalProperties": false,
-        "properties": {
-          "password": {
-            "description": "Absent for an open network",
-            "maxLength": 64,
-            "type": "string"
-          },
-          "ssid": {
-            "maxLength": 32,
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "ssid"
-        ],
-        "type": "object"
-      },
-      "minItems": 1,
-      "type": "array"
     }
   },
   "title": "Tab5 SSH client configuration",

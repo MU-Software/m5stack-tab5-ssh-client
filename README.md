@@ -44,8 +44,11 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
 
 ## Configuration
 
-- Wi-Fi and settings: `.config/tab5-ssh/config.json` on the SD card, else NVS (`tools/config.py write`, ROM loader).
-  Schema: `tools/config.schema.json`. The settings screen saves each change there, under the same keys.
+- Wi-Fi and settings: `.config/tab5-ssh/config.json` on the SD card, nowhere else; without the card or the file the Tab5
+  runs on the defaults and says so in the log and on the settings screen. Schema: `tools/config.schema.json`
+  (`tools/config.py check FILE`); Wi-Fi under `network.wifi.access_points`, with `network.wifi.enabled` and
+  `network.lte.enabled`. The settings screen saves each change there, under the same keys, making the file when there is
+  none (never over one that is not JSON).
 - SSH: the SD card's `.ssh/` as `~/.ssh/`: the non-pattern `Host`s in `config`, `known_hosts`, keys
   (`id_ed25519`, `id_ecdsa`, `id_rsa`). No key: password prompt. Unknown host: yes/no prompt. With two hosts or more and
   no session to restore, a list opens at boot and connects to the last one after 10 s, unless touched or typed into first.
@@ -63,9 +66,9 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
 - Network: Wi-Fi while it reaches the SSH host (the shown session's), else LTE through a Stamp CAT-M (Tab5 TX G6, RX G46), kept connected
   in the background; LTE keeps redialing (waits of 90-960 s) unless no modem answered or spoke since boot. Without a path the
   top right says what LTE does, and Enter dials at once. A dropped or moved session reconnects to its tmux session; a
-  closed one on Enter. Control commands: `wifi on|off` (`wifi off save`: also after restarts, until `wifi on` or
-  `wifi connect`), `wifi connect SSID [PASSWORD]` (saved to the configuration in use), `wifi forget SSID`,
-  `lte on|off|status` (`lte off save` as `wifi off save`), `net status`, `net check HOST PORT`, `settings`,
+  closed one on Enter. Control commands: `wifi on|off` (for this boot; with `save` also `network.wifi.enabled`, as the
+  network screen's buttons and `wifi connect` do), `wifi connect SSID [PASSWORD]` (saved to the configuration),
+  `wifi forget SSID`, `lte on|off [save]|status`, `net status`, `net check HOST PORT`, `settings`,
   `set NAME VALUE` (as in the configuration; text also without quotes).
 - Modem: before each dial the firmware reads the registration, cell, signal, PDP context, SIM (ICCID masked) and back-off
   state; once a boot, when no back-off is in sight, also its settings, keeping QUALCOMM URCs and the battery check on and

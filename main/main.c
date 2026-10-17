@@ -48,6 +48,8 @@ static global_state state = {
     .echo = {true, 50},
     .bars = {true, true},
     .touch = {48, true},
+    .wifi_enabled = true,
+    .lte_enabled = true,
 };
 
 // Bumped by each change of the terminal's size; the host chosen on the screen at boot, NULL when none waits
@@ -412,13 +414,18 @@ static void refused(const char* name) {
 
 // Before the screen and the network start: the bars, the networks and the host to check them against
 static void load_config(void) {
-    static const char* const sources[] = {"nothing", "the SD card", "NVS"};
-    config_source source;
-    cJSON* config = storage_get_device_config(&source);
-    if (config_wifi_networks(config, &state.wifi) != 0)
-        ESP_LOGE(TAG, "the configuration from %s is invalid", sources[source]);
+    static const char* const problems[] = {
+        [CONFIG_MISSING] = "no " SD "/.config/tab5-ssh/config.json",
+        [CONFIG_NO_CARD] = "no SD card",
+        [CONFIG_INVALID] = SD "/.config/tab5-ssh/config.json is not JSON",
+    };
+    cJSON* config = storage_get_device_config(&state.config);
+    if (state.config != CONFIG_LOADED)
+        ESP_LOGW(TAG, "%s: the defaults", problems[state.config]);
+    else if (config_wifi_networks(config, &state.wifi) != 0)
+        ESP_LOGE(TAG, "the configuration's Wi-Fi list is invalid");
     else
-        ESP_LOGI(TAG, "configuration from %s", sources[source]);
+        ESP_LOGI(TAG, "configuration from the SD card");
     settings_load(&state, config, refused);
     cJSON_Delete(config);
     clock_timezone(state.timezone);
@@ -427,8 +434,13 @@ static void load_config(void) {
     state.hosts = text != NULL ? config_ssh_hosts(text) : NULL;
     free(text);
     state.current_host = state.hosts;
-    state.wifi_off = storage_get_off("wifi");
-    state.lte_off = storage_get_off("lte");
+}
+
+// Before a join, which turns Wi-Fi on, as wifi on save does
+static void keep_wifi_on(void) {
+    if (state.wifi_enabled) return;
+    state.wifi_enabled = true;
+    if (storage_set_config("network.wifi.enabled", cJSON_CreateTrue()) != 0) ESP_LOGW(TAG, "network.wifi.enabled not saved");
 }
 
 // wifi connect SSID [PASSWORD], "SSID" when it has spaces; saved once joined
@@ -447,8 +459,7 @@ static void wifi_connect_command(const char* arguments) {
     while (*password == ' ')
         password++;
     strlcpy(network->password, password, sizeof network->password);
-    // It turns Wi-Fi on, as wifi on does
-    if (state.wifi_off) storage_set_off("wifi", state.wifi_off = false);
+    keep_wifi_on();
     esp_err_t err = net_join(network);
     ESP_LOGI(TAG, "wifi connect %s: %s", network->ssid, esp_err_to_name(err));
     if (err == ESP_OK && storage_add_wifi(network->ssid, network->password) != 0) ESP_LOGW(TAG, "%s not saved", network->ssid);
@@ -568,8 +579,7 @@ static bool wifi_screen(const ui_event* e) {
     } else if (strcmp(action, "join") == 0 && atomic_load(&join.step) != JOIN_IDLE) {
         w->result = "다른 연결을 기다리는 중";
     } else if (strcmp(action, "join") == 0) {
-        // It turns Wi-Fi on, as wifi connect does
-        if (state.wifi_off) storage_set_off("wifi", state.wifi_off = false);
+        keep_wifi_on();
         memcpy(join.saved, w->saved, sizeof join.saved);
         join.network = w->network;
         atomic_store(&join.step, JOIN_RUNNING);
@@ -603,6 +613,8 @@ static void change(const setting* s, const setting_value* value) {
     bool saved = storage_set_config(s->name, settings_json(&state, s)) == 0;
     ESP_LOGI(TAG, "%s %s%s", s->name, text, saved ? "" : ", not saved");
     if (strncmp(s->name, "log.", 4) == 0) logs_configure(&state.log);
+    if (strcmp(s->name, "network.wifi.enabled") == 0) net_wifi_changed(), net_command(state.wifi_enabled ? "wifi on" : "wifi off");
+    if (strcmp(s->name, "network.lte.enabled") == 0) net_command(state.lte_enabled ? "lte on" : "lte off");
     if (strcmp(s->name, "timezone") == 0) clock_timezone(state.timezone);
 }
 
@@ -689,17 +701,14 @@ static bool command(const char* line) {
         power_report();
         return true;
     }
-    // wifi off and lte off alone last the boot
-    if (strcmp(line, "wifi off save") == 0 || strcmp(line, "wifi on") == 0) {
-        state.wifi_off = strcmp(line, "wifi on") != 0;
-        storage_set_off("wifi", state.wifi_off);
-        net_wifi_changed();
-        return net_command(state.wifi_off ? "wifi off" : "wifi on");
+    // Without save they last the boot
+    if (strcmp(line, "wifi on save") == 0 || strcmp(line, "wifi off save") == 0) {
+        change(settings_find("network.wifi.enabled"), &(setting_value){.number = line[6] == 'n'});
+        return true;
     }
-    if (strcmp(line, "lte off save") == 0 || strcmp(line, "lte on") == 0) {
-        state.lte_off = strcmp(line, "lte on") != 0;
-        storage_set_off("lte", state.lte_off);
-        return net_command(state.lte_off ? "lte off" : "lte on");
+    if (strcmp(line, "lte on save") == 0 || strcmp(line, "lte off save") == 0) {
+        change(settings_find("network.lte.enabled"), &(setting_value){.number = line[5] == 'n'});
+        return true;
     }
     if (strncmp(line, "wifi forget ", 12) == 0) {
         // Emptied, not unlinked, for the same reason

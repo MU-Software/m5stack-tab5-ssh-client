@@ -65,6 +65,9 @@ typedef struct {
     bool deleting;
 } wifi_edit;
 
+// The SD card's .config/tab5-ssh/config.json; without it, the defaults
+typedef enum { CONFIG_LOADED, CONFIG_MISSING, CONFIG_NO_CARD, CONFIG_INVALID } config_state;
+
 enum { MAX_SESSIONS = 4 };
 
 typedef enum { SESSION_CONNECTING, SESSION_CONNECTED, SESSION_ASKING, SESSION_STOPPED } session_status;
@@ -87,8 +90,10 @@ typedef struct {
     // The open sessions, numbered from 1 in this order
     session_info sessions[MAX_SESSIONS];
     size_t session_count, shown_session;
-    // Kept across boots: Wi-Fi or LTE stays off from boot
-    bool wifi_off, lte_off;
+    // network.wifi.enabled and network.lte.enabled: on from boot
+    bool wifi_enabled, lte_enabled;
+    // Where the settings came from
+    config_state config;
     log_settings log;
     // POSIX TZ
     char timezone[48];

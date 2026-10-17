@@ -149,8 +149,8 @@ static uint8_t* receive(sshd_session* s, size_t size, uint32_t crc, esp_err_t* e
 
 // The text holds Wi-Fi passwords: never logged, cleared before it is freed
 static int print_config(sshd_session* s) {
-    config_source source;
-    cJSON* config = storage_get_device_config(&source);
+    config_state read;
+    cJSON* config = storage_get_device_config(&read);
     char* text = cJSON_Print(config);
     cJSON_Delete(config);
     if (text == NULL) return 1;
@@ -158,7 +158,7 @@ static int print_config(sshd_session* s) {
     say(s, "\n");
     wc_ForceZero(text, strlen(text));
     free(text);
-    ESP_LOGI(TAG, "configuration read from %s", source == CONFIG_SD ? "the SD card" : "NVS");
+    ESP_LOGI(TAG, "configuration %s", read == CONFIG_LOADED ? "read from the SD card" : "not read: none on the SD card, or not JSON");
     return 0;
 }
 

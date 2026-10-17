@@ -87,7 +87,9 @@ int main(void) {
                           .timezone = "KST-9",
                           .echo = {true, 50},
                           .bars = {true, true},
-                          .touch = {48, true}};
+                          .touch = {48, true},
+                          .wifi_enabled = true,
+                          .lte_enabled = true};
     setting_value v;
     check(settings_find("echo.delay_ms") != NULL && settings_find("nothing") == NULL, "found by name");
     settings_get(&state, settings_find("echo.delay_ms"), &v);
@@ -128,6 +130,10 @@ int main(void) {
               !loaded.log.enabled && loaded.log.file_kb == 256 && loaded.log.quiet_sessions && strcmp(loaded.timezone, "UTC0") == 0 &&
               loaded.echo.delay_ms == 200 && loaded.battery == 1,
           "settings read by their names, choices by their configuration values");
+    check(*load(&loaded, "{\"network\": {\"wifi\": {\"enabled\": false, \"access_points\": []}, \"lte\": {\"enabled\": false}}}") == 0 &&
+              !loaded.wifi_enabled && !loaded.lte_enabled,
+          "network.wifi.enabled and network.lte.enabled, two levels down");
+    loaded.wifi_enabled = loaded.lte_enabled = true;
     check(strcmp(load(&loaded, "{\"log\": {\"file_kb\": 8, \"keep_days\": 1.5, \"keep_mb\": 4}, \"bars\": {\"battery\": \"%\"}}"),
                  "bars.battery log.file_kb log.keep_days ") == 0 &&
               loaded.log.file_kb == 256 && loaded.log.keep_mb == 4,
@@ -137,7 +143,7 @@ int main(void) {
               !loaded.bars.top && loaded.bars.bottom,
           "a list for an object, a number for text and the last bar refused");
 
-    loaded.bars.top = true;
+    loaded.bars.top = true, loaded.lte_enabled = false;
     char* schema_text = read_text("tools/config.schema.json");
     cJSON* schema = cJSON_Parse(schema_text);
     cJSON* config = cJSON_CreateObject();
@@ -147,13 +153,14 @@ int main(void) {
         if (!schema_matches(schema, s)) printf("     tools/config.schema.json: %s differs\n", s->name), mismatched++;
         char path[64];
         snprintf(path, sizeof path, "%s", s->name);
-        char* dot = strchr(path, '.');
+        char *key = path, *dot;
         cJSON* parent = config;
-        if (dot != NULL) {
+        for (; (dot = strchr(key, '.')) != NULL; key = dot + 1) {
             *dot = 0;
-            if ((parent = cJSON_GetObjectItemCaseSensitive(config, path)) == NULL) parent = cJSON_AddObjectToObject(config, path);
+            cJSON* child = cJSON_GetObjectItemCaseSensitive(parent, key);
+            parent = child != NULL ? child : cJSON_AddObjectToObject(parent, key);
         }
-        cJSON_AddItemToObject(parent, dot != NULL ? dot + 1 : path, settings_json(&loaded, s));
+        cJSON_AddItemToObject(parent, key, settings_json(&loaded, s));
     }
     check(schema != NULL && mismatched == 0, "tools/config.schema.json: each setting with its type, range or choices");
     global_state again = state;

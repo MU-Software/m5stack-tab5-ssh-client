@@ -10,7 +10,7 @@
 
 typedef enum { HOST_UNKNOWN, HOST_KNOWN, HOST_CHANGED } host_state;
 
-// One allocation: free(*wifi)
+// The configuration's network.wifi.access_points, one allocation: free(*wifi)
 int config_wifi_networks(const cJSON* config, wifi_network** wifi);
 // The configuration's Wi-Fi list with network ssid replaced by network (NULL removes it) where it was, first when it was not
 // there, then moved by `move` places (negative: nearer the front); other networks named as network go

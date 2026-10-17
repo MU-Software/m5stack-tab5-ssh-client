@@ -31,6 +31,8 @@ static global_state state = {
     .timezone = "KST-9",
     .echo = {true, 50},
     .bars = {true, true},
+    .wifi_enabled = true,
+    .lte_enabled = true,
 };
 static ssh_host hosts[] = {
     {"workbench", "workbench.lan", "tab5", "", 22, NULL},
@@ -142,10 +144,10 @@ static const char* text(void* user, const char* name) {
     }
     if (strcmp(name, "host") == 0) return state.current_host->alias;
     if (strcmp(name, "status") == 0) return now / 3 % 2 ? "held 2 s" : NULL;
-    if (strcmp(name, "network") == 0) return state.wifi_off ? "LTE" : "Wi-Fi MU_GL_XE3000";
-    if (strcmp(name, "path") == 0) return state.wifi_off ? "LTE (ppp0 10.170.3.41)" : "Wi-Fi (10.1.0.23)";
-    if (strcmp(name, "wifi.state") == 0) return state.wifi_off ? "꺼짐 (저장)" : "MU_GL_XE3000 연결됨";
-    if (strcmp(name, "wifi.detail") == 0) return state.wifi_off ? "" : "10.1.0.23 · -58 dBm · 5 GHz";
+    if (strcmp(name, "network") == 0) return !state.wifi_enabled ? "LTE" : "Wi-Fi MU_GL_XE3000";
+    if (strcmp(name, "path") == 0) return !state.wifi_enabled ? "LTE (ppp0 10.170.3.41)" : "Wi-Fi (10.1.0.23)";
+    if (strcmp(name, "wifi.state") == 0) return !state.wifi_enabled ? "꺼짐 (저장)" : "MU_GL_XE3000 연결됨";
+    if (strcmp(name, "wifi.detail") == 0) return !state.wifi_enabled ? "" : "10.1.0.23 · -58 dBm · 5 GHz";
     if (strcmp(name, "lte.state") == 0) {
         static const char* const lte[] = {"연결됨", "미등록 · 다음 시도 73 s", "다이얼 중"};
         return lte[now / 3 % 3];
@@ -291,7 +293,7 @@ static void handle(const ui_event* e) {
             if (state.shown_session >= state.session_count || state.shown_session == e->index) state.shown_session = 0;
             state.current_host = state.sessions[state.shown_session].host;
         }
-        if (strcmp(e->name, "wifi on") == 0 || strcmp(e->name, "wifi off") == 0) state.wifi_off = e->name[6] == 'f';
+        if (strcmp(e->name, "wifi on save") == 0 || strcmp(e->name, "wifi off save") == 0) state.wifi_enabled = e->name[6] == 'n';
     } else {
         return;
     }

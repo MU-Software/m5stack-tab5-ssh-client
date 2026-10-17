@@ -9,7 +9,7 @@ DEVICE  = uv run python $(CURDIR)/tools/device.py
 SHIROKO = build/shiroko-host
 GHOSTTY = build/ghostty
 
-.PHONY: help build reconfigure menuconfig size clean ide check test test-linux flash monitor erase-flash erase-config c6-update sd-on sd-off shiroko-host ghostty sim
+.PHONY: help build reconfigure menuconfig size clean ide check test test-linux flash monitor erase-flash c6-update sd-on sd-off shiroko-host ghostty sim
 
 help:                ## List the targets
 	@grep -hE '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -72,9 +72,6 @@ flash: build         ## Build and install: an OTA update over USB, or esptool wh
 
 erase-flash:         ## Erase the whole flash
 	$(DEVICE) esptool erase-flash
-
-erase-config:        ## Erase the configuration in NVS (Wi-Fi networks)
-	uv run python tools/config.py erase
 
 sd-on:               ## Hand the SD card to this computer as USB mass storage (the terminal cannot use it meanwhile)
 	$(DEVICE) send "sd on"

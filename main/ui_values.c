@@ -166,7 +166,7 @@ static const char* value(void* user, const char* name) {
         return text;
     }
     if (strcmp(name, "wifi.state") == 0) {
-        if (!net.wifi_on) return state->wifi_off ? "꺼짐 (재시작 후에도)" : "꺼짐";
+        if (!net.wifi_on) return !state->wifi_enabled ? "꺼짐 (재시작 후에도)" : "꺼짐";
         if (!net.wifi_joined) return "찾는 중";
         snprintf(text, sizeof text, "%s %s", net.ssid, net.wifi_reaches ? "연결됨" : "연결됨, 호스트 확인 중");
         return text;
@@ -177,12 +177,21 @@ static const char* value(void* user, const char* name) {
         return text;
     }
     if (strcmp(name, "lte.state") == 0) {
-        if (!net.lte_on) return state->lte_off ? "꺼짐 (재시작 후에도)" : "꺼짐";
+        if (!net.lte_on) return !state->lte_enabled ? "꺼짐 (재시작 후에도)" : "꺼짐";
         return lte_states[net.lte];
     }
     if (strcmp(name, "lte.detail") == 0) return net.lte_address[0] != 0 ? net.lte_address : NULL;
     if (strncmp(name, "modem.", 6) == 0) return modem_shown(name + 6);
     if (strncmp(name, "wifi.", 5) == 0) return wifi_value(name + 5);
+    if (strcmp(name, "config") == 0) {
+        static const char* const problems[] = {
+            [CONFIG_LOADED] = NULL,
+            [CONFIG_MISSING] = "SD 카드에 .config/tab5-ssh/config.json 없음 · 기본값으로 실행, 바꾸면 만듦",
+            [CONFIG_NO_CARD] = "SD 카드 없음 · 기본값으로 실행, 바꾼 설정은 저장 안 됨",
+            [CONFIG_INVALID] = "config.json이 JSON이 아님 · 기본값으로 실행, 고칠 때까지 저장 안 됨",
+        };
+        return problems[state->config];
+    }
     if (strcmp(name, "countdown") == 0) {
         int64_t left = state->host_deadline_us - esp_timer_get_time();
         if (state->host_deadline_us == 0 || left < 0) return NULL;

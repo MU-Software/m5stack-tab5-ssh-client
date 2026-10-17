@@ -22,6 +22,7 @@
 
 static const char* TAG = "storage";
 static sdmmc_card_t card;
+static bool mounted;
 // The configuration is read, changed and written again by the control commands and the screen
 static SemaphoreHandle_t config_lock;
 
@@ -58,46 +59,23 @@ int storage_mount(int with_usb) {
         tinyusb_msc_install_driver(&(tinyusb_msc_driver_config_t){.user_flags.auto_mount_off = 1}) != ESP_OK ||
         tinyusb_msc_new_storage_sdmmc(&usb, NULL) != ESP_OK)
         return -1;
+    mounted = true;
     mkdir(SD "/.ssh", 0700);
     mkdir(SD "/.config", 0700);
     mkdir(SD "/.config/tab5-ssh", 0700);
     return 0;
 }
 
-static char* nvs_text(void) {
-    nvs_handle_t h;
-    size_t size = 0;
-    char* text = NULL;
-    if (nvs_open("cfg", NVS_READONLY, &h) != ESP_OK) return NULL;
-    if (nvs_get_str(h, "config", NULL, &size) == ESP_OK && (text = malloc(size)) != NULL && nvs_get_str(h, "config", text, &size) != ESP_OK) {
-        free(text);
-        text = NULL;
-    }
-    nvs_close(h);
-    return text;
-}
+#define CONFIG SD "/.config/tab5-ssh/config.json"
 
-// The text holds Wi-Fi passwords
-static cJSON* parse(char* text, const char* where) {
-    cJSON* config = cJSON_Parse(text);
-    if (text != NULL && config == NULL) ESP_LOGW(TAG, "%s is not JSON", where);
+// The text holds Wi-Fi passwords, cleared before it is freed
+cJSON* storage_get_device_config(config_state* state) {
+    char* text = mounted ? storage_read_file_text(CONFIG) : NULL;
+    cJSON* config = text != NULL ? cJSON_Parse(text) : NULL;
+    *state = !mounted ? CONFIG_NO_CARD : text == NULL ? CONFIG_MISSING : config == NULL ? CONFIG_INVALID : CONFIG_LOADED;
     if (text != NULL) memset(text, 0, strlen(text));
     free(text);
-    return config;
-}
-
-cJSON* storage_get_device_config(config_source* source) {
-    cJSON* config = parse(storage_read_file_text(SD "/.config/tab5-ssh/config.json"), SD "/.config/tab5-ssh/config.json");
-    *source = CONFIG_SD;
-    if (config == NULL) {
-        config = parse(nvs_text(), "the configuration in NVS");
-        *source = CONFIG_NVS;
-    }
-    if (config == NULL) {
-        config = cJSON_CreateObject();
-        *source = CONFIG_NONE;
-    }
-    return config;
+    return config != NULL ? config : cJSON_CreateObject();
 }
 
 char* storage_get_ssh_config(void) {
@@ -186,28 +164,6 @@ void storage_migrate_sessions(void) {
     nvs_close(h);
 }
 
-bool storage_get_off(const char* what) {
-    nvs_handle_t h;
-    char key[16];
-    uint8_t off = 0;
-    snprintf(key, sizeof key, "%s_off", what);
-    if (nvs_open("net", NVS_READONLY, &h) != ESP_OK) return false;
-    nvs_get_u8(h, key, &off);
-    nvs_close(h);
-    return off != 0;
-}
-
-void storage_set_off(const char* what, bool off) {
-    nvs_handle_t h;
-    char key[16];
-    snprintf(key, sizeof key, "%s_off", what);
-    if (nvs_open("net", NVS_READWRITE, &h) != ESP_OK) return;
-    esp_err_t err = off ? nvs_set_u8(h, key, 1) : nvs_erase_key(h, key);
-    if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) err = nvs_commit(h);
-    if (err != ESP_OK) ESP_LOGW(TAG, "%s: %s", key, esp_err_to_name(err));
-    nvs_close(h);
-}
-
 void storage_get_last_host(char* alias, size_t size) {
     nvs_handle_t h;
     alias[0] = 0;
@@ -221,37 +177,36 @@ void storage_set_last_host(const char* alias) {
     if (err != ESP_OK) ESP_LOGW(TAG, "last host: %s", esp_err_to_name(err));
 }
 
-// Indented on the SD card, where people edit it; the text holds Wi-Fi passwords, cleared before it is freed
-static int save_config(cJSON* config, config_source source) {
-    char* text = source == CONFIG_SD ? cJSON_Print(config) : cJSON_PrintUnformatted(config);
-    int err = text == NULL;
+// Indented, as people edit it; the text holds Wi-Fi passwords, cleared before it is freed
+static int save_config(cJSON* config) {
+    char* text = cJSON_Print(config);
     cJSON_Delete(config);
-    if (text != NULL && source == CONFIG_SD) {
-        FILE* f = fopen(SD "/.config/tab5-ssh/config.json", "w");
-        err = f == NULL || fputs(text, f) < 0 || fputc('\n', f) < 0;
-        if (f != NULL && fclose(f) != 0) err = 1;
-    } else if (text != NULL) {
-        nvs_handle_t h;
-        err = nvs_open("cfg", NVS_READWRITE, &h) != ESP_OK;
-        if (!err) {
-            err = nvs_set_str(h, "config", text) != ESP_OK || nvs_commit(h) != ESP_OK;
-            nvs_close(h);
-        }
-    }
+    FILE* f = text != NULL ? fopen(CONFIG, "w") : NULL;
+    int err = f == NULL || fputs(text, f) < 0 || fputc('\n', f) < 0;
+    if (f != NULL && fclose(f) != 0) err = 1;
     if (text != NULL) memset(text, 0, strlen(text));
     free(text);
     return err ? -1 : 0;
 }
 
+// Changed in place, NULL when the file is there but not JSON
+static cJSON* changed_config(void) {
+    config_state state;
+    cJSON* config = storage_get_device_config(&state);
+    if (state != CONFIG_INVALID) return config;
+    ESP_LOGW(TAG, CONFIG " is not JSON: not changed");
+    cJSON_Delete(config);
+    return NULL;
+}
+
 int storage_set_wifi(const char* ssid, const wifi_network* network, int move, wifi_network** networks) {
-    config_source source;
     if (networks != NULL) *networks = NULL;
     xSemaphoreTake(config_lock, portMAX_DELAY);
-    cJSON* config = storage_get_device_config(&source);
-    int err = config_set_wifi(config, ssid, network, move);
+    cJSON* config = changed_config();
+    int err = config != NULL ? config_set_wifi(config, ssid, network, move) : -1;
     if (err == 0 && networks != NULL) err = config_wifi_networks(config, networks);
     if (err == 0)
-        err = save_config(config, source);
+        err = save_config(config);
     else
         cJSON_Delete(config);
     xSemaphoreGive(config_lock);
@@ -272,20 +227,17 @@ int storage_add_wifi(const char* ssid, const char* password) {
 }
 
 int storage_set_device_config(cJSON* config) {
-    config_source source;
     xSemaphoreTake(config_lock, portMAX_DELAY);
-    cJSON_Delete(storage_get_device_config(&source));
-    int err = save_config(config, source == CONFIG_SD ? CONFIG_SD : CONFIG_NVS);
+    int err = save_config(config);
     xSemaphoreGive(config_lock);
     return err;
 }
 
 int storage_set_config(const char* name, cJSON* value) {
-    config_source source;
     char key[32];
     int err = -1;
     xSemaphoreTake(config_lock, portMAX_DELAY);
-    cJSON *config = storage_get_device_config(&source), *parent = config;
+    cJSON *config = changed_config(), *parent = config;
     for (const char* dot; cJSON_IsObject(parent) && (dot = strchr(name, '.')) != NULL; name = dot + 1) {
         snprintf(key, sizeof key, "%.*s", (int)(dot - name), name);
         cJSON* child = cJSON_GetObjectItemCaseSensitive(parent, key);
@@ -303,7 +255,7 @@ int storage_set_config(const char* name, cJSON* value) {
             cJSON_ReplaceItemInObjectCaseSensitive(parent, name, value);
         else
             cJSON_AddItemToObject(parent, name, value);
-        err = save_config(config, source);
+        err = save_config(config);
     }
     xSemaphoreGive(config_lock);
     return err;

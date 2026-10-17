@@ -19,11 +19,20 @@ static int copy(char* out, size_t size, const cJSON* item) {
     return 0;
 }
 
+// network.wifi.access_points; NULL when absent, *wrong when something on the way is not an object
+static cJSON* access_points(const cJSON* config, bool* wrong) {
+    const cJSON* network = cJSON_GetObjectItemCaseSensitive(config, "network");
+    const cJSON* wifi = cJSON_GetObjectItemCaseSensitive(network, "wifi");
+    *wrong = !cJSON_IsObject(config) || (network != NULL && !cJSON_IsObject(network)) || (wifi != NULL && !cJSON_IsObject(wifi));
+    return *wrong ? NULL : cJSON_GetObjectItemCaseSensitive(wifi, "access_points");
+}
+
 int config_wifi_networks(const cJSON* config, wifi_network** wifi) {
-    const cJSON* list = cJSON_GetObjectItemCaseSensitive(config, "wifi");
+    bool wrong;
+    const cJSON* list = access_points(config, &wrong);
     int n = cJSON_GetArraySize(list), err = -1;
     wifi_network* w = NULL;
-    if (!cJSON_IsObject(config) || (list != NULL && !cJSON_IsArray(list))) goto done;
+    if (wrong || (list != NULL && !cJSON_IsArray(list))) goto done;
     if (n > 0 && (w = calloc((size_t)n, sizeof *w)) == NULL) goto done;
     for (int i = 0; i < n; i++) {
         const cJSON* net = cJSON_GetArrayItem(list, i);
@@ -40,13 +49,23 @@ done:
     return err;
 }
 
+// parent's object `key`, made in place of anything else
+static cJSON* object_in(cJSON* parent, const char* key) {
+    cJSON* child = cJSON_GetObjectItemCaseSensitive(parent, key);
+    if (cJSON_IsObject(child)) return child;
+    cJSON_DeleteItemFromObjectCaseSensitive(parent, key);
+    return cJSON_AddObjectToObject(parent, key);
+}
+
 int config_set_wifi(cJSON* config, const char* ssid, const wifi_network* network, int move) {
-    cJSON* list = cJSON_GetObjectItemCaseSensitive(config, "wifi");
-    int at = -1;
     if (!cJSON_IsObject(config)) return -1;
+    cJSON* wifi = object_in(object_in(config, "network"), "wifi");
+    cJSON* list = cJSON_GetObjectItemCaseSensitive(wifi, "access_points");
+    int at = -1;
+    if (wifi == NULL) return -1;
     if (!cJSON_IsArray(list)) {
-        cJSON_DeleteItemFromObjectCaseSensitive(config, "wifi");
-        if ((list = cJSON_AddArrayToObject(config, "wifi")) == NULL) return -1;
+        cJSON_DeleteItemFromObjectCaseSensitive(wifi, "access_points");
+        if ((list = cJSON_AddArrayToObject(wifi, "access_points")) == NULL) return -1;
     }
     for (int i = cJSON_GetArraySize(list) - 1; i >= 0; i--) {
         const cJSON* name = cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(list, i), "ssid");
