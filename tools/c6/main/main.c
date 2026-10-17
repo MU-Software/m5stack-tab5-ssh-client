@@ -3,7 +3,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <driver/sdio_slave.h>
 #include <eh_cp_feat_peer_data.h>
+#include <eh_transport_cp.h>
+#include <esp_attr.h>
 #include <esp_event.h>
 #include <esp_log.h>
 #include <esp_ota_ops.h>
@@ -66,6 +69,56 @@ static void send_logs(void* arg) {
     }
 }
 
+_Static_assert(C6_SDIO_RESET == ESP_RESET && C6_SDIO_CLOSE == ESP_CLOSE_DATA_PATH, "esp_hosted's host interrupts");
+
+// esp_hosted's core; no header declares it
+extern interface_context_t* if_context;
+static sdio_event_cb_t esp_hosted_event;
+static TaskHandle_t resetter;
+
+static void IRAM_ATTR from_host(uint8_t event) {
+    BaseType_t woken = pdFALSE;
+    if (event != ESP_RESET) {
+        esp_hosted_event(event);
+        return;
+    }
+    vTaskNotifyGiveFromISR(resetter, &woken);
+    portYIELD_FROM_ISR(woken);
+}
+
+// After each card init (components/c6/c6.c). esp_hosted restarts the counters within the interrupt, where it takes back the
+// send that its sdio_send task waits for, which then holds the transmit lock for good
+static void reset_sdio(void* arg) {
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if_context->event_handler(ESP_CLOSE_DATA_PATH);
+        // Each round returns a send in flight to its sender, which may queue another
+        for (int i = 0; i < 3; i++) {
+            sdio_slave_stop();
+            sdio_slave_reset();
+            sdio_slave_set_host_intena(SDIO_SLAVE_HOSTINT_SEND_NEW_PACKET | SDIO_SLAVE_HOSTINT_BIT0 | SDIO_SLAVE_HOSTINT_BIT1 |
+                                       SDIO_SLAVE_HOSTINT_BIT2 | SDIO_SLAVE_HOSTINT_BIT3 | SDIO_SLAVE_HOSTINT_BIT4 | SDIO_SLAVE_HOSTINT_BIT5 |
+                                       SDIO_SLAVE_HOSTINT_BIT6 | SDIO_SLAVE_HOSTINT_BIT7);
+            sdio_slave_start();
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        sdio_slave_write_reg(0, C6_RESET_DONE);
+        ESP_LOGI(TAG, "SDIO counters restarted for the host");
+    }
+}
+
+// NOLINTBEGIN(bugprone-reserved-identifier): --wrap names them
+esp_err_t __real_sdio_slave_initialize(sdio_slave_config_t* config);
+esp_err_t __wrap_sdio_slave_initialize(sdio_slave_config_t* config) {
+    // Above esp_hosted's tasks (21), so a round runs whole
+    if (resetter == NULL && xTaskCreate(reset_sdio, "reset sdio", 3072, NULL, 22, &resetter) != pdPASS) return ESP_ERR_NO_MEM;
+    esp_hosted_event = config->event_cb;
+    config->event_cb = from_host;
+    return __real_sdio_slave_initialize(config);
+}
+// NOLINTEND(bugprone-reserved-identifier)
+
 static bool unchecked(void) {
     esp_ota_img_states_t state;
     return esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK && state != ESP_OTA_IMG_VALID &&
@@ -111,8 +164,8 @@ void app_main(void) {
     esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
     const esp_partition_t* running = esp_ota_get_running_partition();
     esp_ota_get_state_partition(running, &state);
-    ESP_LOGI(TAG, "running %s, state %d, boot %s, next %s", running->label, state, esp_ota_get_boot_partition()->label,
-             esp_ota_get_next_update_partition(NULL)->label);
+    ESP_LOGI(TAG, "running %s, state %d, boot %s, next %s, reset reason %d", running->label, state, esp_ota_get_boot_partition()->label,
+             esp_ota_get_next_update_partition(NULL)->label, esp_reset_reason());
     if (state != ESP_OTA_IMG_VALID) xTaskCreate(await_p4, "await P4", 3072, NULL, 2, NULL);
     ESP_ERROR_CHECK(eh_cp_feat_peer_data_init());
     ESP_ERROR_CHECK(eh_cp_feat_peer_data_register_callback(P4_TO_C6, from_p4, NULL));

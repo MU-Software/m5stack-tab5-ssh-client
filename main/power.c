@@ -5,25 +5,41 @@
 #include <esp_check.h>
 #include <esp_log.h>
 
-#define CHG_EN     IO_EXPANDER_PIN_NUM_7
-#define NCHG_QC_EN IO_EXPANDER_PIN_NUM_5
-#define CHG_STAT   IO_EXPANDER_PIN_NUM_6
+// The PI4IOE5V6408 at 0x44: the BSP's driver resets it whenever it is created, which also cuts the C6's power
+#define EXPANDER   0x44
+#define DIRECTION  0x03
+#define OUTPUT     0x05
+#define HIGH_Z     0x07
+#define INPUT      0x0f
+#define C6_POWER   0x01
+#define USB_A_5V   0x08
+#define NCHG_QC_EN 0x20
+#define CHG_STAT   0x40
+#define CHG_EN     0x80
 #define INA226     0x41
 
 static const char* TAG = "power";
-static i2c_master_dev_handle_t monitor;
+static i2c_master_dev_handle_t expander, monitor;
+
+static esp_err_t update(uint8_t reg, uint8_t mask, uint8_t bits) {
+    uint8_t value;
+    ESP_RETURN_ON_ERROR(i2c_master_transmit_receive(expander, &reg, 1, &value, 1, 50), TAG, "read %02x", reg);
+    return i2c_master_transmit(expander, (uint8_t[]){reg, (uint8_t)((value & ~mask) | bits)}, 2, 50);
+}
 
 esp_err_t power_start(void) {
-    // The expander at 0x44 comes out of every reset with its pins high-impedance and pulled down: charging off
-    esp_io_expander_handle_t expander = bsp_io_expander1_init();
-    ESP_RETURN_ON_FALSE(expander != NULL, ESP_ERR_NOT_FOUND, TAG, "IO expander");
-    ESP_RETURN_ON_ERROR(esp_io_expander_set_dir(expander, CHG_EN | NCHG_QC_EN, IO_EXPANDER_OUTPUT), TAG, "direction");
-    ESP_RETURN_ON_ERROR(esp_io_expander_set_output_mode(expander, CHG_EN | NCHG_QC_EN, IO_EXPANDER_OUTPUT_MODE_PUSH_PULL), TAG, "output mode");
+    // From power-on every pin is a high-impedance input pulled down: charging off, the C6 and USB-A off. A restart keeps them.
+    static const uint8_t pins = C6_POWER | USB_A_5V | NCHG_QC_EN | CHG_EN;
+    ESP_RETURN_ON_ERROR(bsp_i2c_init(), TAG, "I2C");
+    ESP_RETURN_ON_ERROR(
+        i2c_master_bus_add_device(bsp_i2c_get_handle(), &(i2c_device_config_t){.device_address = EXPANDER, .scl_speed_hz = 100000}, &expander), TAG,
+        "IO expander");
     if (i2c_master_bus_add_device(bsp_i2c_get_handle(), &(i2c_device_config_t){.device_address = INA226, .scl_speed_hz = 100000}, &monitor) != ESP_OK)
         ESP_LOGW(TAG, "no INA226");
     // NCHG_QC_EN high adds a resistor on the IP2326's NTC pin that reads as a warm battery, which halves the charge current
-    ESP_RETURN_ON_ERROR(esp_io_expander_set_level(expander, NCHG_QC_EN, 0), TAG, "full current");
-    return esp_io_expander_set_level(expander, CHG_EN, 1);
+    ESP_RETURN_ON_ERROR(update(OUTPUT, pins, C6_POWER | USB_A_5V | CHG_EN), TAG, "levels");
+    ESP_RETURN_ON_ERROR(update(DIRECTION, pins, pins), TAG, "directions");
+    return update(HIGH_Z, pins, 0);
 }
 
 static esp_err_t read16(uint8_t reg, int16_t* value) {
@@ -35,11 +51,11 @@ static esp_err_t read16(uint8_t reg, int16_t* value) {
 
 void power_report(void) {
     int16_t shunt, bus;
-    uint32_t stat = 0;
+    uint8_t reg = INPUT, stat = 0;
     if (monitor == NULL || read16(0x01, &shunt) != ESP_OK || read16(0x02, &bus) != ESP_OK) return;
-    esp_io_expander_get_level(bsp_io_expander1_init(), CHG_STAT, &stat);
+    if (expander != NULL) i2c_master_transmit_receive(expander, &reg, 1, &stat, 1, 50);
     // Shunt 2.5 uV per bit across 5 mOhm, bus 1.25 mV per bit
-    ESP_LOGI(TAG, "pack %d mV, %d mA, CHG_STAT %d", bus * 5 / 4, shunt / 2, stat != 0);
+    ESP_LOGI(TAG, "pack %d mV, %d mA, CHG_STAT %d", bus * 5 / 4, shunt / 2, (stat & CHG_STAT) != 0);
 }
 
 bool power_battery(int* millivolts) {

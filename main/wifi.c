@@ -8,6 +8,7 @@
 #include <esp_check.h>
 #include <esp_event.h>
 #include <esp_log.h>
+#include <esp_system.h>
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
@@ -68,6 +69,8 @@ esp_err_t wifi_start(void) {
     ESP_RETURN_ON_FALSE(events != NULL, ESP_ERR_NO_MEM, TAG, "events");
     ESP_RETURN_ON_ERROR(c6_start(), TAG, "C6");
     netif = esp_netif_create_default_wifi_sta();
+    // Registered with it, it would stop the C6's Wi-Fi at each restart of this chip
+    if (esp_unregister_shutdown_handler((shutdown_handler_t)esp_wifi_stop) != ESP_OK) ESP_LOGW(TAG, "esp_wifi_stop still runs at restarts");
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&init), TAG, "init");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, on_event, NULL), TAG, "events");
@@ -79,6 +82,19 @@ esp_err_t wifi_start(void) {
 }
 
 esp_err_t wifi_join(const wifi_network* networks, const char* except, int timeout_ms) {
+    wifi_ap_record_t ap;
+    // Joined by the C6 through this chip's restart: connecting again replays the join, for DHCP
+    if (!(xEventGroupGetBits(events) & GOT_IP) && except == NULL && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        for (const wifi_network* w = networks; w != NULL; w = w->next)
+            if (strcmp(w->ssid, (const char*)ap.ssid) == 0) {
+                ESP_LOGI(TAG, "joined %s already", w->ssid);
+                xEventGroupClearBits(events, FAILED);
+                if (esp_wifi_connect() == ESP_OK &&
+                    (xEventGroupWaitBits(events, GOT_IP | FAILED, pdFALSE, pdFALSE, pdMS_TO_TICKS(timeout_ms)) & GOT_IP))
+                    return ESP_OK;
+                break;
+            }
+    }
     // A network out of reach is retried at each disconnect, and the scan fails while it is
     if (!(xEventGroupGetBits(events) & GOT_IP)) {
         joined = false;

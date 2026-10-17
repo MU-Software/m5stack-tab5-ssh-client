@@ -499,7 +499,7 @@ void app_main(void) {
     cJSON_InitHooks(&(cJSON_Hooks){psram_malloc, free});
     memory_log_start();
     if (logs_start() != ESP_OK) ESP_LOGE(TAG, "no log ring");
-    if (power_start() != ESP_OK) ESP_LOGE(TAG, "charging left as it was");
+    if (power_start() != ESP_OK) ESP_LOGE(TAG, "no power for the C6, the USB-A port or charging");
     ESP_ERROR_CHECK(keys_start());
     esp_err_t keyboard = keyboard_usb_start();
     ESP_ERROR_CHECK(usb_start(command));

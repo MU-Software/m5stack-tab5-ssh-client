@@ -3,10 +3,10 @@
 
 #include <string.h>
 
-#include <bsp/m5stack_tab5.h>
 #include <esp_check.h>
 #include <esp_log.h>
 #include <usb/hid_host.h>
+#include <usb/usb_host.h>
 #include <usb/hid_usage_keyboard.h>
 
 #include "keys.h"
@@ -59,8 +59,19 @@ static void driver_event(hid_host_device_handle_t device, const hid_host_driver_
     if (hid_host_device_start(device) == ESP_OK) ESP_LOGI(TAG, "attached");
 }
 
+static void run_host(void* arg) {
+    (void)arg;
+    for (;;) {
+        uint32_t flags;
+        usb_host_lib_handle_events(portMAX_DELAY, &flags);
+        if (flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) usb_host_device_free_all();
+    }
+}
+
+// What bsp_usb_host_start does, without the BSP's IO expander driver, which would reset the C6 (power.c powers the port)
 esp_err_t keyboard_usb_start(void) {
-    ESP_RETURN_ON_ERROR(bsp_usb_host_start(BSP_USB_HOST_POWER_MODE_USB_DEV, true), TAG, "USB host");
+    ESP_RETURN_ON_ERROR(usb_host_install(&(usb_host_config_t){.intr_flags = ESP_INTR_FLAG_LOWMED}), TAG, "USB host");
+    ESP_RETURN_ON_FALSE(xTaskCreate(run_host, "usb host", 4096, NULL, 10, NULL) == pdPASS, ESP_ERR_NO_MEM, TAG, "USB host task");
     return hid_host_install(
         &(hid_host_driver_config_t){.create_background_task = true, .task_priority = 5, .stack_size = 4096, .core_id = 1, .callback = driver_event});
 }
