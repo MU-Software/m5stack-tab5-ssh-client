@@ -50,23 +50,26 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
   `network.lte.enabled`. The settings screen saves each change there, under the same keys, making the file when there is
   none (never over one that is not JSON).
 - SSH: the SD card's `.ssh/` as `~/.ssh/`: the non-pattern `Host`s in `config`, `known_hosts`, keys
-  (`id_ed25519`, `id_ecdsa`, `id_rsa`). No key: password prompt. Unknown host: yes/no prompt. With two hosts or more and
-  no session to restore, a list opens at boot and connects to the last one after 10 s, unless touched or typed into first.
-- tmux: each session runs in its own `tmux new-session -s tab5-MMMMMM-RRRRRR` (the MAC's last three bytes, then random),
-  its name kept in NVS; the next connection attaches to it, or starts another when it is gone. From tmux 3.2 the client
-  declares truecolor, strikethrough, overline, underline styles and colours, and kitty images as Unicode placeholders
-  (`-T`); from tmux 3.3 the session's windows allow passthrough, for kitty images from programs in it; its `mouse` is
-  on, for touch. Each connection to a host also kills this Tab5's tmux sessions there that no open session uses,
-  unattached and older than a minute. No tmux on the host: a plain shell.
-- Sessions: up to 4 at once, to one host or several, each with its own terminal, kept connected and read while hidden,
-  and reopened after a restart. The sessions screen (세션 on the bottom bar) lists them, shows the chosen one (전환) or
-  ends it with its tmux session (끊기, not the last one), and opens a new one to a host from its list (hidden while 4 are
-  open). From two on, each also has a tab on the top bar in place of the host, which shows it, or opens the sessions
-  screen when it is shown (`?`: it waits for a password or a host key, asked only once it is shown).
+  (`id_ed25519`, `id_ecdsa`, `id_rsa`). No key: password prompt. Unknown host: yes/no prompt; both are answered on the
+  session's terminal once it is shown.
+- Sessions: up to 4, each a tmux session on a host (`tab5-MMMMMM-RRRRRR`: the MAC's last three bytes, then random), kept
+  in `.local/state/tab5-ssh/sessions.json` on the SD card; tmux on the host is required. After a restart all are
+  disconnected; nothing connects by itself. create makes the tmux session and the record, then disconnects; open connects
+  if needed and shows; close only hides; connect and disconnect leave the screen alone (disconnect also hides); delete
+  hides, disconnects and kills the tmux session (the record goes even when the host cannot be reached, and the log says
+  so). A dropped or moved connection reconnects; a detach in tmux (prefix d) or a refused login disconnects; a tmux
+  session gone from the host deletes its record at the next connect. Each connection also kills this Tab5's tmux
+  sessions on that host that no record names, unattached and older than a minute. From tmux 3.2 the client declares
+  truecolor, strikethrough, overline, underline styles and colours, and kitty images as Unicode placeholders (`-T`); from
+  tmux 3.3 the session's windows allow passthrough, for kitty images; its `mouse` is on, for touch.
+- The sessions screen (세션 on the bottom bar; open whenever no session is shown) lists them with 보기, 숨기기, 연결, 끊기
+  and 삭제 (pressed twice) for the chosen one, and creates one on a host from its list. Each also has a tab on the top
+  bar, which shows it, or opens the sessions screen when it is shown (`×` disconnected, `…` connecting, `?` waiting for
+  an answer). Control command `session list|create HOST|open N|close N|connect N|disconnect N|delete N` waits up to 90 s
+  for what it starts; one that needs a password or host key says to answer it on the screen (`session open N`).
 - Network: Wi-Fi while it reaches the SSH host (the shown session's), else LTE through a Stamp CAT-M (Tab5 TX G6, RX G46), kept connected
   in the background; LTE keeps redialing (waits of 90-960 s) unless no modem answered or spoke since boot. Without a path the
-  top right says what LTE does, and Enter dials at once. A dropped or moved session reconnects to its tmux session; a
-  closed one on Enter. Control commands: `wifi on|off` (for this boot; with `save` also `network.wifi.enabled`, as the
+  top right says what LTE does, and Enter dials at once. Control commands: `wifi on|off` (for this boot; with `save` also `network.wifi.enabled`, as the
   network screen's buttons and `wifi connect` do), `wifi connect SSID [PASSWORD]` (saved to the configuration),
   `wifi forget SSID`, `lte on|off [save]|status`, `net status`, `net check HOST PORT`, `settings`,
   `set NAME VALUE` (as in the configuration; text also without quotes).
@@ -81,7 +84,7 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
 - Logs: on the SD card in `.local/state/tab5-ssh/log/`, a file a day (`YYYY-MM-DD-NN.log`, a new `NN` past `file_kb`), the
   oldest deleted past `keep_mb` or `keep_days`; `log` and `timezone` (POSIX TZ, default `KST-9`) in the configuration.
   The time comes from the RTC, then SNTP (`pool.ntp.org`), which sets the RTC.
-- Screen: a bar above the terminal (host or session tabs, network, battery, time) and one below (buttons for the
+- Screen: a bar above the terminal (session tabs, network, battery, time) and one below (buttons for the
   sessions, network and settings screens, which cover the terminal); touch, or arrows, Tab, Enter and Esc while one is
   open. On the terminal a tap clicks and a drag turns the wheel every `touch.wheel_px` (48) for a program that asked for
   the mouse (tmux, vim with `mouse=a`, htop); otherwise a drag is Up/Down on the alternate screen (`touch.arrows`, as

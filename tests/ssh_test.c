@@ -118,27 +118,36 @@ static int exec_status(const char* command) {
 }
 
 // Attached to tmux session `name` as the device is for 1.5 s, with the mouse on and the wheel's arrow keys, then whether
-// the end keys ended it with status 0
-static bool attach_and_end(const char* name, bool attach, const char* old, const char* keep, int age_s) {
-    char command[1400], buf[2048], mouse[256];
-    if (!tmux_command(command, sizeof command, name, attach, old, "tab5-test01-", keep, age_s, true)) return false;
+// a detach from elsewhere closed the channel with status 0
+static bool attach_and_detach(const char* name, const char* keep, int age_s) {
+    char command[1400], buf[2048], probe_command[256];
+    if (!tmux_command(command, sizeof command, name, "tab5-test01-", keep, age_s, true)) return false;
     other = (ssh_session){.host = &host, .known_hosts = known_hosts, .private_key = private_key, .command = command};
     if (ssh_open(&state, &other) != WS_SUCCESS) return false;
     int r = WS_WANT_READ, status = -1;
     for (long start = now_ms(); now_ms() - start < 1500 && (r >= 0 || r == WS_WANT_READ);)
         if ((r = ssh_read(&other, buf, sizeof buf)) == WS_WANT_READ) usleep(1000);
-    snprintf(mouse, sizeof mouse,
+    snprintf(probe_command, sizeof probe_command,
              "[ \"$(tmux show -t =%s: -v mouse)\" = on ] && [ \"$(tmux show -t =%s: -v @tab5_arrows)\" = 1 ] && "
              "tmux list-keys -T root WheelUpPane | grep -q tab5_arrows",
              name, name);
-    bool held = (r >= 0 || r == WS_WANT_READ) && exec_on(&probe, mouse) == 0;
-    for (long start = now_ms();
-         r != WS_CHANNEL_CLOSED && ssh_write(&other, tmux_end_keys, strlen(tmux_end_keys)) == WS_WANT_WRITE && now_ms() - start < 1000;)
-        usleep(1000);
+    bool held = (r >= 0 || r == WS_WANT_READ) && exec_on(&probe, probe_command) == 0;
+    snprintf(probe_command, sizeof probe_command, "tmux detach-client -s =%s", name);
+    bool detached = exec_on(&probe, probe_command) == 0;
     for (long start = now_ms(); r != WS_CHANNEL_CLOSED && (r >= 0 || r == WS_WANT_READ) && now_ms() - start < 5000;)
         if ((r = ssh_read(&other, buf, sizeof buf)) == WS_WANT_READ) usleep(1000);
     ssh_close(&other, &status);
-    return held && r == WS_CHANNEL_CLOSED && status == 0;
+    return held && detached && r == WS_CHANNEL_CLOSED && status == 0;
+}
+
+static int create_session(const char* name) {
+    char command[64];
+    return tmux_create_command(command, sizeof command, name) ? exec_status(command) : -3;
+}
+
+static int kill_session(const char* name) {
+    char command[64];
+    return tmux_kill_command(command, sizeof command, name) ? exec_status(command) : -3;
 }
 
 // The device's tmux sessions against a real tmux: names tab5-test01-...
@@ -148,21 +157,22 @@ static void tmux_sessions(void) {
         check(0, "tmux on the test host");
         return;
     }
-    check(exec_status("tmux new-session -d -s tab5-test01-young") == 0, "a session of this device's, just made");
-    check(attach_and_end("tab5-test01-aaaaaa", false, NULL, " tab5-test01-aaaaaa ", 60), "a new tmux session runs until the end keys end it");
-    check(exec_status("tmux has-session -t =tab5-test01-aaaaaa") == 1, "the ended session is gone from the host");
+    check(create_session("tab5-test01-young") == 0 && create_session("tab5-test01-aaaaaa") == 0, "tmux sessions made unattached");
+    check(attach_and_detach("tab5-test01-aaaaaa", " tab5-test01-aaaaaa ", 60), "attached until a detach, which closes with status 0");
+    check(exec_status("tmux has-session -t =tab5-test01-aaaaaa") == 0, "the detached session stays on the host");
     check(exec_status("tmux has-session -t =tab5-test01-young") == 0, "an unused session younger than a minute stays");
-    check(exec_status("tmux new-session -d -s tab5-test01-keep01 && tmux new-session -d -s other-cccccc") == 0, "sessions to leave");
-    check(attach_and_end("tab5-test01-dddddd", false, NULL, " tab5-test01-dddddd tab5-test01-keep01 ", 0), "a connection that cleans up");
-    check(exec_status("tmux has-session -t =tab5-test01-young") == 1, "this device's unused session killed");
-    check(exec_status("tmux has-session -t =tab5-test01-keep01") == 0, "an open session's tmux session kept");
+    check(create_session("tab5-test01-keep01") == 0 && create_session("tab5-test01-dddddd") == 0 &&
+              exec_status("tmux new-session -d -s other-cccccc") == 0,
+          "sessions to leave");
+    check(attach_and_detach("tab5-test01-dddddd", " tab5-test01-dddddd tab5-test01-keep01 ", 0), "a connection that cleans up");
+    check(exec_status("tmux has-session -t =tab5-test01-young") == 1 && exec_status("tmux has-session -t =tab5-test01-aaaaaa") == 1,
+          "this device's unlisted unused sessions killed");
+    check(exec_status("tmux has-session -t =tab5-test01-keep01") == 0, "a listed unattached session kept");
     check(exec_status("tmux has-session -t =other-cccccc") == 0, "another's tmux session untouched");
-    check(exec_status("tmux new-session -d -s tab5-0ldname") == 0 &&
-              attach_and_end("tab5-test01-eeeeee", true, "tab5-0ldname", " tab5-test01-eeeeee ", 60) &&
-              exec_status("tmux has-session -t =tab5-0ldname") == 1,
-          "a name from before the prefix renamed and attached");
-    check(tmux_command(command, sizeof command, "tab5-test01-ffffff", true, NULL, "tab5-test01-", " ", 60, true) && exec_status(command) == 1,
-          "attaching to a session that has gone fails");
+    check(tmux_command(command, sizeof command, "tab5-test01-ffffff", "tab5-test01-", " ", 60, true) && exec_status(command) == TMUX_GONE,
+          "attaching to a session that has gone exits TMUX_GONE");
+    int killed = kill_session("tab5-test01-keep01");
+    check(killed == 0 && kill_session("tab5-test01-keep01") == 1, "kill ends a session, then finds none");
     exec_status("tmux kill-server");
 }
 

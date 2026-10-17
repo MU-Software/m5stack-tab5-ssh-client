@@ -93,6 +93,38 @@ bool config_wifi_valid(const wifi_network* network) {
     return ssid > 0 && ssid < sizeof network->ssid && (password == 0 || (password >= 8 && password <= 63) || hex);
 }
 
+size_t config_sessions(const cJSON* list, session_record* records, size_t capacity) {
+    size_t count = 0;
+    const cJSON* item;
+    if (!cJSON_IsArray(list)) return 0;
+    cJSON_ArrayForEach(item, list) {
+        const cJSON* number = cJSON_GetObjectItemCaseSensitive(item, "number");
+        session_record r = {.number = cJSON_IsNumber(number) ? number->valueint : 0};
+        bool taken = false;
+        for (const session_record* other = records; other < records + count; other++)
+            taken |= other->number == r.number;
+        if (count == capacity || taken || r.number < 1 || (size_t)r.number > capacity ||
+            copy(r.alias, sizeof r.alias, cJSON_GetObjectItemCaseSensitive(item, "host")) != 0 || !r.alias[0] ||
+            copy(r.tmux, sizeof r.tmux, cJSON_GetObjectItemCaseSensitive(item, "tmux")) != 0 || !r.tmux[0])
+            continue;
+        records[count++] = r;
+    }
+    return count;
+}
+
+cJSON* config_sessions_json(const session_record* records, size_t count) {
+    cJSON* list = cJSON_CreateArray();
+    for (size_t i = 0; list != NULL && i < count; i++) {
+        cJSON* item = cJSON_CreateObject();
+        if (item == NULL || !cJSON_AddItemToArray(list, item) || cJSON_AddNumberToObject(item, "number", records[i].number) == NULL ||
+            cJSON_AddStringToObject(item, "host", records[i].alias) == NULL || cJSON_AddStringToObject(item, "tmux", records[i].tmux) == NULL) {
+            cJSON_Delete(list);
+            list = NULL;
+        }
+    }
+    return list;
+}
+
 static uint32_t be32(const uint8_t* p) {
     return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 }

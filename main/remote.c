@@ -45,7 +45,7 @@
 static const char* TAG = "remote";
 static const global_state* state;
 static WOLFSSH_CTX* ctx;
-static bool (*app_command)(const char* line);
+static int (*app_command)(const char* line);
 static atomic_bool busy;
 // The client config set answers, and whether a value was refused
 static sshd_session* checking;
@@ -262,15 +262,16 @@ static int run(sshd_session* s, after* then) {
         return err == ESP_OK ? 0 : 1;
     }
     size_t position = logs_position();
-    if (!line[0] || !app_command(line)) {
-        char help[400];
+    int status = line[0] ? app_command(line) : -1;
+    if (status < 0) {
+        char help[640];
         control_help(CONTROL_SSH, help, sizeof help);
         say(s, help);
         say(s, "\n");
         return 1;
     }
     follow(s, position, 1000);
-    return 0;
+    return status;
 }
 
 // Wi-Fi, and LTE once remote.lte is on: behind CGNAT nobody reaches it there, and whatever does costs data
@@ -366,7 +367,7 @@ static void listen_for_clients(void* arg) {
     }
 }
 
-esp_err_t remote_start(const global_state* global, bool (*command)(const char* line)) {
+esp_err_t remote_start(const global_state* global, int (*command)(const char* line)) {
     state = global;
     app_command = command;
     // A PSRAM stack: it writes the SD card, never flash

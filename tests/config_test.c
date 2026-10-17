@@ -62,6 +62,21 @@ static int valid(const char* ssid, const char* password) {
     return config_wifi_valid(&network);
 }
 
+// sessions.json read into records, then written back: the text, "" when none was read
+static const char* sessions(const char* json, size_t capacity) {
+    static char out[512];
+    session_record records[4];
+    cJSON* list = cJSON_Parse(json);
+    size_t n = config_sessions(list, records, capacity);
+    cJSON_Delete(list);
+    cJSON* back = config_sessions_json(records, n);
+    char* text = n > 0 && back != NULL ? cJSON_PrintUnformatted(back) : NULL;
+    snprintf(out, sizeof out, "%s", text != NULL ? text : "");
+    free(text);
+    cJSON_Delete(back);
+    return out;
+}
+
 static const char ssh_config[] = "# comment\n"
                                  "Host tab5 work\n"
                                  "  HostName example.org\n"
@@ -145,6 +160,24 @@ int main(void) {
     h = find(hosts, "nas.lan");
     check(h && strcmp(h->user, "fallback") == 0, "ssh_config: negated pattern");
     free(hosts);
+
+    check(strcmp(sessions("[{\"number\": 2, \"host\": \"work\", \"tmux\": \"tab5-a\"}, {\"number\": 1, \"host\": \"pi\", \"tmux\": \"tab5-b\"}]", 4),
+                 "[{\"number\":2,\"host\":\"work\",\"tmux\":\"tab5-a\"},{\"number\":1,\"host\":\"pi\",\"tmux\":\"tab5-b\"}]") == 0,
+          "sessions.json: read and written back");
+    check(
+        strcmp(sessions(
+                   "[{\"number\": 0, \"host\": \"a\", \"tmux\": \"t\"}, {\"number\": 5, \"host\": \"a\", \"tmux\": \"t\"}, "
+                   "{\"number\": 1, \"tmux\": \"t\"}, {\"number\": 1, \"host\": \"\", \"tmux\": \"t\"}, {\"number\": 1, \"host\": \"a\"}, "
+                   "{\"number\": \"1\", \"host\": \"a\", \"tmux\": \"t\"}, {\"number\": 1, \"host\": \"a\", \"tmux\": \"0123456789abcdef01234567\"}, "
+                   "{\"number\": 3, \"host\": \"a\", \"tmux\": \"t\"}, {\"number\": 3, \"host\": \"b\", \"tmux\": \"u\"}]",
+                   4),
+               "[{\"number\":3,\"host\":\"a\",\"tmux\":\"t\"}]") == 0,
+        "sessions.json: numbers outside 1-4, missing or too long names and a number again skipped");
+    check(strcmp(sessions("[{\"number\": 1, \"host\": \"a\", \"tmux\": \"t\"}, {\"number\": 2, \"host\": \"b\", \"tmux\": \"u\"}]", 1),
+                 "[{\"number\":1,\"host\":\"a\",\"tmux\":\"t\"}]") == 0,
+          "sessions.json: no more than the capacity");
+    check(!sessions("{}", 4)[0] && !sessions("[]", 4)[0] && !sessions("[1, \"a\"]", 4)[0] && !sessions("nope", 4)[0],
+          "sessions.json: none from anything else");
 
     uint8_t a[64], b[64];
     word32 a_len = sizeof a, b_len = sizeof b;

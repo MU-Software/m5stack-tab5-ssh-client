@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "storage.h"
 
-#include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,10 +9,8 @@
 
 #include <driver/sdmmc_host.h>
 #include <esp_log.h>
-#include <esp_rom_crc.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
-#include <nvs.h>
 #include <sd_pwr_ctrl_by_on_chip_ldo.h>
 #include <sdmmc_cmd.h>
 #include <tinyusb_msc.h>
@@ -108,73 +105,30 @@ char* storage_get_private_key(const char* identity_file) {
     return text;
 }
 
-static esp_err_t set_string(const char* key, const char* value) {
-    nvs_handle_t h;
-    esp_err_t err = nvs_open("sessions", NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-    err = value != NULL ? nvs_set_str(h, key, value) : nvs_erase_key(h, key);
-    if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) err = nvs_commit(h);
-    nvs_close(h);
-    return err;
+#define SESSIONS SD "/.local/state/tab5-ssh/sessions.json"
+
+size_t storage_get_sessions(session_record* records, size_t capacity) {
+    char* text = storage_read_file_text(SESSIONS);
+    cJSON* list = text != NULL ? cJSON_Parse(text) : NULL;
+    if (text != NULL && list == NULL) ESP_LOGW(TAG, SESSIONS " is not JSON");
+    free(text);
+    size_t count = config_sessions(list, records, capacity);
+    cJSON_Delete(list);
+    return count;
 }
 
-esp_err_t storage_get_session(int number, char* alias, size_t alias_size, char* tmux, size_t tmux_size) {
-    nvs_handle_t h;
-    char key[4], value[sizeof(((ssh_host*)0)->alias) + 32];
-    size_t size = sizeof value;
-    snprintf(key, sizeof key, "%d", number);
-    esp_err_t err = nvs_open("sessions", NVS_READONLY, &h);
-    if (err != ESP_OK) return err;
-    err = nvs_get_str(h, key, value, &size);
-    nvs_close(h);
-    char* line = err == ESP_OK ? strchr(value, '\n') : NULL;
-    if (line == NULL) return err != ESP_OK ? err : ESP_ERR_INVALID_STATE;
-    *line = 0;
-    snprintf(alias, alias_size, "%s", value);
-    snprintf(tmux, tmux_size, "%s", line + 1);
-    return ESP_OK;
-}
-
-void storage_set_session(int number, const char* alias, const char* tmux) {
-    char key[4], value[sizeof(((ssh_host*)0)->alias) + 32];
-    snprintf(key, sizeof key, "%d", number);
-    snprintf(value, sizeof value, "%s\n%s", alias != NULL ? alias : "", tmux != NULL ? tmux : "");
-    esp_err_t err = set_string(key, alias != NULL ? value : NULL);
-    if (err != ESP_OK) ESP_LOGW(TAG, "session %d: %s", number, esp_err_to_name(err));
-}
-
-// An older firmware kept the last host and a tmux session per host, under the alias's CRC, in NVS "tmux"
-void storage_migrate_sessions(void) {
-    nvs_handle_t h;
-    char last[sizeof(((ssh_host*)0)->alias)] = "", tmux[16] = "", key[9], alias[sizeof last], name[24];
-    size_t size = sizeof last;
-    // Read only, which creates nothing, until there is something to move
-    if (nvs_open("tmux", NVS_READONLY, &h) != ESP_OK) return;
-    esp_err_t found = nvs_get_str(h, "last", last, &size);
-    snprintf(key, sizeof key, "%08" PRIx32, esp_rom_crc32_le(0, (const uint8_t*)last, strlen(last)));
-    size = sizeof tmux;
-    if (found != ESP_OK || nvs_get_str(h, key, tmux, &size) != ESP_OK) tmux[0] = 0;
-    nvs_close(h);
-    if (found != ESP_OK) return;
-    storage_set_last_host(last);
-    if (tmux[0] != 0 && storage_get_session(1, alias, sizeof alias, name, sizeof name) != ESP_OK) storage_set_session(1, last, tmux);
-    ESP_LOGI(TAG, "moved the last host %s%s%s", last, tmux[0] != 0 ? " and its tmux session " : "", tmux);
-    if (nvs_open("tmux", NVS_READWRITE, &h) != ESP_OK) return;
-    if (nvs_erase_all(h) == ESP_OK) nvs_commit(h);
-    nvs_close(h);
-}
-
-void storage_get_last_host(char* alias, size_t size) {
-    nvs_handle_t h;
-    alias[0] = 0;
-    if (nvs_open("sessions", NVS_READONLY, &h) != ESP_OK) return;
-    if (nvs_get_str(h, "last", alias, &size) != ESP_OK) alias[0] = 0;
-    nvs_close(h);
-}
-
-void storage_set_last_host(const char* alias) {
-    esp_err_t err = set_string("last", alias);
-    if (err != ESP_OK) ESP_LOGW(TAG, "last host: %s", esp_err_to_name(err));
+int storage_set_sessions(const session_record* records, size_t count) {
+    cJSON* list = config_sessions_json(records, count);
+    char* text = list != NULL ? cJSON_Print(list) : NULL;
+    cJSON_Delete(list);
+    mkdir(SD "/.local", 0700);
+    mkdir(SD "/.local/state", 0700);
+    mkdir(SD "/.local/state/tab5-ssh", 0700);
+    FILE* f = text != NULL ? fopen(SESSIONS, "w") : NULL;
+    int err = f == NULL || fputs(text, f) < 0 || fputc('\n', f) < 0;
+    if (f != NULL && fclose(f) != 0) err = 1;
+    free(text);
+    return err ? -1 : 0;
 }
 
 // Indented, as people edit it; the text holds Wi-Fi passwords, cleared before it is freed

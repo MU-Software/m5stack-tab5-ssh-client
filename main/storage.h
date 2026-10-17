@@ -26,12 +26,6 @@ int storage_set_wifi(const char* ssid, const wifi_network* network, int move, wi
 int storage_set_device_config(cJSON* config);
 // A setting such as "log.file_kb" into the configuration, which takes value
 int storage_set_config(const char* name, cJSON* value);
-// The open sessions across restarts, in NVS "sessions": key "1" to "4", the session's number, holds its host alias and
-// its tmux session, "" before one runs. A NULL alias forgets it.
-esp_err_t storage_get_session(int number, char* alias, size_t alias_size, char* tmux, size_t tmux_size);
-void storage_set_session(int number, const char* alias, const char* tmux);
-// Once: the last host and its tmux session (as session 1) from NVS "tmux", which older firmware kept, then empties it
-void storage_migrate_sessions(void);
-// The host alias last connected to, "" for none; also in NVS "sessions"
-void storage_get_last_host(char* alias, size_t size);
-void storage_set_last_host(const char* alias);
+// The session records, in .local/state/tab5-ssh/sessions.json on the SD card: how many, none without it
+size_t storage_get_sessions(session_record* records, size_t capacity);
+int storage_set_sessions(const session_record* records, size_t count);

@@ -58,20 +58,20 @@ static int percent(int mv) {
 }
 
 static const char* const session_states[] = {
-    [SESSION_CONNECTING] = "연결 중",
-    [SESSION_CONNECTED] = "연결됨",
-    [SESSION_ASKING] = "입력 기다림",
-    [SESSION_STOPPED] = "끊김 · Enter",
+    [SESSION_DISCONNECTED] = "끊김",         [SESSION_CONNECTING] = "연결 중", [SESSION_CONNECTED] = "연결됨",
+    [SESSION_RECONNECTING] = "다시 연결 중", [SESSION_ASKING] = "입력 기다림", [SESSION_DELETING] = "삭제 중",
 };
 
 // A session's tab: ● for the shown one, and a mark for one that is not connected
 static const char* tab(int number) {
-    static const char* const marks[] = {[SESSION_CONNECTING] = " …", [SESSION_CONNECTED] = "", [SESSION_ASKING] = " ?", [SESSION_STOPPED] = " ×"};
-    for (size_t i = 0; state->session_count > 1 && i < state->session_count; i++) {
+    static const char* const marks[] = {
+        [SESSION_DISCONNECTED] = " ×", [SESSION_CONNECTING] = " …", [SESSION_CONNECTED] = "",
+        [SESSION_RECONNECTING] = " …", [SESSION_ASKING] = " ?",     [SESSION_DELETING] = " ×",
+    };
+    for (size_t i = 0; i < state->session_count; i++) {
         const session_info* s = &state->sessions[i];
         if (s->number != number) continue;
-        snprintf(text, sizeof text, "%s %d %.48s%s", i == state->shown_session ? "●" : "○", number, s->host != NULL ? s->host->alias : "",
-                 marks[s->status]);
+        snprintf(text, sizeof text, "%s %d %.48s%s", s->shown ? "●" : "○", number, s->alias, marks[s->status]);
         return text;
     }
     return NULL;
@@ -131,11 +131,11 @@ static const char* value(void* user, const char* name) {
     (void)user;
     refresh();
     int number;
-    if (strcmp(name, "host") == 0) return state->current_host != NULL ? state->current_host->alias : "호스트 없음";
     if (sscanf(name, "session.%d", &number) == 1) return tab(number);
-    if (strcmp(name, "sessions.many") == 0) return state->session_count > 1 ? "1" : NULL;
-    if (strcmp(name, "sessions.one") == 0) return state->session_count <= 1 ? "1" : NULL;
-    if (strcmp(name, "sessions.open") == 0) return state->session_count > 0 && state->sessions[0].host != NULL ? "1" : NULL;
+    if (strcmp(name, "sessions.any") == 0) return state->session_count > 0 ? "1" : NULL;
+    if (strcmp(name, "sessions.none") == 0) return state->session_count == 0 ? "1" : NULL;
+    if (strcmp(name, "sessions.result") == 0) return state->session_result[0] ? state->session_result : NULL;
+    if (strcmp(name, "hosts.none") == 0) return state->hosts == NULL ? "1" : NULL;
     if (strcmp(name, "sessions.room") == 0) return state->session_count < MAX_SESSIONS ? "1" : NULL;
     if (strcmp(name, "sessions.full") == 0) return state->session_count >= MAX_SESSIONS ? "1" : NULL;
     if (strcmp(name, "sessions") == 0) {
@@ -191,12 +191,6 @@ static const char* value(void* user, const char* name) {
             [CONFIG_INVALID] = "config.json이 JSON이 아님 · 기본값으로 실행, 고칠 때까지 저장 안 됨",
         };
         return problems[state->config];
-    }
-    if (strcmp(name, "countdown") == 0) {
-        int64_t left = state->host_deadline_us - esp_timer_get_time();
-        if (state->host_deadline_us == 0 || left < 0) return NULL;
-        snprintf(text, sizeof text, "%d초 뒤 접속 · 누르거나 키를 치면 기다림", (int)(left / SECOND) + 1);
-        return text;
     }
     return NULL;
 }
@@ -260,13 +254,14 @@ static const char* item(void* user, const char* name, size_t index, const char* 
         return text;
     }
     if (s != NULL && strcmp(field, "status") == 0) return session_states[s->status];
-    if (s != NULL && strcmp(field, "current") == 0) return index == state->shown_session ? "← 지금" : NULL;
-    const ssh_host* h = s != NULL ? s->host : strcmp(name, "hosts") == 0 ? host(index) : NULL;
+    if (s != NULL && strcmp(field, "current") == 0) return s->shown ? "← 보는 중" : NULL;
+    if (s != NULL && strcmp(field, "alias") == 0) return s->alias;
+    if (s != NULL && strcmp(field, "tmux") == 0) return s->tmux;
+    const ssh_host* h = strcmp(name, "hosts") == 0 ? host(index) : NULL;
     if (h == NULL) return NULL;
     if (strcmp(field, "alias") == 0) return h->alias;
     if (strcmp(field, "hostname") == 0) return h->hostname;
     if (strcmp(field, "user") == 0) return h->user;
-    if (strcmp(field, "current") == 0) return h == state->current_host ? "← 지금" : NULL;
     if (strcmp(field, "port") == 0) {
         snprintf(text, sizeof text, "%u", h->port);
         return text;
@@ -278,9 +273,10 @@ static size_t chosen(void* user, const char* name) {
     (void)user;
     size_t i = 0;
     if (strcmp(name, "hosts") == 0)
-        for (const ssh_host* h = state->hosts; h != NULL && h != state->current_host; h = h->next)
+        for (const ssh_host* h = state->hosts; h != NULL && state->current_host != NULL && h != state->current_host; h = h->next)
             i++;
-    if (strcmp(name, "sessions") == 0) i = state->shown_session;
+    for (size_t j = 0; strcmp(name, "sessions") == 0 && j < state->session_count; j++)
+        if (state->sessions[j].shown) i = j;
     return i;
 }
 

@@ -34,7 +34,7 @@ static const char* TAG = "usb";
 static __NOINIT_ATTR uint32_t boot_mode;
 static int storage_boot;
 static tinyusb_cdcacm_itf_t control_port;
-static bool (*app_command)(const char* line);
+static int (*app_command)(const char* line);
 
 static const uint8_t terminal_config[] = {
     TUD_CONFIG_DESCRIPTOR(1, 4, 0, TUD_CONFIG_DESC_LEN + 2 * TUD_CDC_DESC_LEN, 0, 100),
@@ -130,8 +130,8 @@ static void command(char* line) {
                         .write = write_reply};
         int failed = c6_nvs_command(line + control_nvs(line), &io);
         ESP_LOGI(TAG, "%.*s: %s", control_loggable(line), line, failed ? "failed" : "done");
-    } else if (line[0] && !app_command(line)) {
-        char help[400];
+    } else if (line[0] && app_command(line) < 0) {
+        char help[640];
         control_help(CONTROL_USB, help, sizeof help);
         ESP_LOGW(TAG, "%s", help);
     }
@@ -174,7 +174,7 @@ static void give_pads_back(void) {
     usb_wrap_ll_phy_select(&USB_WRAP, 1);
 }
 
-esp_err_t usb_start(bool (*command)(const char* line)) {
+esp_err_t usb_start(int (*command)(const char* line)) {
     app_command = command;
     storage_boot = boot_mode == STORAGE_BOOT;
     boot_mode = 0;

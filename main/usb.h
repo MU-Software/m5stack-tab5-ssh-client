@@ -6,8 +6,8 @@
 
 #include <esp_err.h>
 
-// command: the app's control commands, true when handled
-esp_err_t usb_start(bool (*command)(const char* line));
+// command: the app's control commands, -1 for none of them
+esp_err_t usb_start(int (*command)(const char* line));
 // A computer uses the USB-C port
 bool usb_attached(void);
 // After the "sd on" command: CDC 0 is the control port and the SD card is mass storage, for one boot

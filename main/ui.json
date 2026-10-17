@@ -7,7 +7,7 @@
           "when": "bars.top",
           "style": "bar",
           "columns": [
-            {"when": "sessions.one", "text": " {host}"},
+            {"when": "sessions.none", "text": " 세션 없음"},
             {"when": "session.1", "button": "session 1", "text": " {session.1}"},
             {"when": "session.2", "button": "session 2", "text": " {session.2}"},
             {"when": "session.3", "button": "session 3", "text": " {session.3}"},
@@ -38,28 +38,35 @@
           "height": 1,
           "columns": [
             {"style": "title", "text": " 세션"},
-            {"width": 10, "when": "sessions.open", "style": "button", "button": "session show", "for": "sessions", "text": "전환"},
-            {"width": 1, "when": "sessions.open", "text": ""},
-            {"width": 10, "when": "sessions.many", "style": "button", "button": "session end", "for": "sessions", "text": "끊기"},
-            {"width": 1, "when": "sessions.many", "text": ""},
+            {"width": 8, "when": "sessions.any", "style": "button", "button": "session open", "for": "sessions", "text": "보기"},
+            {"width": 1, "when": "sessions.any", "text": ""},
+            {"width": 10, "when": "sessions.any", "style": "button", "button": "session close", "for": "sessions", "text": "숨기기"},
+            {"width": 1, "when": "sessions.any", "text": ""},
+            {"width": 8, "when": "sessions.any", "style": "button", "button": "session connect", "for": "sessions", "text": "연결"},
+            {"width": 1, "when": "sessions.any", "text": ""},
+            {"width": 8, "when": "sessions.any", "style": "button", "button": "session disconnect", "for": "sessions", "text": "끊기"},
+            {"width": 1, "when": "sessions.any", "text": ""},
+            {"width": 8, "when": "sessions.any", "style": "button", "button": "session delete", "for": "sessions", "text": "삭제"},
+            {"width": 1, "when": "sessions.any", "text": ""},
             {"width": 10, "style": "button", "button": "close", "text": "닫기"}
           ]
         },
-        {"height": 1, "style": "hint", "text": " Tab·↑↓ 이동 · Enter 고르기·접속 · Esc 닫기"},
-        {"height": 1, "style": "alert", "text": " {countdown}"},
+        {"height": 1, "style": "hint", "text": " Tab·↑↓ 이동 · Enter 고르기·누르기 · Esc 닫기"},
+        {"height": 1, "style": "alert", "text": " {sessions.result}"},
         {"height": 1, "when": "config", "style": "alert", "text": " {config}"},
         {
           "height": 6,
-          "when": "sessions.open",
+          "when": "sessions.any",
           "rows": [
-            {"height": 1, "style": "section", "text": " 열린 세션 {sessions} · 고른 세션으로 전환 · 끊기는 그 tmux 세션까지 끝냄"},
-            {"height": 4, "list": "sessions", "item": "  {number:3}{alias:16}{user}@{hostname}:{port:7}{status:14}{current}", "action": "session select"},
+            {"height": 1, "style": "section", "text": " 세션 {sessions} · 고른 세션에 위 버튼 · 삭제는 그 tmux 세션까지 끝냄"},
+            {"height": 4, "list": "sessions", "item": "  {number:3}{alias:16}{tmux:22}{status:14}{current}", "action": "session select"},
             {"height": 1, "text": ""}
           ]
         },
-        {"height": 1, "when": "sessions.full", "style": "hint", "text": " 세션 4개가 모두 열려 있음 · 하나를 끊으면 새로 열 수 있음"},
-        {"height": 1, "when": "sessions.room", "style": "section", "text": " 새 세션"},
-        {"when": "sessions.room", "rows": [{"list": "hosts", "item": "  {alias:16}{user}@{hostname}:{port}", "action": "open"}]}
+        {"height": 1, "when": "sessions.full", "style": "hint", "text": " 세션 4개 · 하나를 삭제하면 새로 만들 수 있음"},
+        {"height": 1, "when": "sessions.room", "style": "section", "text": " 새 세션 · 고른 호스트에 tmux 세션을 만듦, 연결은 하지 않음"},
+        {"height": 1, "when": "hosts.none", "style": "hint", "text": " SD 카드의 .ssh/config에 Host 없음"},
+        {"when": "sessions.room", "rows": [{"list": "hosts", "item": "  {alias:16}{user}@{hostname}:{port}", "action": "session create"}]}
       ]
     },
     "network": {

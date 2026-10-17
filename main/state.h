@@ -77,26 +77,37 @@ typedef enum { CONFIG_LOADED, CONFIG_MISSING, CONFIG_NO_CARD, CONFIG_INVALID } c
 
 enum { MAX_SESSIONS = 4 };
 
-typedef enum { SESSION_CONNECTING, SESSION_CONNECTED, SESSION_ASKING, SESSION_STOPPED } session_status;
+// A session's connection; asking: for a password or a host key, answered once it is shown
+typedef enum { SESSION_DISCONNECTED, SESSION_CONNECTING, SESSION_CONNECTED, SESSION_RECONNECTING, SESSION_ASKING, SESSION_DELETING } session_status;
 
-// An open SSH session as the screens show it
+// A session as the SD card's .local/state/tab5-ssh/sessions.json keeps it: its tmux session on the host
 typedef struct {
     int number;
-    // NULL while the first chooses one at boot
+    char alias[sizeof(((ssh_host*)0)->alias)], tmux[24];
+} session_record;
+
+// A session as the screens show it
+typedef struct {
+    int number;
+    // NULL once its alias left .ssh/config
     const ssh_host* host;
+    const char *alias, *tmux;
     session_status status;
+    bool shown;
 } session_info;
 
 typedef struct {
     wifi_network* wifi;
     ssh_host* hosts;
-    // The shown session's
+    // The shown session's, else the one shown last
     const ssh_host* current_host;
     const char* terminal_type;
     terminal_size terminal_size;
-    // The open sessions, numbered from 1 in this order
+    // The sessions in the order of their numbers
     session_info sessions[MAX_SESSIONS];
-    size_t session_count, shown_session;
+    size_t session_count;
+    // What came of the last session command
+    char session_result[96];
     // network.wifi.enabled and network.lte.enabled: on from boot
     bool wifi_enabled, lte_enabled;
     // Where the settings came from
@@ -124,7 +135,5 @@ typedef struct {
         // Only this SSH user name; empty for any, the key alone deciding
         char user[33];
     } remote;
-    // Choosing a host at boot connects to the one chosen at this esp_timer time, 0 while nobody waits for it
-    int64_t host_deadline_us;
     wifi_edit wifi_edit;
 } global_state;
