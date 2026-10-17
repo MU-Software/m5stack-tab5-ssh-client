@@ -369,7 +369,8 @@ esp_err_t net_join(const wifi_network* network) {
     }
     xSemaphoreTake(lock, portMAX_DELAY);
     esp_err_t err = wifi_join(network, NULL, JOIN_MS);
-    wifi_tried = esp_timer_get_time();
+    // A failed join may have dropped the network joined before: the known ones are tried again now
+    wifi_tried = err == ESP_OK ? esp_timer_get_time() : 0;
     xSemaphoreGive(lock);
     xTaskNotifyGive(manager);
     return err;
