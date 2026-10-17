@@ -65,6 +65,11 @@ static const modem_snapshot modem = {
         },
     .read_at = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
 };
+static const struct {
+    const char* ssid;
+    int rssi;
+    bool open;
+} visible[] = {{"MU_GL_XE3000", -48, false}, {"KT_GiGA_5G_3F21", -61, false}, {"YGYguest", -70, true}, {"DIRECT-7B-HP M28w", -77, false}};
 
 static shr_status acquire(void* user, shr_surface* out) {
     (void)user;
@@ -98,6 +103,18 @@ static shr_status open_package(void* user, const char* package, shr_asset_source
     return shr_asset_source_file(path, out);
 }
 
+static const char* wifi_text(const char* name) {
+    const wifi_edit* w = &state.wifi_edit;
+    if (strcmp(name, "title") == 0) return w->saved[0] ? " Wi-Fi 수정" : " Wi-Fi 추가";
+    if (strcmp(name, "ssid") == 0) return w->network.ssid;
+    if (strcmp(name, "password") == 0) return w->network.password;
+    if (strcmp(name, "saved") == 0) return w->saved;
+    if (strcmp(name, "new") == 0) return w->saved[0] ? NULL : "새 망";
+    if (strcmp(name, "result") == 0) return w->result;
+    if (strcmp(name, "scan") == 0) return "누르면 SSID에 넣음";
+    return NULL;
+}
+
 static const char* text(void* user, const char* name) {
     (void)user;
     time_t now = time(NULL);
@@ -112,6 +129,7 @@ static const char* text(void* user, const char* name) {
         return lte[now / 3 % 3];
     }
     if (strcmp(name, "lte.detail") == 0) return "SKT · CAT-M · -97 dBm";
+    if (strncmp(name, "wifi.", 5) == 0) return wifi_text(name + 5);
     if (strcmp(name, "battery") == 0) return "87%";
     if (strcmp(name, "modem.read") == 0) return "PPP 중: 다이얼 전에 읽은 값 · 다시 읽으려면 LTE 끄기";
     if (strncmp(name, "modem.", 6) == 0 && strstr(name, ".age") != NULL) return "12분 전";
@@ -129,12 +147,23 @@ static const char* text(void* user, const char* name) {
 
 static size_t count(void* user, const char* name) {
     (void)user;
+    if (strcmp(name, "visible") == 0) return sizeof visible / sizeof visible[0];
     return strcmp(name, "hosts") == 0 ? sizeof hosts / sizeof hosts[0] : strcmp(name, "wifi") == 0 ? sizeof networks / sizeof networks[0] : 0;
 }
 
 static const char* item(void* user, const char* name, size_t index, const char* field) {
     (void)user;
+    static char number[16];
+    if (strcmp(name, "wifi") == 0 && strcmp(field, "order") == 0) return snprintf(number, sizeof number, "%zu", index + 1), number;
+    if (strcmp(name, "wifi") == 0 && strcmp(field, "joined") == 0) return index == 0 ? "← 연결됨" : NULL;
     if (strcmp(name, "wifi") == 0) return strcmp(field, "ssid") == 0 ? networks[index] : NULL;
+    if (strcmp(name, "visible") == 0) {
+        if (strcmp(field, "ssid") == 0) return visible[index].ssid;
+        if (strcmp(field, "signal") == 0) return snprintf(number, sizeof number, "%d dBm", visible[index].rssi), number;
+        if (strcmp(field, "lock") == 0) return visible[index].open ? "열림" : NULL;
+        if (strcmp(field, "saved") == 0) return index == 0 || index == 2 ? "저장됨" : NULL;
+        return NULL;
+    }
     const ssh_host* h = &hosts[index];
     if (strcmp(field, "alias") == 0) return h->alias;
     if (strcmp(field, "hostname") == 0) return h->hostname;
@@ -181,9 +210,34 @@ static void draw_terminal(void) {
     shr_pl_lyr_tilemap_set_text(terminal, 0, 0, lines, strlen(lines), (shr_text_style){SHR_RGB(0xd0, 0xd0, 0xd0), 0, 0}, NULL, 0, 0, NULL);
 }
 
+// As main.c's Wi-Fi screen, without saving or joining
+static void wifi_screen(const ui_event* e) {
+    wifi_edit* w = &state.wifi_edit;
+    bool ssid = e->name[5] == 's';
+    if (e->kind == UI_SET)
+        snprintf(ssid ? w->network.ssid : w->network.password, ssid ? sizeof w->network.ssid : sizeof w->network.password, "%s", e->value.text);
+    if (strcmp(e->name, "wifi add") == 0 || strcmp(e->name, "wifi edit") == 0) {
+        memset(w, 0, sizeof *w);
+        if (e->name[5] == 'e') {
+            snprintf(w->saved, sizeof w->saved, "%s", networks[e->index]);
+            snprintf(w->network.ssid, sizeof w->network.ssid, "%s", networks[e->index]);
+            snprintf(w->network.password, sizeof w->network.password, "made-up-pass");
+        }
+        ui_open("wifi");
+    }
+    if (strcmp(e->name, "wifi pick") == 0) snprintf(w->network.ssid, sizeof w->network.ssid, "%s", visible[e->index].ssid);
+    w->result = strcmp(e->name, "wifi join") == 0 ? "연결 중…" : strcmp(e->name, "wifi save") == 0 ? "저장함" : NULL;
+    if (w->result != NULL) snprintf(w->saved, sizeof w->saved, "%s", w->network.ssid);
+    if (strcmp(e->name, "wifi delete") == 0) w->result = (w->deleting = !w->deleting) ? "한 번 더 누르면 삭제" : NULL;
+    if (strcmp(e->name, "wifi up") == 0) w->result = "한 칸 위로";
+}
+
 // What main.c is to do with an event
 static void handle(const ui_event* e) {
-    if (e->kind == UI_SET) {
+    if ((e->kind == UI_SET && e->setting == NULL) || (e->kind == UI_ACTION && strncmp(e->name, "wifi ", 5) == 0 && e->name[5] != 'o')) {
+        wifi_screen(e);
+        snprintf(action, sizeof action, "%s %zu", e->name, e->index);
+    } else if (e->kind == UI_SET) {
         char value[80];
         bool ok = settings_set(&state, e->setting, &e->value);
         settings_text(e->setting, &e->value, value, sizeof value);
@@ -254,7 +308,8 @@ static void run_input(const char* script) {
         int column, row;
         ui_event e = {.kind = UI_NONE};
         if (sscanf(step, "tap:%d,%d", &column, &row) == 2) {
-            ui_touch(UI_TOUCH_DOWN, column, row);
+            e = ui_touch(UI_TOUCH_DOWN, column, row);
+            handle(&e);
             e = ui_touch(UI_TOUCH_UP, column, row);
         } else if (strncmp(step, "text:", 5) == 0) {
             e = ui_key(UI_KEY_TEXT, step + 5);

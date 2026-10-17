@@ -4,6 +4,8 @@
 #include <cJSON.h>
 #include <esp_err.h>
 
+#include "state.h"
+
 #define SD "/sdcard"
 
 typedef enum { CONFIG_NONE, CONFIG_SD, CONFIG_NVS } config_source;
@@ -17,6 +19,9 @@ int storage_add_known_host(const char* line);
 char* storage_get_private_key(const char* identity_file);
 // First in the Wi-Fi list of the configuration in use (the SD card's, else NVS); a NULL password removes it
 int storage_add_wifi(const char* ssid, const char* password);
+// The Wi-Fi list of the configuration in use changed as config_set_wifi does; unless networks is NULL, the list as saved
+// there (one allocation), and nothing saved when it cannot be made
+int storage_set_wifi(const char* ssid, const wifi_network* network, int move, wifi_network** networks);
 // A setting such as "log.file_kb" into the configuration in use, which takes value
 int storage_set_config(const char* name, cJSON* value);
 // The tmux session kept in NVS for a host alias; NULL name forgets it

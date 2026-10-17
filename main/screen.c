@@ -844,6 +844,8 @@ bool screen_event(ui_event* out) {
     if (event_count == 0) return false;
     *out = events[0];
     memmove(events, events + 1, --event_count * sizeof events[0]);
+    // Fields' values may be Wi-Fi passwords
+    memset(&events[event_count], 0, sizeof events[0]);
     return true;
 }
 

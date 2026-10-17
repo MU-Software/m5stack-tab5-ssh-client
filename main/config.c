@@ -40,6 +40,40 @@ done:
     return err;
 }
 
+int config_set_wifi(cJSON* config, const char* ssid, const wifi_network* network, int move) {
+    cJSON* list = cJSON_GetObjectItemCaseSensitive(config, "wifi");
+    int at = -1;
+    if (!cJSON_IsObject(config)) return -1;
+    if (!cJSON_IsArray(list)) {
+        cJSON_DeleteItemFromObjectCaseSensitive(config, "wifi");
+        if ((list = cJSON_AddArrayToObject(config, "wifi")) == NULL) return -1;
+    }
+    for (int i = cJSON_GetArraySize(list) - 1; i >= 0; i--) {
+        const cJSON* name = cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(list, i), "ssid");
+        bool same = cJSON_IsString(name) && strcmp(name->valuestring, ssid) == 0;
+        if (!same && !(network != NULL && cJSON_IsString(name) && strcmp(name->valuestring, network->ssid) == 0)) continue;
+        cJSON_DeleteItemFromArray(list, i);
+        if (same) at = i;
+        if (at > i) at--;
+    }
+    if (network == NULL) return 0;
+    long place = at < 0 ? 0 : (long)at + move;
+    cJSON* entry = cJSON_CreateObject();
+    if (entry == NULL || cJSON_AddStringToObject(entry, "ssid", network->ssid) == NULL ||
+        (network->password[0] && cJSON_AddStringToObject(entry, "password", network->password) == NULL)) {
+        cJSON_Delete(entry);
+        return -1;
+    }
+    cJSON_InsertItemInArray(list, place < 0 ? 0 : place > cJSON_GetArraySize(list) ? cJSON_GetArraySize(list) : (int)place, entry);
+    return 0;
+}
+
+bool config_wifi_valid(const wifi_network* network) {
+    size_t ssid = strnlen(network->ssid, sizeof network->ssid), password = strnlen(network->password, sizeof network->password);
+    bool hex = password == 64 && strspn(network->password, "0123456789abcdefABCDEF") == 64;
+    return ssid > 0 && ssid < sizeof network->ssid && (password == 0 || (password >= 8 && password <= 63) || hex);
+}
+
 static uint32_t be32(const uint8_t* p) {
     return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 }

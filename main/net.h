@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <esp_err.h>
@@ -26,6 +27,17 @@ void net_keepalive(int fd);
 bool net_on_lte(void);
 // Joins network now
 esp_err_t net_join(const wifi_network* network);
+typedef enum { NET_SCAN_NONE, NET_SCAN_RUNNING, NET_SCAN_DONE, NET_SCAN_FAILED } net_scan_state;
+typedef struct {
+    char ssid[33];
+    int8_t rssi;
+    bool open;
+} net_visible_network;
+// Asks for a scan of the Wi-Fi networks in reach
+void net_scan(void);
+net_scan_state net_scan_state_now(void);
+// Network `index` of the last scan, strongest first; false past the last
+bool net_visible(size_t index, net_visible_network* out);
 typedef struct {
     // "none", "Wi-Fi" or "LTE"
     const char* path;

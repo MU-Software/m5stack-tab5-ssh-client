@@ -391,6 +391,135 @@ static void wifi_connect_command(const char* arguments) {
     state.wifi = network;
 }
 
+// The Wi-Fi screen's join takes seconds: on its own task, and saved by the main loop once joined
+typedef enum { JOIN_IDLE, JOIN_RUNNING, JOIN_DONE } join_step;
+static struct {
+    char saved[33];
+    wifi_network network;
+    esp_err_t error;
+    _Atomic join_step step;
+} join;
+
+static void join_wifi(void* arg) {
+    (void)arg;
+    join.error = net_join(&join.network);
+    atomic_store(&join.step, JOIN_DONE);
+    vTaskDeleteWithCaps(NULL);
+}
+
+// Network ssid of the configuration in use changed, and the list the network task joins from with it; the old list is
+// kept, as that task may be walking it
+static bool save_wifi(const char* ssid, const wifi_network* network, int move) {
+    wifi_network* networks;
+    bool saved = storage_set_wifi(ssid, network, move, &networks) == 0;
+    if (saved) state.wifi = networks;
+    ESP_LOGI(TAG, "wifi %s %s%s",
+             network == NULL ? "delete"
+             : move != 0     ? "up"
+                             : "save",
+             network != NULL ? network->ssid : ssid, saved ? "" : ": not saved");
+    return saved;
+}
+
+// The screen's network, once saved, is changed as a saved one
+static const char* saved_wifi(wifi_edit* w, const char* ssid, const char* result) {
+    if (strcmp(w->network.ssid, ssid) == 0) snprintf(w->saved, sizeof w->saved, "%s", ssid);
+    return result;
+}
+
+static void joined_wifi(void) {
+    wifi_edit* w = &state.wifi_edit;
+    ESP_LOGI(TAG, "wifi join %s: %s", join.network.ssid, esp_err_to_name(join.error));
+    if (join.error == ESP_OK)
+        w->result = save_wifi(join.saved[0] ? join.saved : join.network.ssid, &join.network, 0) ? saved_wifi(w, join.network.ssid, "연결됨, 저장함")
+                                                                                                : "연결됨, 저장 못 함";
+    else if (join.error == ESP_ERR_NOT_FOUND)
+        w->result = "보이지 않음, 저장 안 함";
+    else if (join.error == ESP_ERR_INVALID_STATE)
+        w->result = "Wi-Fi가 시작되지 않음";
+    else
+        w->result = "연결 못 함, 저장 안 함";
+    memset(&join, 0, sizeof join);
+}
+
+static const wifi_network* saved_at(size_t index) {
+    for (const wifi_network* w = state.wifi; w != NULL; w = w->next)
+        if (w->ssid[0] != 0 && index-- == 0) return w;
+    return NULL;
+}
+
+static const wifi_network* saved_named(const char* ssid) {
+    for (const wifi_network* w = state.wifi; ssid[0] != 0 && w != NULL; w = w->next)
+        if (strcmp(w->ssid, ssid) == 0) return w;
+    return NULL;
+}
+
+// The Wi-Fi screen: a saved network to change, or a new one picked from a scan or typed; saved as typed, or once joined
+static bool wifi_screen(const ui_event* e) {
+    wifi_edit* w = &state.wifi_edit;
+    static const char* const actions[] = {"add", "edit", "scan", "pick", "save", "join", "up", "delete"};
+    const char* action = e->kind == UI_ACTION && strncmp(e->name, "wifi ", 5) == 0 ? e->name + 5 : "";
+    const wifi_network* saved = strcmp(action, "edit") == 0 ? saved_at(e->index) : saved_named(w->saved);
+    bool ssid = e->kind == UI_SET && strcmp(e->name, "wifi.ssid") == 0, deleting = w->deleting;
+    size_t known = 0;
+    while (known < sizeof actions / sizeof actions[0] && strcmp(action, actions[known]) != 0)
+        known++;
+    if (ssid || (e->kind == UI_SET && strcmp(e->name, "wifi.password") == 0)) {
+        snprintf(ssid ? w->network.ssid : w->network.password, ssid ? sizeof w->network.ssid : sizeof w->network.password, "%s", e->value.text);
+        w->result = NULL, w->deleting = false;
+        return true;
+    }
+    if (strcmp(action, "add") == 0 || strcmp(action, "edit") == 0) {
+        if (action[0] == 'e' && saved == NULL) return true;
+        memset(w, 0, sizeof *w);
+        if (saved != NULL) {
+            memcpy(w->saved, saved->ssid, sizeof w->saved);
+            memcpy(w->network.ssid, saved->ssid, sizeof w->network.ssid);
+            memcpy(w->network.password, saved->password, sizeof w->network.password);
+        } else {
+            net_scan();
+        }
+        screen_open("wifi");
+        return true;
+    }
+    if (known == sizeof actions / sizeof actions[0]) return false;
+    w->result = NULL;
+    if (strcmp(action, "scan") == 0) {
+        net_scan();
+    } else if (strcmp(action, "pick") == 0) {
+        net_visible_network v;
+        if (net_visible(e->index, &v)) snprintf(w->network.ssid, sizeof w->network.ssid, "%s", v.ssid);
+    } else if ((strcmp(action, "save") == 0 || strcmp(action, "join") == 0) && !config_wifi_valid(&w->network)) {
+        w->result = "SSID 1~32자, 비밀번호는 없거나 8~63자";
+    } else if (strcmp(action, "save") == 0) {
+        w->result = save_wifi(w->saved[0] ? w->saved : w->network.ssid, &w->network, 0) ? saved_wifi(w, w->network.ssid, "저장함") : "저장 못 함";
+    } else if (strcmp(action, "join") == 0 && atomic_load(&join.step) != JOIN_IDLE) {
+        w->result = "다른 연결을 기다리는 중";
+    } else if (strcmp(action, "join") == 0) {
+        // It turns Wi-Fi on, as wifi connect does
+        if (state.wifi_off) storage_set_off("wifi", state.wifi_off = false);
+        memcpy(join.saved, w->saved, sizeof join.saved);
+        join.network = w->network;
+        atomic_store(&join.step, JOIN_RUNNING);
+        w->result = "연결 중…";
+        if (xTaskCreatePinnedToCoreWithCaps(join_wifi, "join", 6144, NULL, 5, NULL, 1, MALLOC_CAP_SPIRAM) != pdPASS) {
+            memset(&join, 0, sizeof join);
+            w->result = "연결 못 함";
+        }
+    } else if (strcmp(action, "up") == 0) {
+        w->result = saved == NULL ? NULL : saved == saved_at(0) ? "이미 맨 위" : save_wifi(saved->ssid, saved, -1) ? "한 칸 위로" : "저장 못 함";
+    } else if (strcmp(action, "delete") == 0 && !deleting) {
+        w->result = saved != NULL ? "한 번 더 누르면 삭제" : NULL;
+    } else if (strcmp(action, "delete") == 0) {
+        if (saved != NULL && save_wifi(saved->ssid, NULL, 0))
+            screen_open("network");
+        else
+            w->result = "삭제 못 함";
+    }
+    w->deleting = !deleting && saved != NULL && strcmp(action, "delete") == 0;
+    return true;
+}
+
 // The C6 boots the new image once the restart powers it again; it rolls back if that one does not stay up
 static void c6_update_command(size_t size, uint32_t crc) {
     esp_err_t err;
@@ -482,6 +611,7 @@ static bool command(const char* line) {
 // From the screen's task, whose stack in internal RAM lets it write NVS
 static void apply(const ui_event* e) {
     char text[80];
+    if (wifi_screen(e) || (e->kind == UI_SET && e->setting == NULL)) return;
     if (e->kind == UI_ACTION && strcmp(e->name, "connect") == 0) {
         const ssh_host* h = state.hosts;
         for (size_t i = 0; h != NULL && i < e->index; i++)
@@ -569,13 +699,19 @@ void app_main(void) {
         ui_event e;
         terminal_size size;
         save s;
+        if (atomic_load(&join.step) == JOIN_DONE) joined_wifi();
         while (saves != NULL && xQueueReceive(saves, &s, 0))
             s.tmux ? storage_set_tmux_session(s.host->alias, s.name[0] != 0 ? s.name : NULL) : storage_set_last_host(s.host->alias);
         memory_log();
         if (screen == ESP_OK) {
             screen_draw();
+            // What was typed there goes once it closes
+            const char* panel = ui_panel();
+            if ((panel == NULL || strcmp(panel, "wifi") != 0) && (state.wifi_edit.network.ssid[0] != 0 || state.wifi_edit.saved[0] != 0))
+                memset(&state.wifi_edit, 0, sizeof state.wifi_edit);
             while (screen_event(&e))
                 apply(&e);
+            memset(&e, 0, sizeof e);
             if (screen_resized(&size)) {
                 state.terminal_size = size;
                 atomic_fetch_add(&resizes, 1);

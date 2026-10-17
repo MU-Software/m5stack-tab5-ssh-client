@@ -56,7 +56,9 @@ The ROM loader needs a BOOT reset.
   The time comes from the RTC, then SNTP (`pool.ntp.org`), which sets the RTC.
 - Screen: a bar above the terminal (host, network, battery, time) and one below (buttons for the hosts, network and
   settings screens, which cover the terminal); touch, or arrows, Tab, Enter and Esc while one is open. The settings
-  screen restarts the Tab5 too. `.config/tab5-ssh/ui.json` on the SD card replaces the built-in `main/ui.json`.
+  screen restarts the Tab5 too. The network screen lists the saved Wi-Fi networks in the order they are tried; one opens to
+  change its password, move it up, join or delete it, 추가 adds one from a scan or typed (연결 saves it once joined).
+  `.config/tab5-ssh/ui.json` on the SD card replaces the built-in `main/ui.json`.
 - Fonts: `build/shiroko-host/fonts/` (`*.shrf`, `NOTICE`, `LICENSES/`) to the SD card's `.local/share/tab5-ssh/fonts/`.
 
 ## Development
@@ -77,7 +79,8 @@ and keys first (`tap:COLUMN,ROW key:tab text:abc`, see `sim/sim.c`) and saves th
 by `width`, each a number of cells, `"N%"` or `"Nfr"` (a share of the rest; the default), `"when": SETTING` hides one
 while that setting is off. Leaves are `text` (`{name}` for a value, `{name:N}` padded to N cells), `button` (another
 screen's name opens it over the terminal), `terminal`, `list` and the settings' editors `toggle`, `number`, `choice` and
-`field` (`main/settings.c` lists the settings).
+`field` (`main/settings.c` lists the settings; a `field` of another name edits a value of the screens', shown as `*`
+with `"secret": true`).
 
 ## Licence
 

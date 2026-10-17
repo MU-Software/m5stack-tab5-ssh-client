@@ -81,6 +81,21 @@ esp_err_t wifi_start(void) {
     return esp_wifi_start();
 }
 
+esp_err_t wifi_scan(wifi_ap_record_t** records, uint16_t* count) {
+    // A network out of reach is retried at each disconnect, and the scan fails while it is
+    if (!(xEventGroupGetBits(events) & GOT_IP)) {
+        joined = false;
+        esp_wifi_disconnect();
+    }
+    *records = NULL, *count = 0;
+    ESP_RETURN_ON_ERROR(esp_wifi_scan_start(NULL, true), TAG, "scan");
+    esp_wifi_scan_get_ap_num(count);
+    *records = calloc(*count + 1, sizeof **records);
+    ESP_RETURN_ON_FALSE(*records != NULL, ESP_ERR_NO_MEM, TAG, "scan results");
+    esp_wifi_scan_get_ap_records(count, *records);
+    return ESP_OK;
+}
+
 esp_err_t wifi_join(const wifi_network* networks, const char* except, int timeout_ms) {
     wifi_ap_record_t ap;
     // Joined by the C6 through this chip's restart: connecting again replays the join, for DHCP
@@ -95,18 +110,11 @@ esp_err_t wifi_join(const wifi_network* networks, const char* except, int timeou
                 break;
             }
     }
-    // A network out of reach is retried at each disconnect, and the scan fails while it is
-    if (!(xEventGroupGetBits(events) & GOT_IP)) {
-        joined = false;
-        esp_wifi_disconnect();
-    }
-    ESP_RETURN_ON_ERROR(esp_wifi_scan_start(NULL, true), TAG, "scan");
-    uint16_t n = 0;
-    esp_wifi_scan_get_ap_num(&n);
-    wifi_ap_record_t* aps = calloc(n + 1, sizeof *aps);
-    ESP_RETURN_ON_FALSE(aps != NULL, ESP_ERR_NO_MEM, TAG, "scan results");
-    esp_wifi_scan_get_ap_records(&n, aps);
-    esp_err_t err = ESP_ERR_NOT_FOUND;
+    wifi_ap_record_t* aps;
+    uint16_t n;
+    esp_err_t err = wifi_scan(&aps, &n);
+    if (err != ESP_OK) return err;
+    err = ESP_ERR_NOT_FOUND;
     for (const wifi_network* w = networks; w != NULL && err != ESP_OK; w = w->next) {
         if (!w->ssid[0] || (except != NULL && strcmp(w->ssid, except) == 0) || !seen(w->ssid, aps, n)) continue;
         // Leaves the network joined before only for one that is there

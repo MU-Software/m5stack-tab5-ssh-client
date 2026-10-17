@@ -52,7 +52,7 @@
             {"width": 10, "style": "button", "button": "close", "text": "닫기"}
           ]
         },
-        {"height": 1, "style": "hint", "text": " Tab 이동 · Enter 누르기 · Esc 닫기"},
+        {"height": 1, "style": "hint", "text": " Tab·↑↓ 이동 · Enter 누르기·수정 · Esc 닫기"},
         {"height": 1, "text": ""},
         {"height": 1, "columns": [{"width": 12, "style": "label", "text": " 경로"}, {"text": "{path}"}]},
         {"height": 1, "text": ""},
@@ -83,8 +83,64 @@
         {"height": 1, "columns": [{"width": 12, "text": ""}, {"style": "hint", "text": "{lte.detail}"}]},
         {"height": 1, "style": "hint", "text": " 켜고 끈 것은 재시작 뒤에도 그대로"},
         {"height": 1, "text": ""},
-        {"height": 1, "style": "section", "text": " 저장된 Wi-Fi"},
-        {"list": "wifi", "item": "   {ssid}"}
+        {
+          "height": 1,
+          "columns": [
+            {"style": "section", "text": " 저장된 Wi-Fi · 보이는 것 중 위부터 접속"},
+            {"width": 10, "style": "button", "button": "wifi add", "text": "추가"},
+            {"width": 2, "text": ""}
+          ]
+        },
+        {"list": "wifi", "item": " {order:3}{ssid:34}{joined}", "action": "wifi edit"}
+      ]
+    },
+    "wifi": {
+      "style": "panel",
+      "rows": [
+        {
+          "height": 1,
+          "columns": [
+            {"style": "title", "text": "{wifi.title}"},
+            {"width": 10, "style": "button", "button": "network", "text": "뒤로"},
+            {"width": 1, "text": ""},
+            {"width": 10, "style": "button", "button": "close", "text": "닫기"}
+          ]
+        },
+        {"height": 1, "style": "hint", "text": " Tab·↑↓ 이동 · Enter 입력·누르기 · Esc 닫기"},
+        {"height": 1, "text": ""},
+        {"height": 1, "columns": [{"width": 12, "style": "label", "text": " SSID"}, {"width": 36, "style": "field", "field": "wifi.ssid"}]},
+        {"height": 1, "text": ""},
+        {"height": 1, "columns": [{"width": 12, "style": "label", "text": " 비밀번호"}, {"width": 36, "style": "field", "field": "wifi.password", "secret": true}]},
+        {"height": 1, "columns": [{"width": 12, "text": ""}, {"style": "hint", "text": "새로 입력하면 바뀜 · 비우면 열린 망"}]},
+        {"height": 1, "text": ""},
+        {
+          "height": 1,
+          "columns": [
+            {"width": 1, "text": ""},
+            {"width": 10, "style": "button", "button": "wifi join", "text": "연결"},
+            {"width": 1, "text": ""},
+            {"width": 10, "style": "button", "button": "wifi save", "text": "저장"},
+            {"width": 1, "when": "wifi.saved", "text": ""},
+            {"width": 10, "when": "wifi.saved", "style": "button", "button": "wifi up", "text": "위로"},
+            {"width": 1, "when": "wifi.saved", "text": ""},
+            {"width": 10, "when": "wifi.saved", "style": "button", "button": "wifi delete", "text": "삭제"},
+            {"width": 2, "text": ""},
+            {"style": "alert", "text": "{wifi.result}"}
+          ]
+        },
+        {"height": 1, "style": "hint", "text": " 연결: 붙으면 저장 · 저장: 연결 없이 · 위로: 먼저 접속"},
+        {"height": 1, "text": ""},
+        {
+          "height": 1,
+          "when": "wifi.new",
+          "columns": [
+            {"style": "section", "text": " 보이는 Wi-Fi"},
+            {"width": 10, "style": "button", "button": "wifi scan", "text": "찾기"},
+            {"width": 2, "text": ""}
+          ]
+        },
+        {"height": 1, "when": "wifi.new", "style": "hint", "text": " {wifi.scan}"},
+        {"when": "wifi.new", "rows": [{"list": "visible", "item": "   {ssid:34}{signal:10}{lock:6}{saved}", "action": "wifi pick"}]}
       ]
     },
     "modem": {
@@ -202,6 +258,7 @@
     "section": {"foreground": "#7fb4ff", "bold": true},
     "label": {"foreground": "#a8a8a8"},
     "hint": {"foreground": "#707478"},
-    "button": {"background": "#3a3d44", "foreground": "#ffffff"}
+    "button": {"background": "#3a3d44", "foreground": "#ffffff"},
+    "field": {"background": "#24272e"}
   }
 }

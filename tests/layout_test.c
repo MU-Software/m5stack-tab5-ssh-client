@@ -85,14 +85,15 @@ int main(void) {
     check(t != NULL && t->area.row == 0 && t->area.rows == 29 && l->nodes[1].area.rows == 0, "a node whose setting is off takes no cells");
     free(l);
     l = screen("{\"rows\": [{\"toggle\": \"echo.enabled\"}, {\"list\": \"hosts\", \"item\": \"{alias}\", \"action\": \"connect\"}, {\"field\": "
-               "\"timezone\"}]}",
-               10, 3);
+               "\"timezone\"}, {\"field\": \"wifi.password\", \"secret\": true}]}",
+               10, 4);
     const layout_node* w = l != NULL ? &l->nodes[1] : NULL;
     check(w != NULL && w[0].kind == LAYOUT_TOGGLE && strcmp(w[0].name, "echo.enabled") == 0 && w[0].align == LAYOUT_CENTER, "a toggle");
     check(w != NULL && w[1].kind == LAYOUT_LIST && strcmp(w[1].name, "hosts") == 0 && strcmp(w[1].item, "{alias}") == 0 &&
               strcmp(w[1].action, "connect") == 0 && w[1].align == LAYOUT_LEFT,
           "a list with its item and action");
-    check(w != NULL && w[2].kind == LAYOUT_FIELD && strcmp(w[2].name, "timezone") == 0 && w[2].align == LAYOUT_LEFT, "a field");
+    check(w != NULL && w[2].kind == LAYOUT_FIELD && strcmp(w[2].name, "timezone") == 0 && w[2].align == LAYOUT_LEFT && !w[2].secret, "a field");
+    check(w != NULL && w[3].kind == LAYOUT_FIELD && w[3].secret, "a secret field");
     free(l);
 
     check(refused("{\"columns\": [{\"width\": \"3x\", \"text\": \"a\"}]}", "size 3x"), "a size without a unit refused");

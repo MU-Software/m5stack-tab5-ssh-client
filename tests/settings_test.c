@@ -66,6 +66,16 @@ static int schema_matches(const cJSON* schema, const setting* s) {
     return cJSON_GetArraySize(choices) == n;
 }
 
+// Every setting of a and b the same
+static int same(const global_state* a, const global_state* b) {
+    setting_value x, y;
+    for (size_t i = 0; settings_at(i) != NULL; i++) {
+        settings_get(a, settings_at(i), &x), settings_get(b, settings_at(i), &y);
+        if (x.number != y.number || strcmp(x.text, y.text) != 0) return 0;
+    }
+    return 1;
+}
+
 static const char* shown(const char* name, int n) {
     static char text[80];
     settings_text(settings_find(name), &(setting_value){.number = n}, text, sizeof text);
@@ -106,7 +116,7 @@ int main(void) {
     set_number(&state, "bars.top", 1);
 
     global_state loaded = state;
-    check(*load(&loaded, "{}") == 0 && memcmp(&loaded, &state, sizeof state) == 0, "an empty configuration keeps every value");
+    check(*load(&loaded, "{}") == 0 && same(&loaded, &state), "an empty configuration keeps every value");
     check(*load(&loaded, "{\"log\": {\"enabled\": false, \"file_kb\": 256, \"session_level\": \"warn\"}, \"timezone\": \"UTC0\", "
                          "\"echo\": {\"delay_ms\": 200}, \"bars\": {\"battery\": \"percent\"}}") == 0 &&
               !loaded.log.enabled && loaded.log.file_kb == 256 && loaded.log.quiet_sessions && strcmp(loaded.timezone, "UTC0") == 0 &&
@@ -143,7 +153,7 @@ int main(void) {
     global_state again = state;
     refusals[0] = 0;
     settings_load(&again, config, refused);
-    check(*refusals == 0 && memcmp(&again, &loaded, sizeof loaded) == 0, "settings written as JSON read back the same");
+    check(*refusals == 0 && same(&again, &loaded), "settings written as JSON read back the same");
     cJSON_Delete(config);
     cJSON_Delete(schema);
     free(schema_text);
@@ -157,13 +167,15 @@ int main(void) {
         for (size_t i = 0; l != NULL && i < l->count; i++) {
             const layout_node* node = &l->nodes[i];
             const char* name = node->kind > LAYOUT_LIST ? node->name : node->when;
-            if (name == NULL || (node->kind <= LAYOUT_LIST && strncmp(name, "bars.", 5) != 0)) continue;
+            if (name == NULL || (node->kind <= LAYOUT_LIST && strncmp(name, "bars.", 5) != 0) ||
+                (node->kind == LAYOUT_FIELD && strncmp(name, "wifi.", 5) == 0))
+                continue;
             editors++;
             if (settings_find(name) == NULL) printf("     main/ui.json %s: no setting %s\n", s->string, name), unknown++;
         }
         free(l);
     }
-    check(json != NULL && editors > 0 && unknown == 0, "main/ui.json: every editor and bar names a setting");
+    check(json != NULL && editors > 0 && unknown == 0, "main/ui.json: every editor and bar names a setting, but the Wi-Fi screen's fields");
     cJSON_Delete(json);
     free(text);
     return failures != 0;

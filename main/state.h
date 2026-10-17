@@ -54,6 +54,15 @@ typedef struct {
     int delay_ms;
 } echo_settings;
 
+// The Wi-Fi screen: the saved network it changes ("" for a new one), the network as typed, what came of the last step, and
+// a delete waiting for a second press
+typedef struct {
+    char saved[33];
+    wifi_network network;
+    const char* result;
+    bool deleting;
+} wifi_edit;
+
 typedef struct {
     wifi_network* wifi;
     ssh_host* hosts;
@@ -75,4 +84,5 @@ typedef struct {
     int battery;
     // Choosing a host at boot connects to the one chosen at this esp_timer time, 0 while nobody waits for it
     int64_t host_deadline_us;
+    wifi_edit wifi_edit;
 } global_state;

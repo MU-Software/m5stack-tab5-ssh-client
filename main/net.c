@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/poll.h>
 
@@ -36,6 +37,7 @@
 #define CHECK_MS     5000
 #define JOIN_MS      15000
 #define READY        BIT0
+#define MAX_VISIBLE  16
 
 typedef enum { PATH_NONE, PATH_WIFI, PATH_LTE } path;
 
@@ -54,6 +56,12 @@ static _Atomic net_lte_state lte_now = NET_LTE_DIALING;
 static int64_t wifi_since, wifi_lost, wifi_checked, wifi_tried;
 static bool wifi_ok;
 static int wifi_failures;
+// The screens read the last scan while the manager makes the next
+static atomic_bool scan_wanted;
+static _Atomic net_scan_state scan_state;
+static net_visible_network visible[MAX_VISIBLE];
+static size_t visible_count;
+static portMUX_TYPE visible_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static int64_t since(int64_t start) {
     return (esp_timer_get_time() - start) / 1000;
@@ -136,6 +144,39 @@ static void join_known(const char* except, TickType_t wait) {
     xSemaphoreGive(lock);
 }
 
+static int stronger(const void* a, const void* b) {
+    return ((const net_visible_network*)b)->rssi - ((const net_visible_network*)a)->rssi;
+}
+
+// Each SSID once, at its strongest; hidden ones left out
+static void scan(void) {
+    wifi_ap_record_t* aps;
+    uint16_t n;
+    net_visible_network found[MAX_VISIBLE] = {0};
+    size_t count = 0;
+    bool was_up = wifi_connected();
+    esp_err_t err = wifi_scan(&aps, &n);
+    for (uint16_t i = 0; err == ESP_OK && i < n; i++) {
+        size_t k = 0;
+        while (k < count && strcmp(found[k].ssid, (const char*)aps[i].ssid) != 0)
+            k++;
+        if (aps[i].ssid[0] == 0 || (k == count && count == MAX_VISIBLE) || (k < count && aps[i].rssi <= found[k].rssi)) continue;
+        if (k == count) count++;
+        found[k] = (net_visible_network){.rssi = aps[i].rssi, .open = aps[i].authmode == WIFI_AUTH_OPEN};
+        memcpy(found[k].ssid, aps[i].ssid, sizeof found[k].ssid - 1);
+    }
+    free(aps);
+    qsort(found, count, sizeof found[0], stronger);
+    taskENTER_CRITICAL(&visible_lock);
+    memcpy(visible, found, count * sizeof found[0]);
+    visible_count = count;
+    taskEXIT_CRITICAL(&visible_lock);
+    scan_state = err == ESP_OK ? NET_SCAN_DONE : NET_SCAN_FAILED;
+    ESP_LOGI(TAG, "scan: %zu networks, %s", count, esp_err_to_name(err));
+    // The scan ended the retries of a network that had gone: the known ones are tried again now
+    if (!was_up) wifi_tried = 0;
+}
+
 static void manage(void* arg) {
     (void)arg;
     wifi_started = wifi_start() == ESP_OK;
@@ -155,6 +196,14 @@ static void manage(void* arg) {
         }
         if (!up && was_up) wifi_lost = now;
         was_up = up;
+        if (scan_wanted && !(wifi_started && wifi_enabled)) {
+            scan_wanted = false;
+            scan_state = NET_SCAN_FAILED;
+        } else if (scan_wanted && xSemaphoreTake(lock, 0) == pdTRUE) {
+            scan_wanted = false;
+            scan();
+            xSemaphoreGive(lock);
+        }
         if (wifi_started && wifi_enabled && !up && now - wifi_tried >= WIFI_REJOIN) join_known(NULL, 0);
         if (suspect) {
             int reached = up && current == PATH_WIFI ? wifi_reaches_host(pdMS_TO_TICKS(CHECK_MS)) : -1;
@@ -324,6 +373,24 @@ esp_err_t net_join(const wifi_network* network) {
     xSemaphoreGive(lock);
     xTaskNotifyGive(manager);
     return err;
+}
+
+void net_scan(void) {
+    scan_state = manager != NULL ? NET_SCAN_RUNNING : NET_SCAN_FAILED;
+    scan_wanted = true;
+    if (manager != NULL) xTaskNotifyGive(manager);
+}
+
+net_scan_state net_scan_state_now(void) {
+    return scan_state;
+}
+
+bool net_visible(size_t index, net_visible_network* out) {
+    taskENTER_CRITICAL(&visible_lock);
+    bool found = index < visible_count;
+    if (found) *out = visible[index];
+    taskEXIT_CRITICAL(&visible_lock);
+    return found;
 }
 
 static void status(void) {

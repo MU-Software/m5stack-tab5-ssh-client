@@ -2,6 +2,7 @@
 #include "storage.h"
 
 #include <inttypes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +17,8 @@
 #include <sd_pwr_ctrl_by_on_chip_ldo.h>
 #include <sdmmc_cmd.h>
 #include <tinyusb_msc.h>
+
+#include "config.h"
 
 static const char* TAG = "storage";
 static sdmmc_card_t card;
@@ -213,27 +216,31 @@ static int save_config(cJSON* config, config_source source) {
     return err ? -1 : 0;
 }
 
-int storage_add_wifi(const char* ssid, const char* password) {
+int storage_set_wifi(const char* ssid, const wifi_network* network, int move, wifi_network** networks) {
     config_source source;
+    if (networks != NULL) *networks = NULL;
     xSemaphoreTake(config_lock, portMAX_DELAY);
     cJSON* config = storage_get_device_config(&source);
-    cJSON* list = cJSON_GetObjectItemCaseSensitive(config, "wifi");
-    if (!cJSON_IsArray(list)) {
-        cJSON_DeleteItemFromObjectCaseSensitive(config, "wifi");
-        list = cJSON_AddArrayToObject(config, "wifi");
-    }
-    for (int i = cJSON_GetArraySize(list) - 1; i >= 0; i--) {
-        const cJSON* name = cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(list, i), "ssid");
-        if (cJSON_IsString(name) && strcmp(name->valuestring, ssid) == 0) cJSON_DeleteItemFromArray(list, i);
-    }
-    if (password != NULL) {
-        cJSON* entry = cJSON_CreateObject();
-        cJSON_AddStringToObject(entry, "ssid", ssid);
-        if (password[0]) cJSON_AddStringToObject(entry, "password", password);
-        cJSON_InsertItemInArray(list, 0, entry);
-    }
-    int err = save_config(config, source);
+    int err = config_set_wifi(config, ssid, network, move);
+    if (err == 0 && networks != NULL) err = config_wifi_networks(config, networks);
+    if (err == 0)
+        err = save_config(config, source);
+    else
+        cJSON_Delete(config);
     xSemaphoreGive(config_lock);
+    if (err != 0 && networks != NULL) {
+        free(*networks);
+        *networks = NULL;
+    }
+    return err;
+}
+
+int storage_add_wifi(const char* ssid, const char* password) {
+    wifi_network network = {0};
+    snprintf(network.ssid, sizeof network.ssid, "%s", ssid);
+    snprintf(network.password, sizeof network.password, "%s", password != NULL ? password : "");
+    int err = storage_set_wifi(ssid, password != NULL ? &network : NULL, INT_MIN, NULL);
+    memset(&network, 0, sizeof network);
     return err;
 }
 

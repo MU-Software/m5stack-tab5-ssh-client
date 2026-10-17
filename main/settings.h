@@ -24,7 +24,8 @@ typedef struct {
 
 typedef struct {
     int number;
-    char text[64];
+    // Room for a Wi-Fi key of 64 hex digits
+    char text[65];
 } setting_value;
 
 // NULL for none

@@ -33,7 +33,8 @@ typedef struct {
 
 typedef enum { UI_NONE, UI_ACTION, UI_SET } ui_event_kind;
 
-// An action with the index of its list's chosen item (0 for a button), or a setting's new value
+// An action with the index of its list's chosen item (0 for a button), or a field's or another setting's new value: a field
+// that is no setting has setting NULL
 typedef struct {
     ui_event_kind kind;
     const char* name;

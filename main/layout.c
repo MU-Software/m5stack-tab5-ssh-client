@@ -99,6 +99,7 @@ static bool node(parser* p, layout_node* n, const cJSON* item, const layout_styl
         !string(p, item, "action", &n->action))
         return false;
     n->border = cJSON_IsTrue(field(item, "border"));
+    n->secret = cJSON_IsTrue(field(item, "secret"));
     if (kinds == 0 && n->text == NULL) return fail(p, "a node without rows, columns, text or a widget");
     if (n->text == NULL) n->text = "";
     if (n->kind != LAYOUT_TEXT && n->kind != LAYOUT_LIST && n->kind != LAYOUT_FIELD) n->align = LAYOUT_CENTER;

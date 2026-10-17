@@ -32,6 +32,32 @@ static int count(const wifi_network* w) {
     return n;
 }
 
+// The SSIDs of the list after config_set_wifi, "!" when it failed; a network's password shows as =PASSWORD
+static const char* set_wifi(const char* json, const char* ssid, const char* new_ssid, const char* password, int move) {
+    static char out[160];
+    cJSON* config = cJSON_Parse(json);
+    wifi_network network = {0};
+    if (new_ssid != NULL)
+        snprintf(network.ssid, sizeof network.ssid, "%s", new_ssid), snprintf(network.password, sizeof network.password, "%s", password);
+    out[0] = 0;
+    if (config_set_wifi(config, ssid, new_ssid != NULL ? &network : NULL, move) != 0) snprintf(out, sizeof out, "!");
+    const cJSON* item;
+    cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(config, "wifi")) {
+        const cJSON* p = cJSON_GetObjectItemCaseSensitive(item, "password");
+        snprintf(out + strlen(out), sizeof out - strlen(out), "%s%s%s ", cJSON_GetObjectItemCaseSensitive(item, "ssid")->valuestring,
+                 p != NULL ? "=" : "", p != NULL ? p->valuestring : "");
+    }
+    cJSON_Delete(config);
+    return out;
+}
+
+static int valid(const char* ssid, const char* password) {
+    wifi_network network = {0};
+    snprintf(network.ssid, sizeof network.ssid, "%s", ssid);
+    snprintf(network.password, sizeof network.password, "%s", password);
+    return config_wifi_valid(&network);
+}
+
 static const char ssh_config[] = "# comment\n"
                                  "Host tab5 work\n"
                                  "  HostName example.org\n"
@@ -68,6 +94,31 @@ int main(void) {
     check(wifi("{\"wifi\": []}", &w) == 0 && w == NULL, "empty list, no networks");
     check(wifi("{\"wifi\": {}}", &w) != 0, "wifi as an object refused");
     check(wifi("{\"host\": ", &w) != 0 && wifi("[]", &w) != 0, "malformed or non-object JSON refused");
+
+    static const char three[] = "{\"wifi\": [{\"ssid\": \"a\", \"password\": \"aaaaaaaa\"}, {\"ssid\": \"b\"}, {\"ssid\": \"c\"}]}";
+    check(strcmp(set_wifi(three, "b", "b", "bbbbbbbb", 0), "a=aaaaaaaa b=bbbbbbbb c ") == 0, "set_wifi: a new password in place");
+    check(strcmp(set_wifi(three, "a", "a", "", 0), "a b c ") == 0, "set_wifi: an empty password leaves none");
+    check(strcmp(set_wifi(three, "d", "d", "", 0), "d a=aaaaaaaa b c ") == 0, "set_wifi: a new network first");
+    check(strcmp(set_wifi(three, "c", NULL, "", 0), "a=aaaaaaaa b ") == 0, "set_wifi: removed");
+    check(strcmp(set_wifi(three, "d", NULL, "", 0), "a=aaaaaaaa b c ") == 0, "set_wifi: removing an unknown one changes nothing");
+    check(strcmp(set_wifi(three, "c", "c", "", -1), "a=aaaaaaaa c b ") == 0 &&
+              strcmp(set_wifi(three, "a", "a", "aaaaaaaa", -1), "a=aaaaaaaa b c ") == 0,
+          "set_wifi: moved up one, not past the front");
+    check(strcmp(set_wifi(three, "a", "a", "aaaaaaaa", 5), "b c a=aaaaaaaa ") == 0, "set_wifi: moved down, not past the end");
+    check(strcmp(set_wifi(three, "c", "c", "", -2147483647 - 1), "c a=aaaaaaaa b ") == 0, "set_wifi: moved first");
+    check(strcmp(set_wifi(three, "b", "e", "", 0), "a=aaaaaaaa e c ") == 0, "set_wifi: renamed in place");
+    check(strcmp(set_wifi(three, "c", "a", "", 0), "b a ") == 0, "set_wifi: renamed onto another, which goes");
+    check(strcmp(set_wifi("{\"wifi\": [{\"ssid\": \"a\"}, {\"ssid\": \"b\"}, {\"ssid\": \"a\"}]}", "a", "a", "", 0), "a b ") == 0,
+          "set_wifi: duplicates go");
+    check(strcmp(set_wifi("{}", "a", "a", "", 0), "a ") == 0 && strcmp(set_wifi("{\"wifi\": 1}", "a", "a", "", 0), "a ") == 0,
+          "set_wifi: a list made when absent or not a list");
+    check(strcmp(set_wifi("[]", "a", "a", "", 0), "!") == 0, "set_wifi: refused for a configuration that is not an object");
+    check(valid("a", "") && valid("a", "12345678") && valid("0123456789abcdef0123456789abcdef", "") &&
+              valid("a", "012345678901234567890123456789012345678901234567890123456789012") &&
+              valid("a", "0123456789abcdefABCDEF0123456789abcdef0123456789abcdef0123456789"),
+          "wifi_valid: open, 8 and 63 characters, 64 hex digits");
+    check(!valid("", "") && !valid("a", "1234567") && !valid("a", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg"),
+          "wifi_valid: no SSID, 7 characters, 64 not hex");
 
     ssh_host* hosts = config_ssh_hosts(ssh_config);
     check(hosts != NULL && strcmp(hosts[0].alias, "tab5") == 0 && strcmp(hosts[1].alias, "work") == 0 && strcmp(hosts[2].alias, "printer.lan") == 0 &&
