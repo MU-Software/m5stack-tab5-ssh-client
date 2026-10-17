@@ -12,7 +12,7 @@ typedef struct {
     const char *authorized_keys, *user;
     WOLFSSH* ssh;
     int fd;
-    char command[128];
+    char command[512];
     // Of the key offered last: once accepted, the one that logged in
     char fingerprint[64];
     // A key or user name was turned down

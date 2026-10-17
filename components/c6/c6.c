@@ -15,11 +15,13 @@
 #include <esp_log.h>
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 
 #include "c6_protocol.h"
 
-#define RESTARTED 0x43365253
+#define RESTARTED   0x43365253
+#define NVS_WAIT_MS 3000
 
 static const char* TAG = "c6";
 static void* bus;
@@ -32,6 +34,14 @@ static void (*wifi_listener)(void);
 static portMUX_TYPE wifi_lock = portMUX_INITIALIZER_UNLOCKED;
 // Set by the restart that follows a C6 that did not come up, so one that stays silent is reset only once
 static RTC_NOINIT_ATTR uint32_t restarted;
+// One P4_NVS at a time; the answer goes to nvs_answer while it is set
+static StaticSemaphore_t nvs_lock_memory, nvs_answered_memory;
+static SemaphoreHandle_t nvs_lock, nvs_answered;
+static portMUX_TYPE nvs_guard = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t nvs_sequence, *nvs_answer;
+static size_t nvs_answer_length;
+static esp_err_t nvs_error;
+EXT_RAM_BSS_ATTR static uint8_t nvs_message[2 + C6_NVS_MESSAGE];
 
 bool c6_version(char* version, size_t size) {
     eh_host_coprocessor_fwver_t v = {0};
@@ -55,6 +65,18 @@ static void from_c6(uint32_t id, const uint8_t* data, size_t size, void* context
         wifi_reports++;
         taskEXIT_CRITICAL(&wifi_lock);
         if (wifi_listener != NULL) wifi_listener();
+    }
+    if (size >= 6 && data[0] == C6_NVS) {
+        bool answered = false;
+        taskENTER_CRITICAL(&nvs_guard);
+        if (nvs_answer != NULL && data[1] == nvs_sequence) {
+            nvs_error = (esp_err_t)(data[2] | data[3] << 8 | data[4] << 16 | (uint32_t)data[5] << 24);
+            memcpy(nvs_answer, data + 6, nvs_answer_length = MIN(size - 6, nvs_answer_length));
+            nvs_answer = NULL;
+            answered = true;
+        }
+        taskEXIT_CRITICAL(&nvs_guard);
+        if (answered) xSemaphoreGive(nvs_answered);
     }
     for (; size >= 1 && data[0] == C6_LOG && line < end; line = eol + 1) {
         eol = memchr(line, '\n', (size_t)(end - line));
@@ -101,6 +123,8 @@ static void leaving(void) {
 // The C6 keeps its power and Wi-Fi through restarts of this chip (power.c powers it)
 esp_err_t c6_start(void) {
     char version[24] = "unknown";
+    nvs_lock = xSemaphoreCreateMutexStatic(&nvs_lock_memory);
+    nvs_answered = xSemaphoreCreateBinaryStatic(&nvs_answered_memory);
     esp_err_t err = esp_hosted_init();
     if (err == ESP_OK) err = esp_hosted_connect_to_slave();
     bool known = err == ESP_OK && c6_version(version, sizeof version);
@@ -135,6 +159,31 @@ unsigned c6_protocol(void) {
 
 esp_err_t c6_send(const uint8_t* message, size_t size) {
     return eh_host_peer_data_send(P4_TO_C6, message, size);
+}
+
+// The answer comes on its own, often before the send returns
+esp_err_t c6_nvs(const uint8_t* request, size_t request_length, uint8_t* answer, size_t* answer_length) {
+    if (protocol < C6_NVS_SINCE) return ESP_ERR_NOT_SUPPORTED;
+    if (request_length > C6_NVS_MESSAGE) return ESP_ERR_INVALID_SIZE;
+    xSemaphoreTake(nvs_lock, portMAX_DELAY);
+    xSemaphoreTake(nvs_answered, 0);
+    nvs_message[0] = P4_NVS;
+    nvs_message[1] = ++nvs_sequence;
+    memcpy(nvs_message + 2, request, request_length);
+    taskENTER_CRITICAL(&nvs_guard);
+    nvs_answer = answer;
+    nvs_answer_length = *answer_length;
+    taskEXIT_CRITICAL(&nvs_guard);
+    esp_err_t err = eh_host_peer_data_send(P4_TO_C6, nvs_message, 2 + request_length);
+    memset(nvs_message, 0, sizeof nvs_message);
+    if (err == ESP_OK && xSemaphoreTake(nvs_answered, pdMS_TO_TICKS(NVS_WAIT_MS)) != pdTRUE) err = ESP_ERR_TIMEOUT;
+    taskENTER_CRITICAL(&nvs_guard);
+    if (err == ESP_OK) err = nvs_error;
+    *answer_length = err == ESP_OK ? nvs_answer_length : 0;
+    nvs_answer = NULL;
+    taskEXIT_CRITICAL(&nvs_guard);
+    xSemaphoreGive(nvs_lock);
+    return err;
 }
 
 unsigned c6_wifi_state(c6_wifi_status* status) {

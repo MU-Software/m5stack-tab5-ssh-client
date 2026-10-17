@@ -23,6 +23,10 @@ bootloader has no rollback, and it can only be reflashed otherwise through the b
 It keeps a copy of the known networks and joins them itself (the first one a scan sees, in their order; again after a
 drop), so it stays joined through restarts of the Tab5, which then only gets an address again.
 
+`c6 nvs list|get NAMESPACE KEY|dump [NAMESPACE]|set NAMESPACE KEY TYPE VALUE|erase NAMESPACE [KEY]` reads and changes
+the C6's NVS, over USB (`tools/device.py send`) or SSH; values only in the reply, never in a log. TYPE `u8`…`i64`,
+`str`, `blob` (hex); a command line holds at most 511 bytes.
+
 USB-C is TinyUSB: a terminal port and a control port (`tools/device.py`). An OTA image is kept once it has run 10 s
 and USB came up: one that USB never comes up with rolls back after 30 s, one that crashes before at the next restart.
 The ROM loader needs a BOOT reset.

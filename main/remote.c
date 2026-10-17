@@ -21,6 +21,8 @@
 #include <lwip/sockets.h>
 #include <wolfssl/wolfcrypt/memory.h>
 
+#include "c6.h"
+#include "c6_nvs.h"
 #include "catm.h"
 #include "config.h"
 #include "control.h"
@@ -85,6 +87,10 @@ static WOLFSSH_CTX* load_host_key(void) {
 
 static void say(sshd_session* s, const char* text) {
     sshd_write(s, text, strlen(text), WAIT_MS);
+}
+
+static void write_reply(void* context, const char* text, size_t length) {
+    sshd_write(context, text, length, WAIT_MS);
 }
 
 // The log from position on, until the client leaves or, with quiet_ms, until that long passes without a line
@@ -214,6 +220,9 @@ static int run(sshd_session* s, after* then) {
     }
     if (strcmp(line, "config") == 0) return print_config(s);
     if (strcmp(line, "config set") == 0) return set_config(s);
+    // Its values go to stdout alone, never to the log
+    if (strcmp(line, "c6 nvs") == 0 || strncmp(line, "c6 nvs ", 7) == 0)
+        return c6_nvs_command(line + 6, &(c6_nvs_io){c6_protocol(), c6_nvs, esp_err_to_name, write_reply, s});
     if (strcmp(line, "restart") == 0) {
         *then = RESTART;
         return 0;
@@ -269,9 +278,7 @@ static void serve(void* arg) {
             else
                 ESP_LOGW(TAG, "%s: %s", from, wolfSSH_ErrorToName(rc));
         } else {
-            // Not a Wi-Fi password
-            int shown = strncmp(s.command, "wifi connect ", 13) == 0 ? 12 : (int)strlen(s.command);
-            ESP_LOGI(TAG, "%s: %s runs \"%.*s\"", from, s.fingerprint, shown, s.command);
+            ESP_LOGI(TAG, "%s: %s runs \"%.*s\"", from, s.fingerprint, control_loggable(s.command), s.command);
             update_works(UPDATE_NETWORK);
             after then = STAY;
             sshd_close(&s, run(&s, &then));

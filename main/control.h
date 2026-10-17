@@ -4,5 +4,10 @@
 
 typedef enum { CONTROL_USB = 1, CONTROL_SSH = 2 } control_transport;
 
+// Longest command line, with its terminator
+#define CONTROL_LINE 512
+
 // "commands: …", those transport takes: its own (usb.c, remote.c) and main.c's
 void control_help(control_transport transport, char* out, size_t size);
+// How much of a command line a log may show
+int control_loggable(const char* line);

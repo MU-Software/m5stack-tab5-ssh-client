@@ -2,6 +2,7 @@
 #include "control.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #define BOTH (CONTROL_USB | CONTROL_SSH)
 
@@ -13,6 +14,7 @@ static const struct {
     {"restart", BOTH},
     {"update SIZE CRC32", BOTH},
     {"c6 update SIZE CRC32", BOTH},
+    {"c6 nvs list|get NAMESPACE KEY|dump [NAMESPACE]|set NAMESPACE KEY TYPE VALUE|erase NAMESPACE [KEY]", BOTH},
     {"log", CONTROL_SSH},
     {"version", CONTROL_SSH},
     {"config", CONTROL_SSH},
@@ -35,4 +37,14 @@ void control_help(control_transport transport, char* out, size_t size) {
         n += snprintf(out + n, size - (size_t)n, "%s%s", separator, commands[i].syntax);
         separator = ", ";
     }
+}
+
+// Not a Wi-Fi password, nor a value for the C6's NVS: c6 nvs set up to its type
+int control_loggable(const char* line) {
+    if (strncmp(line, "wifi connect ", 13) == 0) return 12;
+    if (strncmp(line, "c6 nvs set ", 11) != 0) return (int)strlen(line);
+    const char* end = line + 10;
+    for (int i = 0; i < 3 && end != NULL; i++)
+        end = strchr(end + 1, ' ');
+    return end != NULL ? (int)(end - line) : (int)strlen(line);
 }

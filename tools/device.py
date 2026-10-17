@@ -2,7 +2,9 @@
 """The Tab5 over USB: the firmware's terminal and control ports (TinyUSB), or USB-Serial/JTAG for esptool. Or SSH."""
 
 import os
+import re
 import subprocess
+import sys
 import time
 import zlib
 from pathlib import Path
@@ -15,6 +17,8 @@ from serial.tools import list_ports
 
 ESPRESSIF = 0x303A
 USB_SERIAL_JTAG = 0x1001
+# The log shares the control port
+LOG_LINE = re.compile(rb"^(\x1b\[[0-9;]*m)?[EWIDV] \(")
 
 app = typer.Typer(no_args_is_help=True)
 host: str | None = None
@@ -130,13 +134,30 @@ def run_esptool(context: typer.Context) -> None:
     esptool_main(*context.args)
 
 
+def reply(s: serial.Serial, end: bytes, seconds: float) -> int:
+    """Lines up to the one starting with end, which ends in ESP_OK on success, without the log's."""
+    deadline, buffer = time.monotonic() + seconds, b""
+    while time.monotonic() < deadline:
+        *lines, buffer = (buffer + bytes(s.read(256))).split(b"\n")
+        for line in (line.rstrip(b"\r") for line in lines):
+            if not LOG_LINE.match(line):
+                sys.stdout.buffer.write(line + b"\n")
+            if line.startswith(end):
+                return 0 if line == end + b"ESP_OK" else 1
+    raise SystemExit(f"no {end.decode()!r} line from the Tab5")
+
+
 @app.command()
 def send(command: Annotated[str, typer.Argument(help="any unknown command makes the firmware log the list")]) -> None:
-    """Send a control command to the firmware; over SSH, print what it logs until it is quiet for a second."""
+    """Send a control command to the firmware; over SSH, print what it logs until it is quiet for a second.
+    c6 nvs prints its reply, which no log carries."""
     if host:
         raise SystemExit(subprocess.run(["ssh", host, command]).returncode)
-    with serial.Serial(firmware_port(-1)) as s:
+    with serial.Serial(firmware_port(-1), timeout=0.1) as s:
+        s.reset_input_buffer()
         s.write(command.encode() + b"\n")
+        if command.split()[:2] == ["c6", "nvs"]:
+            raise SystemExit(reply(s, b"c6 nvs ", 20))
 
 
 @app.command()

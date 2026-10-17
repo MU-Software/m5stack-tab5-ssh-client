@@ -14,6 +14,9 @@ esp_err_t c6_update(const uint8_t* image, size_t size);
 unsigned c6_protocol(void);
 // A P4_TO_C6 message, its kind first
 esp_err_t c6_send(const uint8_t* message, size_t size);
+// A P4_NVS request's body and the C6_NVS answer's into answer, at most *answer_length bytes: the error of the exchange, else the
+// C6's; ESP_ERR_NOT_SUPPORTED from a C6 firmware older than C6_NVS_SINCE
+esp_err_t c6_nvs(const uint8_t* request, size_t request_length, uint8_t* answer, size_t* answer_length);
 typedef struct {
     // C6_WIFI_* of c6_protocol.h
     uint8_t state, reason;
