@@ -54,8 +54,8 @@ static char panel_name[32];
 static ui_dialog_kind dialog_kind;
 static unsigned dialog_serial;
 static char dialog_title[96], dialog_lines[DIALOG_LINES][160], dialog_yes[32];
-// A list dialog's list, its items and the value over it
-static char dialog_list[32], dialog_item[96], dialog_note[32];
+// A list dialog's list, its items and the value over it; a screen dialog's screen
+static char dialog_list[32], dialog_item[96], dialog_note[32], dialog_screen[32];
 static bool whole;
 static uint32_t laid_out; // hash of the "when"s
 // The node a touch went down on, its list's item for a list's button, and whether it is still over it
@@ -130,13 +130,13 @@ static void lay_out(void) {
         t = layout_find(main_screen.screen, LAYOUT_TERMINAL);
     }
     if (panel.screen != NULL) layout_place(panel.screen, t != NULL ? t->area : all, shown, NULL);
-    // In the middle of the screen, as high as its border and the rows shown
+    // In the middle of the screen, as high as its border and the rows shown; a screen nearly as wide as the screen
     if (dialog.screen != NULL) {
         const layout_node* root = &dialog.screen->nodes[0];
-        int32_t height = 2, across = DIALOG_COLUMNS < columns ? DIALOG_COLUMNS : columns;
+        int32_t height = root->border ? 2 : 0, across = dialog_kind == UI_SCREEN ? columns - 4 : DIALOG_COLUMNS < columns ? DIALOG_COLUMNS : columns;
         for (int i = 0; i < root->children; i++) {
             const layout_node* c = &dialog.screen->nodes[root->first + i];
-            if (c->when == NULL || shown(NULL, c->when)) height += c->size;
+            if (c->when == NULL || shown(NULL, c->when)) height += c->unit == LAYOUT_CELLS ? c->size : 1;
         }
         layout_place(dialog.screen, (layout_area){(columns - across) / 2, (rows - height) / 2, across, height}, shown, NULL);
     }
@@ -213,9 +213,26 @@ static void fit_box(void) {
     }
 }
 
-unsigned ui_dialog(ui_dialog_kind kind, const char* title, const char* text, const char* yes) {
-    if (box_layout == NULL) return 0;
+// `screen` as the dialog of `kind`: its field or list first, else the button that does nothing
+static unsigned show_dialog(layout* screen, ui_dialog_kind kind) {
+    if (screen == NULL) return 0;
     dialog_kind = kind;
+    dialog.screen = screen, dialog.focus = -1, pressed = NULL;
+    stop_editing(&dialog);
+    if (box_layout != NULL) fit_box();
+    choose_first(&dialog);
+    lay_out();
+    const char* idle = kind == UI_ALERT ? "dialog ok" : "dialog cancel";
+    layout_kind first = kind >= UI_PROMPT ? LAYOUT_FIELD : kind == UI_LIST ? LAYOUT_LIST : LAYOUT_BUTTON;
+    for (size_t i = 0; dialog.focus < 0 && i < screen->count; i++) {
+        const layout_node* n = &screen->nodes[i];
+        if (n->kind == first && (first != LAYOUT_BUTTON || strcmp(n->action, idle) == 0)) dialog.focus = (int)i;
+    }
+    dialog.editing = kind >= UI_PROMPT;
+    return ++dialog_serial;
+}
+
+unsigned ui_dialog(ui_dialog_kind kind, const char* title, const char* text, const char* yes) {
     snprintf(dialog_title, sizeof dialog_title, "%s", title != NULL ? title : "");
     snprintf(dialog_yes, sizeof dialog_yes, "%s", yes);
     for (size_t i = 0; i < DIALOG_LINES; i++) {
@@ -224,20 +241,12 @@ unsigned ui_dialog(ui_dialog_kind kind, const char* title, const char* text, con
         snprintf(dialog_lines[i], sizeof dialog_lines[i], "%.*s", (int)length, text);
         text += end != NULL ? length + 1 : length;
     }
-    dialog.screen = box_layout, dialog.focus = -1, pressed = NULL;
-    stop_editing(&dialog);
-    fit_box();
-    choose_first(&dialog);
-    lay_out();
-    // The field or the list, else the button that does nothing
-    const char* idle = kind == UI_ALERT ? "dialog ok" : "dialog cancel";
-    layout_kind first = kind >= UI_PROMPT ? LAYOUT_FIELD : kind == UI_LIST ? LAYOUT_LIST : LAYOUT_BUTTON;
-    for (size_t i = 0; dialog.focus < 0 && i < box_layout->count; i++) {
-        const layout_node* n = &box_layout->nodes[i];
-        if (n->kind == first && (first != LAYOUT_BUTTON || strcmp(n->action, idle) == 0)) dialog.focus = (int)i;
-    }
-    dialog.editing = kind >= UI_PROMPT;
-    return ++dialog_serial;
+    return show_dialog(box_layout, kind);
+}
+
+unsigned ui_dialog_screen(const char* name) {
+    snprintf(dialog_screen, sizeof dialog_screen, "%s", name);
+    return show_dialog(find(name), UI_SCREEN);
 }
 
 unsigned ui_dialog_list(const char* title, const char* list, const char* item, const char* note, const char* yes) {
@@ -310,7 +319,9 @@ bool ui_load(const char* text, char* error, size_t size) {
     }
     main_screen.screen = find("main");
     if (box_layout != NULL) fit_box();
-    if (dialog.screen != NULL) dialog.screen = box_layout;
+    // A screen's nodes may have moved
+    if (dialog.screen != NULL && dialog_kind == UI_SCREEN) dialog.screen = find(dialog_screen), dialog.focus = -1, move_focus(&dialog, 1);
+    if (dialog.screen != NULL && dialog_kind != UI_SCREEN) dialog.screen = box_layout;
     char open[sizeof panel_name];
     memcpy(open, panel_name, sizeof open);
     if (!ui_open(open[0] != 0 ? open : NULL)) ui_open(NULL);

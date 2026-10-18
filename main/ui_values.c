@@ -95,8 +95,9 @@ static const char* network(void) {
 // {modem.NAME}, and {modem.NAME.age} for when it was read
 static const char* modem_shown(const char* name) {
     char shown[32], scratch[96];
-    if (strcmp(name, "read") == 0)
-        return net.lte_address[0] != 0 ? "PPP 중: 다이얼 전에 읽은 값 · 다시 읽으려면 LTE 끄기" : "PPP 아님: 다시 읽기로 새로 읽음";
+    // Read again only off PPP
+    if (strcmp(name, "read") == 0) return net.lte_address[0] != 0 ? "다이얼 전에 읽은 값" : NULL;
+    if (strcmp(name, "readable") == 0) return net.lte_address[0] != 0 ? NULL : "1";
     const char* age = strstr(name, ".age");
     if (age == NULL) return modem_text(&modem, name, text, sizeof text) != MODEM_ITEMS ? text : NULL;
     snprintf(shown, sizeof shown, "%.*s", (int)(age - name), name);
@@ -187,15 +188,6 @@ static const char* value(void* user, const char* name) {
     if (strcmp(name, "lte.detail") == 0) return net.lte_address[0] != 0 ? net.lte_address : NULL;
     if (strncmp(name, "modem.", 6) == 0) return modem_shown(name + 6);
     if (strncmp(name, "wifi.", 5) == 0) return wifi_value(name + 5);
-    if (strcmp(name, "config") == 0) {
-        static const char* const problems[] = {
-            [CONFIG_LOADED] = NULL,
-            [CONFIG_MISSING] = "SD 카드에 .config/tab5-ssh/config.json 없음 · 기본값으로 실행, 바꾸면 만듦",
-            [CONFIG_NO_CARD] = "SD 카드 없음 · 기본값으로 실행, 바꾼 설정은 저장 안 됨",
-            [CONFIG_INVALID] = "config.json이 JSON이 아님 · 기본값으로 실행, 고칠 때까지 저장 안 됨",
-        };
-        return problems[state->config];
-    }
     return NULL;
 }
 

@@ -173,13 +173,13 @@ modem_item modem_text(const modem_snapshot* s, const char* name, char* out, size
     } else if (item == MODEM_EDRX_NETWORK) {
         const char *given = granted(v), *asked = cycle(s->values[MODEM_EDRX]);
         if (given != NULL)
-            snprintf(out, size, "망이 %s s 허용", given);
+            snprintf(out, size, "켜짐 · 주기 %s초", given);
         else if (v[0] == 0)
             snprintf(out, size, "모름");
         else if (asked != NULL)
-            snprintf(out, size, "안 씀 · 기억된 요청 %s s", asked);
+            snprintf(out, size, "꺼짐 · %s초로 요청해 둠", asked);
         else
-            snprintf(out, size, "안 씀");
+            snprintf(out, size, "꺼짐");
     } else if (item == MODEM_PSM) {
         bool alone = v[0] != 0 && (v[1] == 0 || v[1] == ',');
         if (alone && v[0] == '0')
@@ -224,7 +224,7 @@ modem_item modem_text(const modem_snapshot* s, const char* name, char* out, size
     } else if (item == MODEM_BACKOFF) {
         const char* digits = backoff_digits(v);
         if (modem_backoff_clear(v) && strcmp(s->values[MODEM_REJECTS], "0") == 0)
-            snprintf(out, size, "보이지 않음");
+            snprintf(out, size, "없음");
         else
             snprintf(out, size, "있을 수 있음 · CTRJ %s · NV %.16s", s->values[MODEM_REJECTS], digits != NULL ? digits : "?");
     } else {

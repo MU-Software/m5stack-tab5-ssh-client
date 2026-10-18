@@ -68,7 +68,7 @@ int main(void) {
               !modem_backoff_clear("16,00000000253E5A000000000000000000") && !modem_backoff_clear(""),
           "the NV back-off: zero front half only, the stale 253E5A00 of the research not");
     check(strcmp(shown(&s, "qualcomm_urc"), "켬") == 0 && strcmp(shown(&s, "battery_check"), "켬") == 0, "switches as 켬");
-    check(strcmp(shown(&s, "edrx"), "안 씀 · 기억된 요청 10.24 s") == 0, "eDRX remembered but not granted");
+    check(strcmp(shown(&s, "edrx"), "꺼짐 · 10.24초로 요청해 둠") == 0, "eDRX remembered but not granted");
     check(!modem_wanted(&s, MODEM_QUALCOMM_URC) && !modem_wanted(&s, MODEM_BATTERY_CHECK) && !modem_wanted(&s, MODEM_EDRX),
           "the bench module needs no write: CEDRXS? alone does not call for one");
     check(strcmp(shown(&s, "psm"), "끔") == 0 && strcmp(shown(&s, "mode"), "자동 · CAT-M") == 0, "PSM, CNMP and CMNB");
@@ -79,7 +79,7 @@ int main(void) {
     check(strcmp(shown(&s, "signal"), "RSRP -102 · RSRQ -7 · SINR 6 · CSQ 18") == 0, "signal, SINR = 2 RSSNR - 20");
     check(strcmp(shown(&s, "bearer"), "켜짐 · 10.53.105.62 · APN internet.lguplus.co.kr") == 0, "the PDP context");
     check(strcmp(shown(&s, "sim"), "READY · 898206…1234") == 0, "SIM with the ICCID masked");
-    check(strcmp(shown(&s, "backoff"), "보이지 않음") == 0, "no back-off in sight");
+    check(strcmp(shown(&s, "backoff"), "없음") == 0, "no back-off in sight");
     check(strcmp(shown(&s, "number"), "+821012345678") == 0, "the number in full on the screen");
     modem_mask("+CNUM: \"\",\"+821012345678\",145", masked, sizeof masked);
     check(strcmp(masked, "+CNUM: \"\",\"…5678\",145") == 0, "a +CNUM line masked for the log");
@@ -112,7 +112,7 @@ int main(void) {
     s = parsed(other);
     check(strcmp(shown(&s, "number"), "없음") == 0, "no number after ERROR");
     check(strcmp(shown(&s, "qualcomm_urc"), "모름") == 0 && strcmp(shown(&s, "battery_check"), "끔") == 0, "a missing line is unknown, 0 is 끔");
-    check(strcmp(shown(&s, "edrx"), "망이 10.24 s 허용") == 0, "eDRX granted by the network");
+    check(strcmp(shown(&s, "edrx"), "켜짐 · 주기 10.24초") == 0, "eDRX granted by the network");
     check(!modem_wanted(&s, MODEM_QUALCOMM_URC) && modem_wanted(&s, MODEM_BATTERY_CHECK) && modem_wanted(&s, MODEM_EDRX) &&
               !modem_wanted(&s, MODEM_PSM) && !modem_wanted(&s, MODEM_MODE),
           "writes for a switch at 0 and granted eDRX only, none for an unknown switch");

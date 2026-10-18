@@ -88,8 +88,8 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
 - Modem: before each dial the firmware reads the registration, cell, signal, PDP context, SIM (ICCID masked) and back-off
   state; once a boot, when no back-off is in sight, also its settings, keeping QUALCOMM URCs and the battery check on and
   eDRX off while the network grants it (`AT+CURCCFG="QUALCOMM",1`, `AT+CBATCHK=1`, `AT+CEDRXS=0,4`, each only when
-  needed). `modem status` logs what was read, `modem read` reads it again while PPP is down (`lte off`), and the
-  settings screen's 모뎀 page shows it with its age. `modem at COMMAND` sends any AT command while PPP is down and logs
+  needed). `modem status` logs what was read, `modem read` reads it again while PPP is down (`lte off`), and 모뎀 on
+  the network screen's LTE row shows it in a dialog with its age. `modem at COMMAND` sends any AT command while PPP is down and logs
   the reply: settings it writes stay in the modem, and some cost a network attach.
 - Slow links: keys typed at the end of a line show underlined until the host echoes them (only once it echoed one since
   the last Enter or other key, so not at password prompts); top right, the seconds typing has had no answer from the host,

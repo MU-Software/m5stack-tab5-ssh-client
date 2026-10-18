@@ -18,6 +18,8 @@ typedef struct {
     const char* unit;
     // Choices, NULL-ended, as shown and in the configuration file
     const char *const *options, *const *values;
+    // A number's 0 as shown, NULL for the number
+    const char* zero;
     // In global_state: a bool or an int (a toggle, a number or a choice's index), or a char array of `size`
     size_t offset, size;
 } setting;

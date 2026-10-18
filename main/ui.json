@@ -71,6 +71,8 @@
             {"width": 2, "align": "right", "text": "{lte.path}"},
             {"width": 8, "style": "label", "text": " LTE"},
             {"text": "{lte.state}"},
+            {"width": 8, "style": "button", "button": "modem info", "text": "모뎀"},
+            {"width": 1, "text": ""},
             {"width": 8, "style": "button", "button": "lte toggle", "text": "{lte.toggle}"},
             {"width": 1, "text": ""}
           ]
@@ -98,20 +100,20 @@
       ]
     },
     "modem": {
-      "style": "panel",
+      "style": "dialog",
+      "border": true,
       "rows": [
         {
           "height": 1,
           "columns": [
             {"style": "title", "text": " 모뎀 (Stamp CAT-M)"},
-            {"width": 12, "style": "button", "button": "modem read", "text": "다시 읽기"},
+            {"width": 12, "when": "modem.readable", "style": "button", "button": "modem read", "text": "다시 읽기"},
             {"width": 1, "text": ""},
-            {"width": 10, "style": "button", "button": "settings", "text": "설정"},
+            {"width": 10, "style": "button", "button": "dialog cancel", "text": "닫기"},
             {"width": 1, "text": ""}
           ]
         },
-        {"height": 1, "style": "hint", "text": " Tab 이동 · Enter 누르기 · 다이얼마다 읽음, 설정 값은 부팅 때"},
-        {"height": 1, "style": "alert", "text": " {modem.read}"},
+        {"height": 1, "when": "modem.read", "style": "hint", "text": " {modem.read}"},
         {"height": 1, "style": "section", "text": " 망"},
         {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   등록"}, {"text": "{modem.registration}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.registration.age} "}]},
         {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   사업자"}, {"text": "{modem.operator}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.operator.age} "}]},
@@ -122,38 +124,16 @@
         {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   전화번호"}, {"text": "{modem.number}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.number.age} "}]},
         {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   back-off"}, {"text": "{modem.backoff}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.backoff.age} "}]},
         {"height": 1, "text": ""},
-        {"height": 1, "style": "section", "text": " 펌웨어가 지키는 값 · 부팅 때 back-off가 보이지 않으면 맞춤"},
-        {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   QUALCOMM 알림"}, {"text": "{modem.qualcomm_urc}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.qualcomm_urc.age} "}]},
-        {"height": 1, "columns": [{"width": 18, "text": ""}, {"style": "hint", "text": "QCSRVCINFO·$QCJDSTATE 줄, 꺼져 있으면 켬 (CURCCFG)"}]},
-        {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   저전압 꺼짐"}, {"text": "{modem.battery_check}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.battery_check.age} "}]},
-        {"height": 1, "columns": [{"width": 18, "text": ""}, {"style": "hint", "text": "VBAT 2.5 V 아래에서 모뎀이 스스로 꺼짐, 꺼져 있으면 켬 (CBATCHK)"}]},
-        {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   eDRX"}, {"text": "{modem.edrx}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.edrx.age} "}]},
-        {"height": 1, "columns": [{"width": 18, "text": ""}, {"style": "hint", "text": "망이 허용하고 있으면 끔 (CEDRXS=0,4)"}]},
+        {"height": 1, "style": "section", "text": " 펌웨어가 지키는 값"},
+        {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   QUALCOMM 알림"}, {"width": 30, "text": "{modem.qualcomm_urc}"}, {"style": "hint", "text": "망 상태 알림 · 꺼져 있으면 켬"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.qualcomm_urc.age} "}]},
+        {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   저전압 꺼짐"}, {"width": 30, "text": "{modem.battery_check}"}, {"style": "hint", "text": "2.5 V 아래면 모뎀이 꺼짐 · 꺼져 있으면 켬"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.battery_check.age} "}]},
+        {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   eDRX"}, {"width": 30, "text": "{modem.edrx}"}, {"style": "hint", "text": "망이 허용하면 끔"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.edrx.age} "}]},
         {"height": 1, "text": ""},
         {"height": 1, "style": "section", "text": " 모뎀"},
         {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   펌웨어"}, {"text": "{modem.revision}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.revision.age} "}]},
         {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   망 방식"}, {"text": "{modem.mode}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.mode.age} "}]},
         {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   CAT-M 밴드"}, {"text": "{modem.bands}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.bands.age} "}]},
         {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   PSM"}, {"text": "{modem.psm}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.psm.age} "}]}
-      ]
-    },
-    "restart": {
-      "style": "panel",
-      "rows": [
-        {"height": "40%", "text": ""},
-        {"height": 1, "align": "center", "style": "title", "text": "Tab5를 다시 시작할까요?"},
-        {"height": 1, "align": "center", "style": "hint", "text": "SSH 세션은 끊기고, tmux 세션은 호스트에 남습니다"},
-        {"height": 1, "text": ""},
-        {
-          "height": 1,
-          "columns": [
-            {"text": ""},
-            {"width": 14, "style": "button", "button": "settings", "text": "취소"},
-            {"width": 2, "text": ""},
-            {"width": 14, "style": "button", "button": "reboot", "text": "재시작"},
-            {"text": ""}
-          ]
-        }
       ]
     },
     "settings": {
@@ -163,14 +143,11 @@
           "height": 1,
           "columns": [
             {"style": "title", "text": " 설정"},
-            {"width": 10, "style": "button", "button": "modem", "text": "모뎀"},
-            {"width": 1, "text": ""},
-            {"width": 10, "style": "button", "button": "restart", "text": "재시작"},
+            {"width": 10, "style": "button", "button": "reboot", "text": "재시작"},
             {"width": 1, "text": ""}
           ]
         },
-        {"height": 1, "style": "hint", "text": " Tab·↑↓ 이동 · ←→ 바꾸기 · Enter 바꾸기·입력"},
-        {"height": 1, "style": "alert", "text": " {config}"},
+        {"height": 1, "text": ""},
         {
           "columns": [
             {
@@ -185,7 +162,6 @@
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   끌기로 ↑↓ 키"}, {"width": 16, "toggle": "touch.arrows"}]},
                 {"height": 1, "text": ""},
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   화면 끄기"}, {"width": 16, "number": "sleep.idle_minutes"}]},
-                {"height": 1, "columns": [{"width": 18, "text": ""}, {"style": "hint", "text": "0분: 끄지 않음"}]},
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   잘 때 USB-A"}, {"width": 16, "toggle": "sleep.usb_a"}]},
                 {"height": 1, "text": ""},
                 {"height": 1, "style": "section", "text": " 원격 제어 (SSH)"},

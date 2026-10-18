@@ -167,7 +167,8 @@ static const char* text(void* user, const char* name) {
         snprintf(tab, sizeof tab, "%s%s", now / 3 % 2 ? "⚡" : "", state.battery == 1 ? "87%" : "8.21 V");
         return tab;
     }
-    if (strcmp(name, "modem.read") == 0) return "PPP 중: 다이얼 전에 읽은 값 · 다시 읽으려면 LTE 끄기";
+    if (strcmp(name, "modem.read") == 0) return "다이얼 전에 읽은 값";
+    if (strcmp(name, "modem.readable") == 0) return NULL;
     if (strncmp(name, "modem.", 6) == 0 && strstr(name, ".age") != NULL) return "12분 전";
     if (strncmp(name, "modem.", 6) == 0) {
         static char modem_text_buffer[96];
@@ -351,6 +352,10 @@ static void handle(const ui_event* e) {
         ui_dialog_close();
         if (then[0] != 0) handle(&(ui_event){.kind = UI_ACTION, .name = then, .index = pick ? picked : 0});
         snprintf(action, sizeof action, "%s", e->name);
+    } else if (e->kind == UI_ACTION && strcmp(e->name, "modem info") == 0) {
+        ui_dialog_screen("modem"), snprintf(action, sizeof action, "%s", e->name);
+    } else if (e->kind == UI_ACTION && strcmp(e->name, "reboot") == 0) {
+        ui_dialog(UI_CONFIRM, NULL, "기기를 다시 시작할까요?", "재시작"), snprintf(action, sizeof action, "%s", e->name);
     } else if (e->kind == UI_ACTION && strcmp(e->name, "wifi toggle") == 0) {
         state.wifi_enabled = !state.wifi_enabled, snprintf(action, sizeof action, "%s", e->name);
     } else if (e->kind == UI_ACTION && strcmp(e->name, "lte toggle") == 0) {

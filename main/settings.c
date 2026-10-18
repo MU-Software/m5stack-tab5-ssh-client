@@ -18,7 +18,7 @@ static const setting table[] = {
     {"bars.battery", SETTING_CHOICE, .options = batteries, .values = battery_values, .offset = FIELD(battery)},
     {"touch.wheel_px", SETTING_NUMBER, 12, 240, 12, " px", .offset = FIELD(touch.wheel_px)},
     {"touch.arrows", SETTING_TOGGLE, .offset = FIELD(touch.arrows)},
-    {"sleep.idle_minutes", SETTING_NUMBER, 0, 60, 1, "분", .offset = FIELD(sleep.idle_minutes)},
+    {"sleep.idle_minutes", SETTING_NUMBER, 0, 60, 1, "분", .zero = "끄지 않음", .offset = FIELD(sleep.idle_minutes)},
     {"sleep.usb_a", SETTING_TOGGLE, .offset = FIELD(sleep.usb_a)},
     {"sleep.wifi_wake", SETTING_TOGGLE, .offset = FIELD(sleep.wifi_wake)},
     {"log.enabled", SETTING_TOGGLE, .offset = FIELD(log.enabled)},
@@ -93,6 +93,8 @@ void settings_step(const setting* s, setting_value* value, int direction) {
 void settings_text(const setting* s, const setting_value* value, char* out, size_t size) {
     if (s->kind == SETTING_TOGGLE)
         snprintf(out, size, "%s", value->number ? "켬" : "끔");
+    else if (s->kind == SETTING_NUMBER && value->number == 0 && s->zero != NULL)
+        snprintf(out, size, "%s", s->zero);
     else if (s->kind == SETTING_NUMBER)
         snprintf(out, size, "%d%s", value->number, s->unit);
     else if (s->kind == SETTING_CHOICE)

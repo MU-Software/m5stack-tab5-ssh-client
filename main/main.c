@@ -117,9 +117,20 @@ static atomic_int connected;
 // A failure of no session to tell on the screen under its title, NULL for none
 static const char* lone_alert;
 static char lone_title[48];
-// Asked from the screen and not yet answered: host `name`'s new session, session `number` (its tmux) deleted, or Wi-Fi
-// network `name` joined (open, or with a password typed) or deleted, or a new one picked from a scan or its SSID typed
-typedef enum { ASKED_SESSION, ASKED_DELETE, ASKED_WIFI_ADD, ASKED_WIFI_OPEN, ASKED_WIFI_PASSWORD, ASKED_WIFI_SSID, ASKED_WIFI_DELETE } asked_for;
+// Asked from the screen and not yet answered: the modem's values shown, a restart, host `name`'s new session, session
+// `number` (its tmux) deleted, Wi-Fi network `name` joined (open, or with a password typed) or deleted, or a new one
+// picked from a scan or its SSID typed
+typedef enum {
+    ASKED_MODEM,
+    ASKED_RESTART,
+    ASKED_SESSION,
+    ASKED_DELETE,
+    ASKED_WIFI_ADD,
+    ASKED_WIFI_OPEN,
+    ASKED_WIFI_PASSWORD,
+    ASKED_WIFI_SSID,
+    ASKED_WIFI_DELETE
+} asked_for;
 typedef struct {
     bool pending;
     asked_for what;
@@ -815,7 +826,8 @@ static void load_config(void) {
     static const char* const told[] = {
         [CONFIG_LOADED] = "",
         [CONFIG_MISSING] = "SD 카드에 .config/tab5-ssh/config.json 없음\n기본값으로 실행 · 설정을 바꾸면 만듦",
-        [CONFIG_NO_CARD] = "SD 카드 없음\n기본값으로 실행 · 바꾼 설정은 저장 안 됨",
+        // Its fonts are on the card: only ASCII shows
+        [CONFIG_NO_CARD] = "No SD card\nRunning on the defaults, saving nothing",
         [CONFIG_INVALID] = "config.json이 올바른 JSON이 아님\n기본값으로 실행 · 고칠 때까지 저장 안 됨",
     };
     static char boot[192];
@@ -907,7 +919,7 @@ static bool save_wifi(const char* ssid, const wifi_network* network, int move) {
 
 static void joined_wifi(void) {
     ESP_LOGI(TAG, "wifi join %s: %s", join.network.ssid, esp_err_to_name(join.error));
-    const char* failed = join.error == ESP_ERR_NOT_FOUND                   ? "보이지 않음"
+    const char* failed = join.error == ESP_ERR_NOT_FOUND                   ? "찾을 수 없음"
                          : join.error == ESP_ERR_INVALID_STATE             ? "Wi-Fi가 시작되지 않음"
                          : join.error != ESP_OK                            ? "연결 못 함"
                          : !save_wifi(join.network.ssid, &join.network, 0) ? "연결됐지만 저장 못 함"
@@ -929,7 +941,8 @@ static const wifi_network* saved_named(const char* ssid) {
     return NULL;
 }
 
-// From the screen, one at a time: host `name`'s new session, session n deleted, or Wi-Fi network `name`'s step
+// From the screen, one at a time: the modem's values, a restart, host `name`'s new session, session n deleted, or Wi-Fi
+// network `name`'s step
 static void request_dialog(asked_for what, const char* name, int n) {
     lock();
     const session* s = what == ASKED_DELETE ? numbered(n) : NULL;
@@ -944,6 +957,11 @@ static void request_dialog(asked_for what, const char* name, int n) {
 // What was asked from the screen, answered yes, with what was typed or the item picked (-1 for none)
 static void requested(const screen_request* r, const char* typed, int picked) {
     wifi_network network = {0};
+    if (r->what == ASKED_RESTART) {
+        ESP_LOGI(TAG, "restart from the screen");
+        vTaskDelay(pdMS_TO_TICKS(500)); // for the log writer
+        esp_restart();
+    }
     wifi_visible_network v;
     if (r->what == ASKED_WIFI_ADD) {
         if (picked < 0)
@@ -1030,6 +1048,8 @@ static void tend_dialogs(void) {
         ui_dialog_kind kind;
         const char *text, *yes;
     } asks[] = {
+        [ASKED_MODEM] = {UI_SCREEN, "", ""},
+        [ASKED_RESTART] = {UI_CONFIRM, "기기를 다시 시작할까요?", "재시작"},
         [ASKED_SESSION] = {UI_CONFIRM, "위 호스트의 세션을 생성할까요?", "생성"},
         [ASKED_DELETE] = {UI_CONFIRM, "삭제할까요?\n서버의 tmux 세션도 함께 끝납니다", "삭제"},
         [ASKED_WIFI_ADD] = {UI_LIST, "", "직접 입력"},
@@ -1070,8 +1090,9 @@ static void tend_dialogs(void) {
     }
     unlock();
     if (on_screen.what == DIALOG_NONE) return;
-    on_screen.serial = q.kind == UI_LIST ? ui_dialog_list(q.title, "visible", "  {ssid:34}{signal:10}{lock}", "wifi.scan", q.yes)
-                                         : ui_dialog(q.kind, q.title[0] != 0 ? q.title : NULL, q.text, q.yes);
+    on_screen.serial = q.kind == UI_LIST     ? ui_dialog_list(q.title, "visible", "  {ssid:34}{signal:10}{lock}", "wifi.scan", q.yes)
+                       : q.kind == UI_SCREEN ? ui_dialog_screen("modem")
+                                             : ui_dialog(q.kind, q.title[0] != 0 ? q.title : NULL, q.text, q.yes);
     if (ui_dialog_shown() != 0) return;
     ESP_LOGE(TAG, "no dialog for %s %s", q.title, q.text);
     answer(&(ui_event){.kind = UI_ACTION, .name = "dialog cancel", .index = on_screen.serial});
@@ -1345,10 +1366,9 @@ static void apply(const ui_event* e) {
         if (!(n >= 1 && n <= MAX_SESSIONS && is_shown(&sessions[n - 1])) && session_open(n, false) == 0) screen_open(NULL);
         return;
     }
-    if (e->kind == UI_ACTION && strcmp(e->name, "reboot") == 0) {
-        ESP_LOGI(TAG, "restart from the screen");
-        vTaskDelay(pdMS_TO_TICKS(500)); // for the log writer
-        esp_restart();
+    if (e->kind == UI_ACTION && (strcmp(e->name, "reboot") == 0 || strcmp(e->name, "modem info") == 0)) {
+        request_dialog(e->name[0] == 'r' ? ASKED_RESTART : ASKED_MODEM, "", 0);
+        return;
     }
     if (e->kind == UI_ACTION) {
         int status = command(e->name);

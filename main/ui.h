@@ -63,7 +63,7 @@ ui_event ui_touch(ui_touch_phase phase, int32_t column, int32_t row);
 // Escape cancels a dialog or a field's typing; `text` (UTF-8) for UI_KEY_TEXT
 ui_event ui_key(ui_key_code key, const char* text);
 
-typedef enum { UI_ALERT, UI_CONFIRM, UI_LIST, UI_PROMPT, UI_PASSWORD } ui_dialog_kind;
+typedef enum { UI_ALERT, UI_CONFIRM, UI_LIST, UI_SCREEN, UI_PROMPT, UI_PASSWORD } ui_dialog_kind;
 
 // A box over the screens, which alone takes keys and touches until ui_dialog_close: `title` (NULL for none), up to three
 // \n-separated lines of `text`, a field for a prompt (secret for a password), and button "dialog ok" labelled `yes` with
@@ -72,6 +72,8 @@ unsigned ui_dialog(ui_dialog_kind kind, const char* title, const char* text, con
 // A dialog of the source's list `list`, each item as `item`, under its value `note`; an item chosen is "dialog pick", and
 // "dialog cancel" is labelled 닫기
 unsigned ui_dialog_list(const char* title, const char* list, const char* item, const char* note, const char* yes);
+// The layout's screen `name` as a dialog, as wide as the screen allows and as high as its rows; 0 when there is none
+unsigned ui_dialog_screen(const char* name);
 // The item of the dialog's list chosen last
 size_t ui_dialog_chosen(void);
 void ui_dialog_close(void);
