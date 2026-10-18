@@ -20,7 +20,6 @@
 #include <nvs_flash.h>
 #include <wolfssl/wolfcrypt/memory.h>
 
-#include "catm.h"
 #include "clock.h"
 #include "config.h"
 #include "keyboard_tab5.h"
@@ -28,8 +27,8 @@
 #include "keys.h"
 #include "logs.h"
 #include "memory_log.h"
-#include "modem.h"
-#include "net.h"
+#include "lte.h"
+#include "network.h"
 #include "power.h"
 #include "remote.h"
 #include "screen.h"
@@ -41,6 +40,7 @@
 #include "tmux.h"
 #include "update.h"
 #include "usb.h"
+#include "wifi.h"
 
 static const char* TAG = "main";
 static global_state state = {
@@ -75,6 +75,9 @@ typedef struct {
     _Atomic(const char*) waiting;
     atomic_uint waiting_since;
     ssh_session connection;
+    // The path and address of its connection, or what kept it from being found
+    network_route route;
+    network_trouble found;
     bool used, saved, running;
     // Its task waits for the main loop
     bool starting;
@@ -228,19 +231,21 @@ int accept_new_host(const ssh_session* connection, const char* name, const char*
     return 1;
 }
 
-typedef enum { SESSION_CLOSED, SESSION_REFUSED, SESSION_DROPPED, SESSION_MOVED, SESSION_ENDED } session_end;
+// Unreached: no connection was made
+typedef enum { SESSION_CLOSED, SESSION_REFUSED, SESSION_DROPPED, SESSION_MOVED, SESSION_ENDED, SESSION_UNREACHED } session_end;
 
 // Typing that 1 s brings no output pings the host; no answer for another second shows as held until anything arrives.
 // Mouse reports count as typing; those from before the connection are dropped.
-static session_end bridge(session* s, unsigned path) {
+static session_end bridge(session* s) {
     uint8_t in[256], out[1024];
     int pending = 0, off = 0;
     TickType_t typed_at = 0, pinged_at = 0;
     bool typed = false, pinged = false, held = false;
     unsigned pongs = 0, size = atomic_load(&resizes);
     terminal_read_mouse(s->terminal, out, sizeof out);
+    unsigned seen_pongs = s->connection.pongs;
     for (;;) {
-        if (net_generation() != path) return SESSION_MOVED;
+        if (network_moved(&s->route.use)) return SESSION_MOVED;
         if (atomic_load(&s->end)) return SESSION_ENDED;
         if (atomic_load(&resizes) != size) size = atomic_load(&resizes), ssh_resize(&state, &s->connection);
         if (pending == 0) {
@@ -260,6 +265,7 @@ static session_end bridge(session* s, unsigned path) {
             pending -= sent;
         }
         TickType_t now = xTaskGetTickCount();
+        if ((got > 0 || s->connection.pongs != seen_pongs) && s->route.use.path == NETWORK_LTE) seen_pongs = s->connection.pongs, lte_received();
         if (got > 0 || (pinged && s->connection.pongs != pongs)) {
             typed = pinged = false;
             if (held) waiting(s, NULL, 0), held = false;
@@ -292,10 +298,14 @@ static session_end drain(session* s) {
 
 // command on h, attached to the terminal or run to its end; the exit status counts only for SESSION_CLOSED, and stays -1
 // when it never connected
-static session_end run(session* s, const ssh_host* h, const char* command, bool attach, unsigned path, int* exit_status) {
+static session_end run(session* s, const ssh_host* h, const char* command, bool attach, int* exit_status) {
+    *exit_status = -1;
+    if ((s->found = network_find(h->hostname, &s->route)) != NETWORK_FINE) {
+        ESP_LOGW(TAG, "session %d: %s: %s", number(s), h->alias, network_trouble_text(s->found));
+        return SESSION_UNREACHED;
+    }
     char* private_key = storage_get_private_key(h->identity_file);
     char password[128] = "";
-    *exit_status = -1;
     if (private_key == NULL) {
         char prompt[300];
         snprintf(prompt, sizeof prompt, "%s@%s's password: ", h->user, h->hostname);
@@ -307,39 +317,43 @@ static session_end run(session* s, const ssh_host* h, const char* command, bool 
                                   .private_key = private_key,
                                   .password = password[0] ? password : NULL,
                                   .command = command,
-                                  .local_address = net_local_address(),
-                                  .timeout_ms = net_on_lte() ? 30000 : 10000};
+                                  .address = s->route.address,
+                                  .prepare = network_bind,
+                                  .context = &s->route,
+                                  .timeout_ms = network_timeout_ms(s->route.use.path)};
+    // Its replies come only while awake; for a bounded time, as a host key question waits for a person
+    sleep_hold_until(esp_timer_get_time() + 4LL * network_timeout_ms(s->route.use.path) * 1000);
     int rc = ssh_open(&state, &s->connection);
     if (private_key != NULL) wc_ForceZero(private_key, strlen(private_key));
     free(private_key);
     free(known_hosts);
     memset(password, 0, sizeof password);
     // Refused: the same keys and host key would only be refused again; anything else may pass another time
-    session_end end = rc == WS_USER_AUTH_E || rc == WS_PUBKEY_REJECTED_E ? SESSION_REFUSED : SESSION_DROPPED;
+    session_end end = rc == WS_USER_AUTH_E || rc == WS_PUBKEY_REJECTED_E ? SESSION_REFUSED : SESSION_UNREACHED;
     if (rc != WS_SUCCESS) {
         ESP_LOGE(TAG, "session %d: ssh %s@%s:%u: %s", number(s), h->user, h->hostname, h->port, wolfSSH_ErrorToName(rc));
         return end;
     }
     ESP_LOGI(TAG, "session %d connected to %s%s%s", number(s), h->hostname, attach ? "" : ": ", attach ? "" : command);
     if (attach) {
-        net_keepalive(s->connection.fd);
+        network_keepalive(s->connection.fd, s->route.use.path);
         waiting(s, NULL, 0);
         atomic_store(&s->status, SESSION_CONNECTED);
         if (atomic_fetch_add(&connected, 1) == 0 && state.log.quiet_sessions) {
             esp_log_level_set("*", ESP_LOG_WARN);
             // They answer control commands
             for (size_t i = 0; i < 5; i++)
-                esp_log_level_set((const char* const[]){"catm", "main", "net", "power", "wifi"}[i], ESP_LOG_INFO);
+                esp_log_level_set((const char* const[]){"lte", "main", "network", "power", "wifi"}[i], ESP_LOG_INFO);
         }
-        end = bridge(s, path);
+        end = bridge(s);
         if (is_shown(s)) screen_typed(NULL, 0);
         if (atomic_fetch_sub(&connected, 1) == 1) esp_log_level_set("*", ESP_LOG_INFO);
     } else {
         end = drain(s);
     }
     ssh_close(&s->connection, exit_status);
-    ESP_LOGI(TAG, "session %d %s, exit status %d", number(s), (const char* const[]){"closed", "refused", "dropped", "moved", "ended"}[end],
-             *exit_status);
+    ESP_LOGI(TAG, "session %d %s, exit status %d", number(s),
+             (const char* const[]){"closed", "refused", "dropped", "moved", "ended", "not reached"}[end], *exit_status);
     return end;
 }
 
@@ -375,33 +389,34 @@ static void kept(char* out, size_t size) {
 
 // Until there is a path, what LTE is doing; Enter tries LTE at once, the other keys are dropped. False when the session
 // is to end.
-static bool wait_path(session* s, unsigned* path) {
+static bool wait_path(session* s) {
     static const char* const states[] = {
-        [NET_LTE_OFF] = "no network: LTE off, Enter turns it on",
-        [NET_LTE_NO_MODEM] = "no network: no LTE modem",
-        [NET_LTE_DIALING] = "no network: LTE dialing",
-        [NET_LTE_REGISTERING] = "no network: LTE not registered",
-        [NET_LTE_WAITING] = "no network: LTE waits, Enter retries",
-        [NET_LTE_UP] = "no network",
+        [LTE_OFF] = "no network: LTE off, Enter turns it on",
+        [LTE_NO_MODEM] = "no network: no LTE modem",
+        [LTE_DIALING] = "no network: LTE dialing",
+        [LTE_REGISTERING] = "no network: LTE not registered",
+        [LTE_WAITING] = "no network: LTE waits, Enter retries",
+        [LTE_UP] = "no network",
     };
     TickType_t since = xTaskGetTickCount();
-    while (!net_wait_for(200, path)) {
+    while (!network_wait_for(200)) {
         if (atomic_load(&s->end)) return false;
         char in[64];
         size_t n = read_input(s, in, sizeof in);
-        if (memchr(in, '\r', n) != NULL) net_command("lte on");
-        waiting(s, states[net_lte()], since);
+        if (memchr(in, '\r', n) != NULL) network_command("lte on");
+        lte_view l;
+        lte_view_now(&l);
+        waiting(s, states[l.state], since);
     }
     return !atomic_load(&s->end);
 }
 
 // command on h over a connection of its own: its exit status, -1 when it did not run, after up to 30 s without a path
 static int once(session* s, const ssh_host* h, const char* command) {
-    unsigned path;
     int exit_status;
-    for (int waited = 0; !net_wait_for(200, &path); waited += 200)
+    for (int waited = 0; !network_wait_for(200); waited += 200)
         if (waited >= 30000 || atomic_load(&s->end)) return -1;
-    return run(s, h, command, false, path, &exit_status) == SESSION_CLOSED ? exit_status : -1;
+    return run(s, h, command, false, &exit_status) == SESSION_CLOSED ? exit_status : -1;
 }
 
 static bool create_tmux(session* s, const ssh_host* h) {
@@ -438,11 +453,10 @@ static bool kill_tmux(session* s, const ssh_host* h) {
 static bool keep_connected(session* s, const ssh_host* h) {
     char keep[MAX_SESSIONS * 24 + 2], command[1400];
     int retry_ms = 1000, exit_status;
-    unsigned path;
-    while (wait_path(s, &path)) {
+    while (wait_path(s)) {
         kept(keep, sizeof keep);
         if (!tmux_command(command, sizeof command, s->tmux, tmux_prefix, keep, 60, state.touch.arrows)) return false;
-        session_end end = run(s, h, command, true, path, &exit_status);
+        session_end end = run(s, h, command, true, &exit_status);
         if (end == SESSION_ENDED) break;
         if (end == SESSION_REFUSED)
             return !report(number(s), true, "서버가 거부함 · 끊음", "%s refused the login or its host key changed: disconnected", h->alias);
@@ -457,12 +471,13 @@ static bool keep_connected(session* s, const ssh_host* h) {
         waiting(s, "reconnecting", xTaskGetTickCount());
         if (exit_status != -1) retry_ms = 1000;
         if (end == SESSION_MOVED) continue;
-        net_suspect();
-        // What the check of the path found: the host down, its name, or no internet
-        if (net_trouble_text(net_trouble_now()) != NULL) waiting(s, net_trouble_text(net_trouble_now()), xTaskGetTickCount());
+        // Why: the host down, its name, or no internet on its path
+        network_trouble trouble =
+            end == SESSION_UNREACHED && s->found != NETWORK_FINE ? s->found : network_after_drop(h, &s->route, end == SESSION_DROPPED);
+        const char* why = network_trouble_text(trouble);
+        if (why != NULL) waiting(s, why, xTaskGetTickCount());
         // A new path is worth trying at once
-        for (unsigned at = net_generation(), waited = 0; waited < (unsigned)retry_ms && net_generation() == at && !atomic_load(&s->end);
-             waited += 100)
+        for (unsigned waited = 0; waited < (unsigned)retry_ms && !atomic_load(&s->end) && !network_moved(&s->route.use); waited += 100)
             vTaskDelay(pdMS_TO_TICKS(100));
         retry_ms = retry_ms < 16000 ? retry_ms * 2 : 30000;
     }
@@ -784,7 +799,7 @@ static void wifi_connect_command(const char* arguments) {
         password++;
     strlcpy(network->password, password, sizeof network->password);
     keep_wifi_on();
-    esp_err_t err = net_join(network);
+    esp_err_t err = wifi_join(network);
     ESP_LOGI(TAG, "wifi connect %s: %s", network->ssid, esp_err_to_name(err));
     if (err == ESP_OK && storage_add_wifi(network->ssid, network->password) != 0) ESP_LOGW(TAG, "%s not saved", network->ssid);
     if (err != ESP_OK) {
@@ -795,7 +810,7 @@ static void wifi_connect_command(const char* arguments) {
     // Prepended and never freed: the network task may be walking the list
     network->next = state.wifi;
     state.wifi = network;
-    net_wifi_changed();
+    wifi_list_changed();
 }
 
 // The Wi-Fi screen's join takes seconds: on its own task, and saved by the main loop once joined
@@ -809,7 +824,7 @@ static struct {
 
 static void join_wifi(void* arg) {
     (void)arg;
-    join.error = net_join(&join.network);
+    join.error = wifi_join(&join.network);
     atomic_store(&join.step, JOIN_DONE);
     vTaskDeleteWithCaps(NULL);
 }
@@ -819,7 +834,7 @@ static void join_wifi(void* arg) {
 static bool save_wifi(const char* ssid, const wifi_network* network, int move) {
     wifi_network* networks;
     bool saved = storage_set_wifi(ssid, network, move, &networks) == 0;
-    if (saved) state.wifi = networks, net_wifi_changed();
+    if (saved) state.wifi = networks, wifi_list_changed();
     ESP_LOGI(TAG, "wifi %s %s%s",
              network == NULL ? "delete"
              : move != 0     ? "up"
@@ -884,7 +899,7 @@ static bool wifi_screen(const ui_event* e) {
             memcpy(w->network.ssid, saved->ssid, sizeof w->network.ssid);
             memcpy(w->network.password, saved->password, sizeof w->network.password);
         } else {
-            net_scan();
+            wifi_scan();
         }
         screen_open("wifi");
         return true;
@@ -892,10 +907,10 @@ static bool wifi_screen(const ui_event* e) {
     if (known == sizeof actions / sizeof actions[0]) return false;
     w->result = NULL;
     if (strcmp(action, "scan") == 0) {
-        net_scan();
+        wifi_scan();
     } else if (strcmp(action, "pick") == 0) {
-        net_visible_network v;
-        if (net_visible(e->index, &v)) snprintf(w->network.ssid, sizeof w->network.ssid, "%s", v.ssid);
+        wifi_visible_network v;
+        if (wifi_visible(e->index, &v)) snprintf(w->network.ssid, sizeof w->network.ssid, "%s", v.ssid);
     } else if ((strcmp(action, "save") == 0 || strcmp(action, "join") == 0) && !config_wifi_valid(&w->network)) {
         w->result = "SSID 1~32자, 비밀번호는 없거나 8~63자";
     } else if (strcmp(action, "save") == 0) {
@@ -937,8 +952,8 @@ static void change(const setting* s, const setting_value* value) {
     bool saved = storage_set_config(s->name, settings_json(&state, s)) == 0;
     ESP_LOGI(TAG, "%s %s%s", s->name, text, saved ? "" : ", not saved");
     if (strncmp(s->name, "log.", 4) == 0) logs_configure(&state.log);
-    if (strcmp(s->name, "network.wifi.enabled") == 0) net_wifi_changed(), net_command(state.wifi_enabled ? "wifi on" : "wifi off");
-    if (strcmp(s->name, "network.lte.enabled") == 0) net_command(state.lte_enabled ? "lte on" : "lte off");
+    if (strcmp(s->name, "network.wifi.enabled") == 0) wifi_list_changed(), network_command(state.wifi_enabled ? "wifi on" : "wifi off");
+    if (strcmp(s->name, "network.lte.enabled") == 0) network_command(state.lte_enabled ? "lte on" : "lte off");
     if (strcmp(s->name, "timezone") == 0) clock_timezone(state.timezone);
 }
 
@@ -958,43 +973,14 @@ static void set_command(const char* arguments) {
     cJSON_Delete(item);
 }
 
-static void log_modem(void) {
-    modem_snapshot* s = heap_caps_malloc(sizeof *s, MALLOC_CAP_SPIRAM);
-    if (s == NULL) return;
-    catm_snapshot(s);
-    int64_t now = esp_timer_get_time();
-    if (catm_connected()) ESP_LOGI(TAG, "modem: PPP is up, values from before the dial (lte off to read again)");
-    char logged[sizeof s->values[0]];
-    for (int i = 0; i < MODEM_ITEMS; i++) {
-        if (s->read_at[i] == 0) continue;
-        modem_mask(s->values[i], logged, sizeof logged);
-        ESP_LOGI(TAG, "modem %s: %s (%lld s ago)", modem_commands[i].name, logged, (now - s->read_at[i]) / 1000000);
-    }
-    free(s);
-}
-
-static atomic_bool modem_reading;
-
-static void read_modem(void* arg) {
-    (void)arg;
-    ESP_LOGI(TAG, "modem read: %s", esp_err_to_name(catm_read()));
-    log_modem();
-    atomic_store(&modem_reading, false);
-    vTaskDeleteWithCaps(NULL);
-}
-
-// modem status|read; a read waits for the modem, which a dial may hold for a minute, off the screen's task
+// modem status|read|at COMMAND; all but status run on the LTE task, which logs what came
 static void modem_control(const char* arguments) {
-    if (strcmp(arguments, "status") == 0) {
-        log_modem();
-    } else if (strcmp(arguments, "read") != 0) {
-        ESP_LOGW(TAG, "modem status|read");
-    } else if (atomic_exchange(&modem_reading, true)) {
-        ESP_LOGW(TAG, "modem: reading already");
-    } else if (xTaskCreatePinnedToCoreWithCaps(read_modem, "modem", 4096, NULL, 4, NULL, 1, MALLOC_CAP_SPIRAM) != pdPASS) {
-        // Stack in PSRAM: a task there must never write flash
-        atomic_store(&modem_reading, false);
-    }
+    char line[80];
+    snprintf(line, sizeof line, "modem %s", arguments);
+    if (strcmp(arguments, "status") == 0)
+        lte_log_snapshot();
+    else if (!network_command(line))
+        ESP_LOGW(TAG, "modem status|read|at COMMAND");
 }
 
 // Asked by control commands, done by the main loop
@@ -1048,10 +1034,10 @@ static int command(const char* line) {
         for (wifi_network* w = state.wifi; w != NULL; w = w->next)
             if (strcmp(w->ssid, line + 12) == 0) w->ssid[0] = 0;
         ESP_LOGI(TAG, "wifi forget %s: %s", line + 12, storage_add_wifi(line + 12, NULL) == 0 ? "done" : "not saved");
-        net_wifi_changed();
+        wifi_list_changed();
         return 0;
     }
-    return net_command(line) ? 0 : -1;
+    return network_command(line) ? 0 : -1;
 }
 
 // Light sleep in steps, each followed by DWELL_MS awake: lwIP's timers and the sessions' keepalives run in the time
@@ -1093,15 +1079,15 @@ static bool woken(void) {
     if (!pressed && !atomic_exchange(&wake_asked, false)) {
         bool attached = usb_attached();
         if (attached && sleeping.usb_a_off) sleeping.usb_a_off = power_usb_a(true) != ESP_OK;
-        if (attached || esp_timer_get_time() < sleeping.awake_until) return false;
+        if (attached || esp_timer_get_time() < sleeping.awake_until || sleep_held(esp_timer_get_time())) return false;
         if (!state.sleep.usb_a && !sleeping.usb_a_off) sleeping.usb_a_off = power_usb_a(false) == ESP_OK;
         int64_t start = esp_timer_get_time();
         sleep_wake wake = sleep_light(STEP_MS, state.sleep.wifi_wake);
         sleeping.asleep_us += esp_timer_get_time() - start;
         sleeping.wakes[wake]++;
         ESP_LOGD(TAG, "woken: %s", wakes[wake]);
-        // A computer on USB-C needs the Tab5 awake to set it up
-        sleeping.awake_until = esp_timer_get_time() + (wake == SLEEP_USB ? 3000 : DWELL_MS) * 1000;
+        // A computer on USB-C needs the Tab5 awake to set it up; a connection coming in over Wi-Fi needs a few round trips
+        sleeping.awake_until = esp_timer_get_time() + (wake == SLEEP_USB || wake == SLEEP_WIFI ? 3000 : DWELL_MS) * 1000;
         if (wake != SLEEP_KEYBOARD) return false;
     }
     if (sleeping.usb_a_off) sleeping.usb_a_off = power_usb_a(true) != ESP_OK;
@@ -1245,11 +1231,10 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     if (clock_start() != ESP_OK) ESP_LOGE(TAG, "no SNTP");
-    if (catm_start() != ESP_OK) ESP_LOGE(TAG, "no PPP interface");
     load_config();
     // Before the screen, which takes 2.7 s to start: the C6 restarts and Wi-Fi joins meanwhile. Also without a host, for the
     // control commands
-    if (net_start(&state) != ESP_OK) ESP_LOGE(TAG, "no network");
+    if (network_start(&state) != ESP_OK) ESP_LOGE(TAG, "no network");
     esp_err_t screen = screen_start(&state);
     if (screen == ESP_OK) screen_resized(&state.terminal_size);
     keep_image_later();

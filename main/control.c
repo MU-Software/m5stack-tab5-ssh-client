@@ -25,10 +25,10 @@ static const struct {
     {"sleep|wake", BOTH},
     {"settings", BOTH},
     {"set NAME VALUE", BOTH},
-    {"wifi on|off [save]|connect SSID [PASSWORD]|forget SSID", BOTH},
-    {"lte on|off [save]|status", BOTH},
-    {"net status|check HOST PORT", BOTH},
-    {"modem status|read", BOTH},
+    {"wifi on|off [save]|connect SSID [PASSWORD]|forget SSID|drop", BOTH},
+    {"lte on|off [save]|status|probe dead on|off", BOTH},
+    {"net status|check HOST PORT [wifi|lte]|dns dead wifi|lte|off", BOTH},
+    {"modem status|read|at COMMAND", BOTH},
     {"session list|create HOST|open N|connect N|disconnect N|delete N", BOTH},
 };
 

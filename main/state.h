@@ -27,8 +27,11 @@ typedef struct {
     const char *known_hosts, *private_key, *password;
     // Run with the terminal instead of a shell, if not NULL
     const char* command;
-    // IPv4 source address in network order, 0 for any: keeps the connection on one interface
-    uint32_t local_address;
+    // The host's IPv4 address in network order, 0 to resolve its name here
+    uint32_t address;
+    // Called with the socket before it connects, if not NULL: binds it to one interface
+    int (*prepare)(int fd, void* context);
+    void* context;
     // For each step of connecting
     int timeout_ms;
     // Replies to ssh_ping

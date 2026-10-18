@@ -31,6 +31,8 @@ target_include_directories(c6_nvs_test PRIVATE ${TOP}/components/c6/include)
 add_executable(config_test config_test.c ${TOP}/main/config.c)
 target_link_libraries(config_test cjson wolf)
 
+add_executable(dns_message_test dns_message_test.c ${TOP}/main/dns_message.c)
+
 add_executable(gesture_test gesture_test.c ${TOP}/main/gesture.c)
 
 add_executable(hangul_test hangul_test.c ${TOP}/main/hangul.c)
@@ -40,7 +42,8 @@ target_link_libraries(layout_test cjson)
 
 add_executable(modem_test modem_test.c ${TOP}/main/modem.c)
 
-add_executable(net_trouble_test net_trouble_test.c ${TOP}/main/net_trouble.c)
+add_executable(network_rules_test network_rules_test.c ${TOP}/main/network_rules.c)
+target_include_directories(network_rules_test PRIVATE ${TOP}/components/c6/include)
 
 add_executable(settings_test settings_test.c ${TOP}/main/layout.c ${TOP}/main/settings.c)
 target_link_libraries(settings_test cjson wolf)

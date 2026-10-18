@@ -25,7 +25,7 @@
 #include "c6_nvs.h"
 #include "c6_nvs_server.h"
 #include "c6_protocol.h"
-#include "catm.h"
+#include "lte.h"
 #include "config.h"
 #include "control.h"
 #include "logs.h"
@@ -278,7 +278,7 @@ static int run(sshd_session* s, after* then) {
 static bool allowed(uint32_t local) {
     esp_netif_ip_info_t ip;
     return (esp_netif_get_ip_info(wifi_netif(), &ip) == ESP_OK && ip.ip.addr == local) ||
-           (state->remote.lte && esp_netif_get_ip_info(catm_netif(), &ip) == ESP_OK && ip.ip.addr == local);
+           (state->remote.lte && esp_netif_get_ip_info(lte_netif(), &ip) == ESP_OK && ip.ip.addr == local);
 }
 
 static void serve(void* arg) {

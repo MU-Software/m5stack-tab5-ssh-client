@@ -74,17 +74,22 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
   when it is shown (`●` shown, `×` disconnected, `…` connecting, `?` waiting for an answer). Control command
   `session list|create HOST|open N|connect N|disconnect N|delete N` waits up to 90 s for what it starts; one that needs
   a password or host key says to answer it on the screen (`session open N`).
-- Network: Wi-Fi while it reaches the SSH host (the shown session's), else LTE through a Stamp CAT-M (Tab5 TX G6, RX G46), kept connected
-  in the background; LTE keeps redialing (waits of 90-960 s) unless no modem answered or spoke since boot. Without a path the
-  top right says what LTE does, and Enter dials at once. Control commands: `wifi on|off` (for this boot; with `save` also `network.wifi.enabled`, as the
-  network screen's buttons and `wifi connect` do), `wifi connect SSID [PASSWORD]` (saved to the configuration),
-  `wifi forget SSID`, `lte on|off [save]|status`, `net status`, `net check HOST PORT`, `settings`,
-  `set NAME VALUE` (as in the configuration; text also without quotes).
+- Network: Wi-Fi while it reaches the internet (the C6 checks), else LTE through a Stamp CAT-M (Tab5 TX G6, RX G46), kept
+  connected in the background. Each path is checked and resolves names through itself; a host only the other path's DNS
+  knows goes over that one. Sessions ride out a short Wi-Fi drop and move once when the path changes. LTE that stops
+  carrying data is redialed; otherwise it redials after 90-960 s unless no modem answered or spoke since boot. Without a
+  path the top right says what LTE does, and Enter dials. Control commands: `wifi on|off` (for this boot; with `save` also
+  `network.wifi.enabled`, as the network screen's buttons and `wifi connect` do), `wifi connect SSID [PASSWORD]` (saved
+  to the configuration), `wifi forget SSID`, `lte on|off [save]|status`, `net status`, `net check HOST PORT [wifi|lte]`,
+  `settings`, `set NAME VALUE` (as in the configuration; text also without quotes); for tests `wifi drop`,
+  `net dns dead wifi|lte|off`, `lte probe dead on|off`. Wi-Fi needs tools/c6's firmware at protocol 9: update the C6
+  before the Tab5.
 - Modem: before each dial the firmware reads the registration, cell, signal, PDP context, SIM (ICCID masked) and back-off
   state; once a boot, when no back-off is in sight, also its settings, keeping QUALCOMM URCs and the battery check on and
   eDRX off while the network grants it (`AT+CURCCFG="QUALCOMM",1`, `AT+CBATCHK=1`, `AT+CEDRXS=0,4`, each only when
   needed). `modem status` logs what was read, `modem read` reads it again while PPP is down (`lte off`), and the
-  settings screen's 모뎀 page shows it with its age.
+  settings screen's 모뎀 page shows it with its age. `modem at COMMAND` sends any AT command while PPP is down and logs
+  the reply: settings it writes stay in the modem, and some cost a network attach.
 - Slow links: keys typed at the end of a line show underlined until the host echoes them (only once it echoed one since
   the last Enter or other key, so not at password prompts); top right, the seconds typing has had no answer from the host,
   not even to a keepalive request, or a session reconnects. Over LTE each connection step may take 30 s.

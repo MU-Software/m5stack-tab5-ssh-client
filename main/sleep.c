@@ -2,6 +2,7 @@
 #include "sleep.h"
 
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include <driver/gpio.h>
@@ -29,6 +30,25 @@ static const struct {
     {CONFIG_ESP_HOSTED_HOST_SDIO_PIN_D1, SLEEP_WIFI, " Wi-Fi"},
 };
 
+static atomic_uint holds, sequence;
+static _Atomic int64_t held_until;
+
+void sleep_hold(bool hold) {
+    hold ? atomic_fetch_add(&holds, 1) : atomic_fetch_sub(&holds, 1);
+}
+
+void sleep_hold_until(int64_t when) {
+    for (int64_t now = atomic_load(&held_until); now < when && !atomic_compare_exchange_weak(&held_until, &now, when);) {}
+}
+
+bool sleep_held(int64_t now) {
+    return atomic_load(&holds) > 0 || now < atomic_load(&held_until);
+}
+
+unsigned sleep_sequence(void) {
+    return atomic_load(&sequence);
+}
+
 sleep_wake sleep_light(uint32_t milliseconds, bool wifi) {
     enum { COUNT = sizeof sources / sizeof sources[0] };
     bool armed[COUNT];
@@ -43,7 +63,9 @@ sleep_wake sleep_light(uint32_t milliseconds, bool wifi) {
     esp_sleep_enable_gpio_wakeup();
     esp_sleep_enable_timer_wakeup((uint64_t)milliseconds * 1000);
     int64_t start = esp_timer_get_time();
+    atomic_fetch_add(&sequence, 1);
     esp_err_t err = esp_light_sleep_start();
+    atomic_fetch_add(&sequence, 1);
     // Only esp_timer counts the time asleep; lwIP's timers and the tasks' delays count ticks
     xTaskCatchUpTicks(pdMS_TO_TICKS((esp_timer_get_time() - start) / 1000));
     uint32_t causes = esp_sleep_get_wakeup_causes();

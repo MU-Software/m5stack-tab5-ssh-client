@@ -112,30 +112,29 @@ static int pong(WOLFSSH* ssh, void* buf, word32 size, void* ctx) {
 }
 
 // Bounded: a path that just died must not hold the session for TCP's minutes of retries
-static bool connected(int fd, const struct addrinfo* ai, uint32_t local_address, int timeout_ms) {
+static bool connected(int fd, const struct sockaddr* to, socklen_t size, int timeout_ms) {
     int err = 0;
     socklen_t length = sizeof err;
-    struct sockaddr_in source = {.sin_family = AF_INET, .sin_addr.s_addr = local_address};
-    if ((local_address != 0 && bind(fd, (struct sockaddr*)&source, sizeof source) != 0) ||
-        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) != 0)
-        return false;
-    if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) return true;
+    if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) != 0) return false;
+    if (connect(fd, to, size) == 0) return true;
     return errno == EINPROGRESS && poll(&(struct pollfd){.fd = fd, .events = POLLOUT}, 1, timeout_ms) == 1 &&
            getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &length) == 0 && err == 0;
 }
 
-static int dial(const char* host, uint16_t port, uint32_t local_address, int timeout_ms) {
+static int dial(const ssh_session* s) {
     char service[6];
-    snprintf(service, sizeof service, "%u", port);
-    struct addrinfo* ai;
-    if (getaddrinfo(host, service, &(struct addrinfo){.ai_family = local_address != 0 ? AF_INET : AF_UNSPEC, .ai_socktype = SOCK_STREAM}, &ai) != 0)
-        return -1;
-    int fd = socket(ai->ai_family, SOCK_STREAM, 0);
-    if (fd >= 0 && !connected(fd, ai, local_address, timeout_ms)) {
+    struct addrinfo* ai = NULL;
+    struct sockaddr_in direct = {.sin_family = AF_INET, .sin_port = htons(s->host->port), .sin_addr.s_addr = s->address};
+    snprintf(service, sizeof service, "%u", s->host->port);
+    if (s->address == 0 && getaddrinfo(s->host->hostname, service, &(struct addrinfo){.ai_socktype = SOCK_STREAM}, &ai) != 0) return -1;
+    int fd = socket(ai != NULL ? ai->ai_family : AF_INET, SOCK_STREAM, 0);
+    if (fd >= 0 &&
+        ((s->prepare != NULL && s->prepare(fd, s->context) != 0) ||
+         !connected(fd, ai != NULL ? ai->ai_addr : (struct sockaddr*)&direct, ai != NULL ? ai->ai_addrlen : sizeof direct, s->timeout_ms))) {
         close(fd);
         fd = -1;
     }
-    freeaddrinfo(ai);
+    if (ai != NULL) freeaddrinfo(ai);
     if (fd >= 0) setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &(int){1}, sizeof(int));
     return fd;
 }
@@ -158,11 +157,13 @@ int ssh_open(const global_state* state, ssh_session* s) {
                        .private_key = s->private_key,
                        .password = s->password,
                        .command = s->command,
-                       .local_address = s->local_address,
+                       .address = s->address,
+                       .prepare = s->prepare,
+                       .context = s->context,
                        .timeout_ms = s->timeout_ms > 0 ? s->timeout_ms : 10000,
                        .fd = -1};
     if (wolfSSH_Init() != WS_SUCCESS) return WS_MEMORY_E;
-    s->fd = dial(h->hostname, h->port, s->local_address, s->timeout_ms);
+    s->fd = dial(s);
     int rc = WS_SOCKET_ERROR_E;
     if (s->fd < 0) goto done;
 

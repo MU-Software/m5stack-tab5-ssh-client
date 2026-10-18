@@ -14,6 +14,7 @@
 // and on P4_READY; held is the answer to P4_WIFI_HOLD when not connected
 #define C6_WIFI_STATE 3
 enum { C6_WIFI_STOPPED, C6_WIFI_SCANNING, C6_WIFI_JOINING, C6_WIFI_CONNECTED, C6_WIFI_NONE_IN_RANGE, C6_WIFI_JOIN_FAILED, C6_WIFI_HELD };
+#define C6_WIFI_NAMES {"stopped", "scanning", "joining", "connected", "none in range", "join failed", "held"}
 // The answer to P4_NVS: [sequence][esp_err_t, 4 bytes][body]
 #define C6_NVS 4
 

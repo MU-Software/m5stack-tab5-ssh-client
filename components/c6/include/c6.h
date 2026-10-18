@@ -30,7 +30,7 @@ typedef struct {
 } c6_wifi_status;
 // The last C6_WIFI_STATE into status when it is not NULL; how many came this boot
 unsigned c6_wifi_state(c6_wifi_status* status);
-// Called from esp_hosted's task after each C6_WIFI_STATE
+// Called from the default event loop after each C6_WIFI_STATE
 void c6_on_wifi_state(void (*listener)(void));
 typedef struct {
     // errno of the last address tried, 0 once one answered
@@ -38,9 +38,10 @@ typedef struct {
     unsigned milliseconds;
     char address[16];
 } c6_reach_answer;
-// From C6_INTERNET_SINCE: whether the C6's network reaches the internet, checked now; meanwhile(context) runs between the ask
-// and the wait for the answer
-esp_err_t c6_internet(int timeout_ms, void (*meanwhile)(void* context), void* context, c6_reach_answer* answer);
+// From C6_INTERNET_SINCE: the C6 checks its network now; its answer comes to c6_on_internet's listener with sequence (1-255)
+esp_err_t c6_ask_internet(uint8_t sequence);
+// Called from the default event loop with each C6_INTERNET: answers to c6_ask_internet, and the C6's own checks with sequence 0
+void c6_on_internet(void (*listener)(uint8_t sequence, const c6_reach_answer* answer));
 // From C6_JOIN_SINCE: the C6 leaves its network for this one. ESP_OK once joined, ESP_ERR_NOT_FOUND when it saw none,
 // ESP_ERR_INVALID_STATE with its Wi-Fi stopped, else ESP_FAIL with the reason of the failure in *reason
 esp_err_t c6_join(const char* ssid, const char* password, int timeout_ms, uint8_t* reason);

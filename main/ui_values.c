@@ -8,16 +8,17 @@
 #include <esp_attr.h>
 #include <esp_timer.h>
 
-#include "catm.h"
 #include "clock.h"
-#include "net.h"
+#include "lte.h"
+#include "network.h"
+#include "wifi.h"
 #include "power.h"
 #include "screen.h"
 
 #define SECOND 1000000LL
 
 static const global_state* state;
-static net_info net;
+static network_info net;
 static int millivolts = -1;
 static bool charging;
 EXT_RAM_BSS_ATTR static modem_snapshot modem;
@@ -25,12 +26,12 @@ EXT_RAM_BSS_ATTR static modem_snapshot modem;
 static char text[96];
 
 static const char* const lte_states[] = {
-    [NET_LTE_OFF] = "꺼짐",
-    [NET_LTE_NO_MODEM] = "모뎀 없음",
-    [NET_LTE_DIALING] = "다이얼 중",
-    [NET_LTE_REGISTERING] = "등록 중",
-    [NET_LTE_WAITING] = "대기, 다시 시도 예정",
-    [NET_LTE_UP] = "연결됨",
+    [LTE_OFF] = "꺼짐",
+    [LTE_NO_MODEM] = "모뎀 없음",
+    [LTE_DIALING] = "다이얼 중",
+    [LTE_REGISTERING] = "등록 중",
+    [LTE_WAITING] = "대기, 다시 시도 예정",
+    [LTE_UP] = "연결됨",
 };
 
 // The network every 2 s (it asks the C6), the battery every 5 s
@@ -38,8 +39,8 @@ static void refresh(void) {
     static int64_t described = -2 * SECOND, measured = -5 * SECOND;
     int64_t now = esp_timer_get_time();
     if (now - described >= 2 * SECOND) {
-        net_describe(&net);
-        catm_snapshot(&modem);
+        network_describe(&net);
+        lte_snapshot(&modem);
         described = now;
     }
     if (now - measured >= 5 * SECOND) {
@@ -81,6 +82,8 @@ static const char* tab(int number) {
 static const char* network(void) {
     if (strcmp(net.path, "Wi-Fi") == 0)
         snprintf(text, sizeof text, "Wi-Fi %s", net.ssid);
+    else if (strcmp(net.path, "LTE") == 0 && net.wifi_joined && net.wifi_internet == NETWORK_BAD)
+        snprintf(text, sizeof text, "LTE · %s 인터넷 없음", net.ssid);
     else if (strcmp(net.path, "LTE") == 0)
         snprintf(text, sizeof text, "LTE");
     else
@@ -116,14 +119,14 @@ static const char* wifi_value(const char* name) {
     if (strcmp(name, "result") == 0) return w->result;
     if (strcmp(name, "scan") == 0) {
         static const char* const states[] = {
-            [NET_SCAN_NONE] = NULL,
-            [NET_SCAN_RUNNING] = "찾는 중…",
-            [NET_SCAN_DONE] = "누르면 SSID에 넣음",
-            [NET_SCAN_FAILED] = "찾지 못함",
+            [WIFI_SCAN_NONE] = NULL,
+            [WIFI_SCAN_RUNNING] = "찾는 중…",
+            [WIFI_SCAN_DONE] = "누르면 SSID에 넣음",
+            [WIFI_SCAN_FAILED] = "찾지 못함",
         };
-        net_visible_network v;
+        wifi_visible_network v;
         if (!net.wifi_on) return "Wi-Fi가 꺼져 있음";
-        return net_scan_state_now() == NET_SCAN_DONE && !net_visible(0, &v) ? "보이는 망 없음" : states[net_scan_state_now()];
+        return wifi_scan_now() == WIFI_SCAN_DONE && !wifi_visible(0, &v) ? "보이는 망 없음" : states[wifi_scan_now()];
     }
     return NULL;
 }
@@ -170,7 +173,8 @@ static const char* value(void* user, const char* name) {
     if (strcmp(name, "wifi.state") == 0) {
         if (!net.wifi_on) return !state->wifi_enabled ? "꺼짐 (재시작 후에도)" : "꺼짐";
         if (!net.wifi_joined) return "찾는 중";
-        snprintf(text, sizeof text, "%s %s", net.ssid, net.wifi_reaches ? "연결됨" : "연결됨, 호스트 확인 중");
+        snprintf(text, sizeof text, "%s %s", net.ssid,
+                 (const char* const[]){"연결됨, 인터넷 확인 중", "연결됨", "연결됨, 인터넷 없음"}[net.wifi_internet]);
         return text;
     }
     if (strcmp(name, "wifi.detail") == 0) {
@@ -214,9 +218,9 @@ static const wifi_network* network_at(size_t index) {
 static size_t count(void* user, const char* name) {
     (void)user;
     size_t n = 0;
-    net_visible_network v;
+    wifi_visible_network v;
     if (strcmp(name, "visible") == 0)
-        while (net_visible(n, &v))
+        while (wifi_visible(n, &v))
             n++;
     if (strcmp(name, "hosts") == 0)
         while (host(n) != NULL)
@@ -238,8 +242,8 @@ static const char* item(void* user, const char* name, size_t index, const char* 
         if (strcmp(field, "joined") == 0) return net.wifi_joined && strcmp(w->ssid, net.ssid) == 0 ? "← 연결됨" : NULL;
         return strcmp(field, "order") == 0 ? text : NULL;
     }
-    net_visible_network v;
-    if (strcmp(name, "visible") == 0 && net_visible(index, &v)) {
+    wifi_visible_network v;
+    if (strcmp(name, "visible") == 0 && wifi_visible(index, &v)) {
         if (strcmp(field, "ssid") == 0) snprintf(text, sizeof text, "%s", v.ssid);
         if (strcmp(field, "signal") == 0) snprintf(text, sizeof text, "%d dBm", v.rssi);
         if (strcmp(field, "lock") == 0) return v.open ? "열림" : NULL;
