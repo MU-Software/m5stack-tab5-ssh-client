@@ -41,7 +41,7 @@ static const char* TAG = "screen";
 // NOLINTNEXTLINE(bugprone-reserved-identifier): the linker names it
 extern const char _binary_ui_json_start[];
 
-enum { BADGE = 48, COLUMNS = BSP_LCD_V_RES / SHR_CELL_WIDTH, ROWS = BSP_LCD_H_RES / SHR_CELL_HEIGHT }; // cells
+enum { COLUMNS = BSP_LCD_V_RES / SHR_CELL_WIDTH, ROWS = BSP_LCD_H_RES / SHR_CELL_HEIGHT }; // cells
 static const global_state* state;
 static esp_lcd_touch_handle_t touch;
 static esp_lcd_panel_handle_t panel;
@@ -55,7 +55,7 @@ static shr_framebuffer_driver software, driver;
 static ppa_client_handle_t ppa;
 static uint8_t band[BSP_LCD_V_RES * 2 * 16] __attribute__((aligned(CONFIG_CACHE_L2_CACHE_LINE_SIZE)));
 static shr_context* context;
-static shr_lyr *beneath, *grid, *pictures, *guesses, *cursor, *cursor_text, *composing, *badge;
+static shr_lyr *beneath, *grid, *pictures, *guesses, *cursor, *cursor_text, *composing;
 static shr_pl_res_bitmap_font* font;
 // The terminal's cells and where they start
 static int32_t rows_count, columns, origin_x, origin_y;
@@ -394,9 +394,7 @@ esp_err_t screen_start(const global_state* global) {
         check(shr_lyr_create(context, 4, (shr_rect){0, 0, 2 * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &cursor_text), "cursor text") != SHR_OK ||
         check(shr_pl_lyr_tilemap_resize(cursor_text, font, 1, 2, NULL), "cursor text") != SHR_OK ||
         check(shr_lyr_create(context, 5, (shr_rect){0, 0, 2 * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &composing), "composing") != SHR_OK ||
-        check(shr_pl_lyr_tilemap_resize(composing, font, 1, 2, NULL), "composing") != SHR_OK ||
-        check(shr_lyr_create(context, 7, (shr_rect){0, 0, BADGE * SHR_CELL_WIDTH, SHR_CELL_HEIGHT}, &badge), "badge") != SHR_OK ||
-        check(shr_pl_lyr_tilemap_resize(badge, font, 1, BADGE, NULL), "badge") != SHR_OK || (typed = xStreamBufferCreate(256, 1)) == NULL ||
+        check(shr_pl_lyr_tilemap_resize(composing, font, 1, 2, NULL), "composing") != SHR_OK || (typed = xStreamBufferCreate(256, 1)) == NULL ||
         check(shr_pl_lyr_tilemap_resize(grid, font, ROWS, COLUMNS, &background), "tilemap") != SHR_OK ||
         check(ui_start(context, font, 6, COLUMNS, ROWS, BSP_LCD_V_RES, ui_values(state)), "ui") != SHR_OK ||
         ghostty_render_state_row_iterator_new(&terminal_allocator, &rows) != GHOSTTY_SUCCESS ||
@@ -741,22 +739,6 @@ bool screen_status(char* out, size_t out_size) {
     return what != NULL;
 }
 
-// Without the top bar, the terminal's top right: what the session waits for and for how long
-static void draw_badge(void) {
-    static char shown_text[BADGE + 1];
-    char text[BADGE + 1] = "", status[BADGE - 2];
-    if (!state->bars.top && screen_status(status, sizeof status)) snprintf(text, sizeof text, " %s ", status);
-    if (strcmp(text, shown_text) == 0) return;
-    memcpy(shown_text, text, sizeof text);
-    shr_lyr_set_visible(badge, text[0] != 0);
-    if (text[0] == 0) return;
-    int32_t n = (int32_t)strlen(text), right = origin_x + columns * SHR_CELL_WIDTH;
-    shr_lyr_set_rect(badge, (shr_rect){right - n * SHR_CELL_WIDTH, origin_y, right, origin_y + SHR_CELL_HEIGHT});
-    shr_pl_lyr_tilemap_clear(badge, 0, 0, 1, BADGE, (shr_text_style){0});
-    shr_pl_lyr_tilemap_set_text(badge, 0, 0, text, (size_t)n, (shr_text_style){SHR_RGB(0, 0, 0), SHR_RGB(0xff, 0xcc, 0), SHR_STYLE_BOLD}, NULL, 0, 0,
-                                NULL);
-}
-
 void screen_typed(const void* bytes, size_t size) {
     if (bytes == NULL)
         atomic_store(&typing_over, true);
@@ -936,7 +918,7 @@ void screen_open(const char* panel) {
 }
 
 bool screen_panel_open(void) {
-    return atomic_load(&panel_open) || atomic_load(&open_asked);
+    return atomic_load(&open_asked) ? atomic_load(&open_request) != NULL : atomic_load(&panel_open);
 }
 
 bool screen_input(void) {
@@ -1033,7 +1015,6 @@ void screen_draw(void) {
     ghostty_render_state_clean(render);
     draw_pictures();
     draw_composing(&now, &colors);
-    draw_badge();
 
     shr_deadline next;
     shr_event event;

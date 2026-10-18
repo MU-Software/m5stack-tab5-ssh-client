@@ -33,7 +33,7 @@ const setting* settings_find(const char* name);
 // NULL past the last
 const setting* settings_at(size_t index);
 void settings_get(const global_state* state, const setting* s, setting_value* out);
-// False for a value out of range, or both bars off
+// False for a value out of range
 bool settings_set(global_state* state, const setting* s, const setting_value* value);
 // One step up (direction 1) or down (-1), kept in range: toggles flip and choices wrap
 void settings_step(const setting* s, setting_value* value, int direction);

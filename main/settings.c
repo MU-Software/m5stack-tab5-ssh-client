@@ -15,8 +15,6 @@ static const setting table[] = {
     {"network.lte.enabled", SETTING_TOGGLE, .offset = FIELD(lte_enabled)},
     {"echo.enabled", SETTING_TOGGLE, .offset = FIELD(echo.enabled)},
     {"echo.delay_ms", SETTING_NUMBER, 0, 1000, 10, " ms", .offset = FIELD(echo.delay_ms)},
-    {"bars.top", SETTING_TOGGLE, .offset = FIELD(bars.top)},
-    {"bars.bottom", SETTING_TOGGLE, .offset = FIELD(bars.bottom)},
     {"bars.battery", SETTING_CHOICE, .options = batteries, .values = battery_values, .offset = FIELD(battery)},
     {"touch.wheel_px", SETTING_NUMBER, 12, 240, 12, " px", .offset = FIELD(touch.wheel_px)},
     {"touch.arrows", SETTING_TOGGLE, .offset = FIELD(touch.arrows)},
@@ -63,10 +61,6 @@ void settings_get(const global_state* state, const setting* s, setting_value* ou
 bool settings_set(global_state* state, const setting* s, const setting_value* value) {
     char* at = (char*)state + s->offset;
     int n = value->number;
-    // Without bars nothing opens the screens by touch
-    if (n == 0 && ((s->offset == offsetof(global_state, bars.top) && !state->bars.bottom) ||
-                   (s->offset == offsetof(global_state, bars.bottom) && !state->bars.top)))
-        return false;
     if (s->kind == SETTING_TEXT) {
         size_t length = strnlen(value->text, sizeof value->text);
         if (length < (size_t)s->minimum || length >= s->size || length == sizeof value->text) return false;

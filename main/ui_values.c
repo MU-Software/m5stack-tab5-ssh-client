@@ -266,22 +266,13 @@ static const char* item(void* user, const char* name, size_t index, const char* 
     return NULL;
 }
 
-static size_t chosen(void* user, const char* name) {
-    (void)user;
-    size_t i = 0;
-    if (strcmp(name, "hosts") == 0)
-        for (const ssh_host* h = state->hosts; h != NULL && state->current_host != NULL && h != state->current_host; h = h->next)
-            i++;
-    return i;
-}
-
 static void get(void* user, const setting* s, setting_value* out) {
     (void)user;
     settings_get(state, s, out);
 }
 
 const ui_source* ui_values(const global_state* global) {
-    static const ui_source source = {value, count, item, chosen, get, NULL};
+    static const ui_source source = {value, count, item, get, NULL};
     state = global;
     return &source;
 }

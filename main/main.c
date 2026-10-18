@@ -50,7 +50,6 @@ static global_state state = {
     .log = {.enabled = true, .file_kb = 1024, .keep_mb = 32, .keep_days = 14},
     .timezone = "KST-9",
     .echo = {true, 50},
-    .bars = {true, true},
     .touch = {48, true},
     .wifi_enabled = true,
     .lte_enabled = true,
@@ -742,8 +741,6 @@ static void show(session* s) {
     screen_waiting(NULL, 0);
     if (s == NULL) return;
     screen_waiting(atomic_load(&s->waiting), (TickType_t)atomic_load(&s->waiting_since));
-    const ssh_host* h = host_named(s->alias);
-    if (h != NULL) state.current_host = h;
 }
 
 // Starts the jobs asked for, shows what was asked, takes an ended session off the screen, frees the terminals of ended
@@ -815,7 +812,6 @@ static void load_config(void) {
     char* text = storage_get_ssh_config();
     state.hosts = text != NULL ? config_ssh_hosts(text) : NULL;
     free(text);
-    state.current_host = state.hosts;
     static const char* const told[] = {
         [CONFIG_LOADED] = "",
         [CONFIG_MISSING] = "SD 카드에 .config/tab5-ssh/config.json 없음\n기본값으로 실행 · 설정을 바꾸면 만듦",
@@ -1344,12 +1340,9 @@ static void apply(const ui_event* e) {
         if (strcmp(verb, "delete") == 0) request_dialog(ASKED_DELETE, "", n);
         return;
     }
-    // A session's tab: the shown one's opens the sessions screen
+    // A session's tab shows it; the shown one's does nothing
     if (e->kind == UI_ACTION && sscanf(e->name, "session %d", &n) == 1) {
-        if (n >= 1 && n <= MAX_SESSIONS && is_shown(&sessions[n - 1]))
-            screen_open("sessions");
-        else if (session_open(n, false) == 0)
-            screen_open(NULL);
+        if (!(n >= 1 && n <= MAX_SESSIONS && is_shown(&sessions[n - 1])) && session_open(n, false) == 0) screen_open(NULL);
         return;
     }
     if (e->kind == UI_ACTION && strcmp(e->name, "reboot") == 0) {
@@ -1426,8 +1419,8 @@ void app_main(void) {
     screen_show(blank);
     load_sessions();
     if (screen != ESP_OK) ESP_LOGE(TAG, "no screen");
-    // The sessions screen is open: it stands for no session shown
-    bool lit = true, listing = false;
+    // Whether a screen was open last time round
+    bool lit = true, paged = true;
     for (;;) {
         ui_event e;
         terminal_size size;
@@ -1436,8 +1429,7 @@ void app_main(void) {
         memory_log();
         if (screen == ESP_OK && atomic_exchange(&profile_asked, false)) power_profile(lit), lit = true;
         if (screen == ESP_OK && !lit) lit = woken();
-        // With no session shown the sessions screen stays open, and what is typed goes nowhere
-        if (screen == ESP_OK) ui_home(atomic_load(&shown) == NULL ? "sessions" : NULL);
+        // With no session shown a screen is open, the sessions screen unless another is, and what is typed goes nowhere
         if (lit && atomic_load(&shown) == NULL) {
             char dropped[64];
             if (screen == ESP_OK && !screen_panel_open()) screen_open("sessions");
@@ -1452,17 +1444,16 @@ void app_main(void) {
                 apply(&e);
             tend_dialogs();
             memset(&e, 0, sizeof e);
-            // Opened, it takes the shown session off the screen; a session a command shows closes it
-            const char* panel = ui_panel();
-            bool list = panel != NULL && strcmp(panel, "sessions") == 0;
+            // A screen opened takes the shown session off; a session shown closes it
+            bool open = ui_panel() != NULL;
             lock();
             const session* on = atomic_load(&shown);
-            if (list && !listing)
+            if (open && !paged)
                 ask_show(NULL);
-            else if (list && on != NULL && showing(on))
+            else if (open && on != NULL && showing(on))
                 screen_open(NULL);
             unlock();
-            listing = list;
+            paged = open;
             if (screen_resized(&size)) {
                 state.terminal_size = size;
                 lock();

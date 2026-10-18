@@ -30,7 +30,6 @@ static global_state state = {
     .log = {.enabled = true, .file_kb = 1024, .keep_mb = 32, .keep_days = 14},
     .timezone = "KST-9",
     .echo = {true, 50},
-    .bars = {true, true},
     .wifi_enabled = true,
     .lte_enabled = true,
 };
@@ -227,17 +226,12 @@ static const char* item(void* user, const char* name, size_t index, const char* 
     return NULL;
 }
 
-static size_t chosen(void* user, const char* name) {
-    (void)user;
-    return strcmp(name, "hosts") == 0 ? (size_t)(state.current_host - hosts) : 0;
-}
-
 static void get(void* user, const setting* s, setting_value* out) {
     (void)user;
     settings_get(&state, s, out);
 }
 
-static const ui_source source = {text, count, item, chosen, get, NULL};
+static const ui_source source = {text, count, item, get, NULL};
 
 // Lines of a shell where the layout puts the terminal, and the last event
 static void draw_terminal(void) {
@@ -251,12 +245,7 @@ static void draw_terminal(void) {
     shr_pl_lyr_tilemap_resize(terminal, font, a.rows, a.columns, &black);
     shr_pl_lyr_tilemap_clear(terminal, 0, 0, a.rows, a.columns, (shr_text_style){0});
     char lines[256];
-    snprintf(lines, sizeof lines,
-             "tab5@%s:~$ tmux attach -t tab5-6ca4f771\n"
-             "%d x %d cells for the terminal\n"
-             "last: %s\n"
-             "tab5@%s:~$ ",
-             state.current_host->alias, a.columns, a.rows, action, state.current_host->alias);
+    snprintf(lines, sizeof lines, "%d x %d cells for the terminal\nlast: %s\n$ ", a.columns, a.rows, action);
     shr_pl_lyr_tilemap_set_text(terminal, 0, 0, lines, strlen(lines), (shr_text_style){SHR_RGB(0xd0, 0xd0, 0xd0), 0, 0}, NULL, 0, 0, NULL);
 }
 
@@ -335,10 +324,7 @@ static void sessions(const ui_event* e) {
     if (!tab && e->index < state.session_count) number = state.sessions[e->index].number;
     session_info* s = numbered(number);
     if (s == NULL) return;
-    if (tab && s->shown) {
-        ui_open("sessions");
-        return;
-    }
+    if (tab && s->shown) return;
     if (!tab && strcmp(verb, "delete") == 0) {
         char title[64];
         snprintf(asked, sizeof asked, "removed %d", number);
@@ -351,8 +337,6 @@ static void sessions(const ui_event* e) {
         for (size_t i = 0; i < state.session_count; i++)
             state.sessions[i].shown = open && &state.sessions[i] == s;
     s->status = disconnect ? SESSION_DISCONNECTED : SESSION_CONNECTED;
-    for (size_t i = 0; open && i < sizeof hosts / sizeof hosts[0]; i++)
-        if (strcmp(hosts[i].alias, s->alias) == 0) state.current_host = &hosts[i];
     if (open) ui_open(NULL);
 }
 
@@ -434,18 +418,16 @@ static void key(const SDL_KeyboardEvent* k) {
         }
 }
 
-// As main.c's main loop: the sessions screen stands for no session shown
+// As main.c's main loop: a screen opened takes the shown session off, and with none shown the sessions screen opens
 static void tend(void) {
-    static bool listing = true;
-    bool seen = false;
+    static bool paged = true;
+    bool seen = false, open = ui_panel() != NULL;
+    for (size_t i = 0; open && !paged && i < state.session_count; i++)
+        state.sessions[i].shown = false;
     for (size_t i = 0; i < state.session_count; i++)
         seen |= state.sessions[i].shown;
-    ui_home(seen ? NULL : "sessions");
-    const char* panel = ui_panel();
-    bool list = panel != NULL && strcmp(panel, "sessions") == 0;
-    for (size_t i = 0; list && !listing && i < state.session_count; i++)
-        state.sessions[i].shown = false;
-    listing = list;
+    if (!seen && !open) ui_open("sessions");
+    paged = ui_panel() != NULL;
 }
 
 static void run_input(const char* script) {
@@ -499,7 +481,7 @@ int main(int argc, char** argv) {
     layout_path = argv[a], fonts = argv[a + 1];
     for (size_t i = 0; i + 1 < sizeof hosts / sizeof hosts[0]; i++)
         hosts[i].next = &hosts[i + 1];
-    state.hosts = hosts, state.current_host = hosts;
+    state.hosts = hosts;
     // A disconnected session and a second one that waits for a password
     state.sessions[0] = (session_info){.number = 1, .alias = hosts[0].alias, .status = SESSION_DISCONNECTED};
     state.sessions[1] = (session_info){.number = 2, .alias = hosts[1].alias, .status = SESSION_ASKING};

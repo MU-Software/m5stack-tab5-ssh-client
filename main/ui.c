@@ -51,8 +51,6 @@ static layout* box_layout;
 // The panel over the terminal and the dialog over both
 static shown_screen main_screen, panel, dialog;
 static char panel_name[32];
-// Opened when a panel closes, empty for none
-static char home[sizeof panel_name];
 static ui_dialog_kind dialog_kind;
 static unsigned dialog_serial;
 static char dialog_title[96], dialog_lines[DIALOG_LINES][160], dialog_yes[32];
@@ -177,19 +175,13 @@ static bool in(const shown_screen* s, const layout_node* n) {
     return n != NULL && s->screen != NULL && n >= s->screen->nodes && n < s->screen->nodes + s->screen->count;
 }
 
-// Each list's item that the source chooses
+// Each list from its first item
 static void choose_first(shown_screen* s) {
-    for (size_t i = 0; s->screen != NULL && i < s->screen->count; i++) {
-        const layout_node* n = &s->screen->nodes[i];
-        s->chosen[i] = n->kind == LAYOUT_LIST && source->chosen != NULL ? source->chosen(source->user, n->name) : 0;
-        s->first[i] = 0, s->chosen_button[i] = -1;
-    }
+    for (size_t i = 0; s->screen != NULL && i < s->screen->count; i++)
+        s->chosen[i] = s->first[i] = 0, s->chosen_button[i] = -1;
 }
 
 bool ui_open(const char* name) {
-    // Closing the home panel leaves it open
-    if (name == NULL && home[0] != 0 && panel.screen != NULL && strcmp(panel_name, home) == 0) return true;
-    if (name == NULL && home[0] != 0 && find(home) != NULL) name = home;
     layout* screen = name != NULL ? find(name) : NULL;
     if (name != NULL && screen == NULL) return false;
     panel.screen = screen, panel.focus = -1;
@@ -201,17 +193,11 @@ bool ui_open(const char* name) {
     bool leading = false;
     for (size_t i = 0; screen != NULL && i < screen->count; i++) {
         const layout_node* n = &screen->nodes[i];
-        // A list with an action or an editor first, else a button that does more than close or a list
+        // A list with an action or an editor first, else a button or a list
         bool leads = n->kind != LAYOUT_BUTTON && (n->kind != LAYOUT_LIST || n->action != NULL);
-        if (focusable(n) && visible(n) && (panel.focus < 0 || (!leading && leads)) &&
-            (leads || (panel.focus < 0 && (n->kind != LAYOUT_BUTTON || strcmp(n->action, "close") != 0))))
-            panel.focus = (int)i, leading = leads;
+        if (focusable(n) && visible(n) && (panel.focus < 0 || (!leading && leads))) panel.focus = (int)i, leading = leads;
     }
     return true;
-}
-
-void ui_home(const char* name) {
-    snprintf(home, sizeof home, "%s", name != NULL ? name : "");
 }
 
 const char* ui_panel(void) {
@@ -638,10 +624,8 @@ static ui_event activate(const layout_node* n, int32_t column) {
     if (n->per_item) return (ui_event){.kind = UI_ACTION, .name = n->action, .index = screen->chosen[screen->focus]};
     if (n->kind == LAYOUT_BUTTON) {
         if (screen == &dialog) return dialog_action(n->action);
-        if (strcmp(n->action, "close") == 0 || (panel.screen != NULL && strcmp(n->action, panel_name) == 0))
-            ui_open(NULL);
-        else if (!ui_open(n->action))
-            return (ui_event){.kind = UI_ACTION, .name = n->action};
+        // The open panel's button does nothing
+        if (strcmp(n->action, panel_name) != 0 && !ui_open(n->action)) return (ui_event){.kind = UI_ACTION, .name = n->action};
         return (ui_event){.kind = UI_NONE};
     }
     if (n->kind == LAYOUT_LIST) {
@@ -703,10 +687,7 @@ ui_event ui_key(ui_key_code key, const char* text) {
     ui_event e = {.kind = UI_NONE};
     bool in_dialog = screen == &dialog;
     if (in_dialog && key == UI_KEY_ESCAPE) return dialog_action("dialog cancel");
-    if (screen->screen == NULL || screen->focus < 0) {
-        if (key == UI_KEY_ESCAPE) ui_open(NULL);
-        return e;
-    }
+    if (screen->screen == NULL || screen->focus < 0) return e;
     const layout_node* n = &screen->screen->nodes[screen->focus];
     size_t length = strlen(screen->edit);
     if (screen->editing) {
@@ -732,9 +713,7 @@ ui_event ui_key(ui_key_code key, const char* text) {
         return e;
     }
     size_t count = n->kind == LAYOUT_LIST ? source->count(source->user, n->name) : 0;
-    if (key == UI_KEY_ESCAPE) {
-        ui_open(NULL);
-    } else if (key == UI_KEY_TAB || key == UI_KEY_BACKTAB) {
+    if (key == UI_KEY_TAB || key == UI_KEY_BACKTAB) {
         move_focus(screen, key == UI_KEY_TAB ? 1 : -1);
     } else if ((key == UI_KEY_UP || key == UI_KEY_DOWN) && n->kind == LAYOUT_LIST && count > 0 &&
                (key == UI_KEY_UP ? screen->chosen[screen->focus] > 0 : screen->chosen[screen->focus] + 1 < count)) {

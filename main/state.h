@@ -94,8 +94,6 @@ typedef struct {
 typedef struct {
     wifi_network* wifi;
     ssh_host* hosts;
-    // The shown session's, else the one shown last
-    const ssh_host* current_host;
     const char* terminal_type;
     terminal_size terminal_size;
     // The sessions in the order of their numbers
@@ -109,10 +107,6 @@ typedef struct {
     // POSIX TZ
     char timezone[48];
     echo_settings echo;
-    // Above and below the terminal
-    struct {
-        bool top, bottom;
-    } bars;
     sleep_settings sleep;
     // Index of the "bars.battery" setting's choices
     int battery;

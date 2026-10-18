@@ -86,7 +86,6 @@ int main(void) {
     global_state state = {.log = {.enabled = true, .file_kb = 1024, .keep_mb = 32, .keep_days = 14},
                           .timezone = "KST-9",
                           .echo = {true, 50},
-                          .bars = {true, true},
                           .touch = {48, true},
                           .wifi_enabled = true,
                           .lte_enabled = true};
@@ -105,8 +104,8 @@ int main(void) {
     check(stepped("touch.wheel_px", 48, 1) == 60 && stepped("touch.wheel_px", 12, -1) == 12 && stepped("touch.wheel_px", 240, 1) == 240,
           "wheel pixels in cells of 12 within 12..240");
     check(stepped("log.session_level", 1, 1) == 0 && stepped("log.session_level", 0, -1) == 1, "choices wrap");
-    check(stepped("bars.top", 1, 1) == 0 && stepped("bars.top", 0, -1) == 1, "toggles flip either way");
-    check(strcmp(shown("log.keep_mb", 32), "32 MB") == 0 && strcmp(shown("bars.top", 1), "켬") == 0 &&
+    check(stepped("echo.enabled", 1, 1) == 0 && stepped("echo.enabled", 0, -1) == 1, "toggles flip either way");
+    check(strcmp(shown("log.keep_mb", 32), "32 MB") == 0 && strcmp(shown("echo.enabled", 1), "켬") == 0 &&
               strcmp(shown("bars.battery", 1), "퍼센트") == 0,
           "shown with units, 켬/끔 and choices");
     setting_value tz = {0};
@@ -124,9 +123,6 @@ int main(void) {
           "screen off after 0 (never) to 60 minutes");
     check(!state.sleep.usb_a && set_number(&state, "sleep.usb_a", 1) && state.sleep.usb_a, "USB-A off while asleep unless set");
 
-    check(set_number(&state, "bars.top", 0) && !set_number(&state, "bars.bottom", 0) && state.bars.bottom, "both bars off refused");
-    set_number(&state, "bars.top", 1);
-
     global_state loaded = state;
     check(*load(&loaded, "{}") == 0 && same(&loaded, &state), "an empty configuration keeps every value");
     check(*load(&loaded, "{\"log\": {\"enabled\": false, \"file_kb\": 256, \"session_level\": \"warn\"}, \"timezone\": \"UTC0\", "
@@ -142,12 +138,10 @@ int main(void) {
                  "bars.battery log.file_kb log.keep_days ") == 0 &&
               loaded.log.file_kb == 256 && loaded.log.keep_mb == 4,
           "each value out of range, fractional or unknown refused alone");
-    check(strcmp(load(&loaded, "{\"echo\": [], \"timezone\": 9, \"bars\": {\"top\": false, \"bottom\": false}}"),
-                 "echo.enabled echo.delay_ms bars.bottom timezone ") == 0 &&
-              !loaded.bars.top && loaded.bars.bottom,
-          "a list for an object, a number for text and the last bar refused");
+    check(strcmp(load(&loaded, "{\"echo\": [], \"timezone\": 9}"), "echo.enabled echo.delay_ms timezone ") == 0,
+          "a list for an object and a number for text refused");
 
-    loaded.bars.top = true, loaded.lte_enabled = false;
+    loaded.lte_enabled = false;
     char* schema_text = read_text("tools/config.schema.json");
     cJSON* schema = cJSON_Parse(schema_text);
     cJSON* config = cJSON_CreateObject();
@@ -184,13 +178,13 @@ int main(void) {
         for (size_t i = 0; l != NULL && i < l->count; i++) {
             const layout_node* node = &l->nodes[i];
             const char* name = node->kind > LAYOUT_LIST ? node->name : node->when;
-            if (name == NULL || (node->kind <= LAYOUT_LIST && strncmp(name, "bars.", 5) != 0)) continue;
+            if (name == NULL || node->kind <= LAYOUT_LIST) continue;
             editors++;
             if (settings_find(name) == NULL) printf("     main/ui.json %s: no setting %s\n", s->string, name), unknown++;
         }
         free(l);
     }
-    check(json != NULL && editors > 0 && unknown == 0, "main/ui.json: every editor and bar names a setting");
+    check(json != NULL && editors > 0 && unknown == 0, "main/ui.json: every editor names a setting");
     cJSON_Delete(json);
     free(text);
     return failures != 0;

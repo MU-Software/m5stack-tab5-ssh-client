@@ -4,7 +4,6 @@
       "rows": [
         {
           "height": 1,
-          "when": "bars.top",
           "style": "bar",
           "columns": [
             {"when": "sessions.none", "text": " 세션 없음"},
@@ -21,7 +20,6 @@
         {"terminal": {}},
         {
           "height": 1,
-          "when": "bars.bottom",
           "style": "bar",
           "columns": [
             {"button": "sessions", "text": "세션"},
@@ -109,11 +107,10 @@
             {"width": 12, "style": "button", "button": "modem read", "text": "다시 읽기"},
             {"width": 1, "text": ""},
             {"width": 10, "style": "button", "button": "settings", "text": "설정"},
-            {"width": 1, "text": ""},
-            {"width": 10, "style": "button", "button": "close", "text": "닫기"}
+            {"width": 1, "text": ""}
           ]
         },
-        {"height": 1, "style": "hint", "text": " Tab 이동 · Enter 누르기 · Esc 닫기 · 다이얼마다 읽음, 설정 값은 부팅 때"},
+        {"height": 1, "style": "hint", "text": " Tab 이동 · Enter 누르기 · 다이얼마다 읽음, 설정 값은 부팅 때"},
         {"height": 1, "style": "alert", "text": " {modem.read}"},
         {"height": 1, "style": "section", "text": " 망"},
         {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   등록"}, {"text": "{modem.registration}"}, {"width": 9, "style": "hint", "align": "right", "text": "{modem.registration.age} "}]},
@@ -169,11 +166,10 @@
             {"width": 10, "style": "button", "button": "modem", "text": "모뎀"},
             {"width": 1, "text": ""},
             {"width": 10, "style": "button", "button": "restart", "text": "재시작"},
-            {"width": 1, "text": ""},
-            {"width": 10, "style": "button", "button": "close", "text": "닫기"}
+            {"width": 1, "text": ""}
           ]
         },
-        {"height": 1, "style": "hint", "text": " Tab·↑↓ 이동 · ←→ 바꾸기 · Enter 바꾸기·입력 · Esc 닫기"},
+        {"height": 1, "style": "hint", "text": " Tab·↑↓ 이동 · ←→ 바꾸기 · Enter 바꾸기·입력"},
         {"height": 1, "style": "alert", "text": " {config}"},
         {
           "columns": [
@@ -184,8 +180,6 @@
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   예측 에코"}, {"width": 16, "toggle": "echo.enabled"}]},
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   에코 지연"}, {"width": 16, "number": "echo.delay_ms"}]},
                 {"height": 1, "text": ""},
-                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   위 바"}, {"width": 16, "toggle": "bars.top"}]},
-                {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   아래 바"}, {"width": 16, "toggle": "bars.bottom"}]},
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   배터리 표시"}, {"width": 16, "choice": "bars.battery"}]},
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   휠 한 칸 끌기"}, {"width": 16, "number": "touch.wheel_px"}]},
                 {"height": 1, "columns": [{"width": 18, "style": "label", "text": "   끌기로 ↑↓ 키"}, {"width": 16, "toggle": "touch.arrows"}]},

@@ -23,10 +23,9 @@ typedef enum {
 typedef struct {
     // The text for {name}, NULL for none
     const char* (*text)(void* user, const char* name);
-    // List `name`: its length, {field} of item `index`, and the item chosen when a panel opens
+    // List `name`: its length, and {field} of item `index`
     size_t (*count)(void* user, const char* name);
     const char* (*item)(void* user, const char* name, size_t index, const char* field);
-    size_t (*chosen)(void* user, const char* name);
     void (*get)(void* user, const setting* s, setting_value* out);
     void* user;
 } ui_source;
@@ -47,15 +46,13 @@ typedef struct {
 // `width` pixels wide (the cells' background goes on to its edge); `source` is kept
 shr_status ui_start(shr_context* context, shr_pl_res_bitmap_font* font, int32_t z, int32_t columns, int32_t rows, int32_t width,
                     const ui_source* source);
-// The screens of a layout file: "main", and panels over the terminal that buttons named after them open and close
-// ("close" closes); on error the screens stay as they were
+// The screens of a layout file: "main", and panels over the terminal that buttons named after them open; on error the
+// screens stay as they were
 bool ui_load(const char* text, char* error, size_t size);
 // Draws what changed; lays the screens out again when a "when" changed
 void ui_draw(void);
-// Opens panel `name` (NULL closes, opening the home panel if there is one); false if there is none
+// Opens panel `name` (NULL closes); false if there is none
 bool ui_open(const char* name);
-// The panel that closing opens instead, NULL for none
-void ui_home(const char* name);
 // The open panel, NULL for none: keys then go to it
 const char* ui_panel(void);
 // The terminal's cells; false without one
@@ -63,7 +60,7 @@ bool ui_terminal(layout_area* out);
 // A touch on cell (column, row)
 ui_event ui_touch(ui_touch_phase phase, int32_t column, int32_t row);
 // A key for the open dialog, else the open panel: arrows and Tab move (←→ along a list row's buttons), Enter chooses,
-// Escape closes; `text` (UTF-8) for UI_KEY_TEXT
+// Escape cancels a dialog or a field's typing; `text` (UTF-8) for UI_KEY_TEXT
 ui_event ui_key(ui_key_code key, const char* text);
 
 typedef enum { UI_ALERT, UI_CONFIRM, UI_LIST, UI_PROMPT, UI_PASSWORD } ui_dialog_kind;
