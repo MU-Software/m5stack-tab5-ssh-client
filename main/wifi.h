@@ -15,6 +15,8 @@ esp_err_t wifi_start(bool on, void (*changed)(void));
 esp_err_t wifi_scan(wifi_ap_record_t** records, uint16_t* count);
 // Joins the first of networks but except that a scan sees, leaving any network joined before
 esp_err_t wifi_join(const wifi_network* networks, const char* except, int timeout_ms);
+// The C6 joins network (from C6_JOIN_SINCE), then waits up to timeout_ms for its lease
+esp_err_t wifi_join_through_c6(const wifi_network* network, int timeout_ms);
 esp_err_t wifi_on(void);
 esp_err_t wifi_off(void);
 // Joined with an address; a lost network is retried until wifi_join or wifi_off

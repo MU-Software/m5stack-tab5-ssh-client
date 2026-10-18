@@ -32,6 +32,18 @@ typedef struct {
 unsigned c6_wifi_state(c6_wifi_status* status);
 // Called from esp_hosted's task after each C6_WIFI_STATE
 void c6_on_wifi_state(void (*listener)(void));
+typedef struct {
+    // errno of the last address tried, 0 once one answered
+    int error;
+    unsigned milliseconds;
+    char address[16];
+} c6_reach_answer;
+// From C6_INTERNET_SINCE: whether the C6's network reaches the internet, checked now; meanwhile(context) runs between the ask
+// and the wait for the answer
+esp_err_t c6_internet(int timeout_ms, void (*meanwhile)(void* context), void* context, c6_reach_answer* answer);
+// From C6_JOIN_SINCE: the C6 leaves its network for this one. ESP_OK once joined, ESP_ERR_NOT_FOUND when it saw none,
+// ESP_ERR_INVALID_STATE with its Wi-Fi stopped, else ESP_FAIL with the reason of the failure in *reason
+esp_err_t c6_join(const char* ssid, const char* password, int timeout_ms, uint8_t* reason);
 // From C6_NW_SPLIT_SINCE: called from the default event loop with each lease the C6 reports, address 0 when it has none
 void c6_on_lease(void (*listener)(const c6_lease* lease));
 // The C6's lease now, through esp_hosted's own handler and the listener

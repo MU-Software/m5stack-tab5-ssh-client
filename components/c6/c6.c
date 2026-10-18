@@ -46,6 +46,12 @@ static uint8_t nvs_sequence, *nvs_answer;
 static size_t nvs_answer_length;
 static esp_err_t nvs_error;
 EXT_RAM_BSS_ATTR static uint8_t nvs_message[2 + C6_NVS_MESSAGE];
+// One c6_internet or c6_join at a time waits for the answer of its kind and sequence
+static StaticSemaphore_t ask_lock_memory, asked_memory;
+static SemaphoreHandle_t ask_lock, asked;
+static portMUX_TYPE ask_guard = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t ask_kind, ask_sequence, ask_answer[8];
+static bool ask_waiting;
 
 bool c6_version(char* version, size_t size) {
     eh_host_coprocessor_fwver_t v = {0};
@@ -69,6 +75,17 @@ static void from_c6(uint32_t id, const uint8_t* data, size_t size, void* context
         wifi_reports++;
         taskEXIT_CRITICAL(&wifi_lock);
         if (wifi_listener != NULL) wifi_listener();
+    }
+    if (size >= 2 && (data[0] == C6_INTERNET || data[0] == C6_WIFI_JOINED)) {
+        bool answered = false;
+        taskENTER_CRITICAL(&ask_guard);
+        if (ask_waiting && data[0] == ask_kind && data[1] == ask_sequence) {
+            memcpy(ask_answer, data + 2, MIN(size - 2, sizeof ask_answer));
+            ask_waiting = false;
+            answered = true;
+        }
+        taskEXIT_CRITICAL(&ask_guard);
+        if (answered) xSemaphoreGive(asked);
     }
     if (size >= 6 && data[0] == C6_NVS) {
         bool answered = false;
@@ -181,6 +198,8 @@ esp_err_t c6_start(void) {
     char version[24] = "unknown";
     nvs_lock = xSemaphoreCreateMutexStatic(&nvs_lock_memory);
     nvs_answered = xSemaphoreCreateBinaryStatic(&nvs_answered_memory);
+    ask_lock = xSemaphoreCreateMutexStatic(&ask_lock_memory);
+    asked = xSemaphoreCreateBinaryStatic(&asked_memory);
     ESP_RETURN_ON_ERROR(esp_event_handler_register(EH_HOST_EVENT, EH_HOST_EVENT_NW_SPLIT_STATUS, on_status, NULL), TAG, "lease");
     esp_err_t err = esp_hosted_init();
     if (err == ESP_OK) err = esp_hosted_connect_to_slave();
@@ -241,6 +260,59 @@ esp_err_t c6_nvs(const uint8_t* request, size_t request_length, uint8_t* answer,
     taskEXIT_CRITICAL(&nvs_guard);
     xSemaphoreGive(nvs_lock);
     return err;
+}
+
+// message's kind first, its sequence second (set here); the body of the answer of kind with that sequence into answer
+static esp_err_t ask(uint8_t* message, size_t size, uint8_t kind, int timeout_ms, void (*meanwhile)(void* context), void* context,
+                     uint8_t answer[sizeof ask_answer]) {
+    static uint8_t sequence;
+    xSemaphoreTake(ask_lock, portMAX_DELAY);
+    xSemaphoreTake(asked, 0);
+    taskENTER_CRITICAL(&ask_guard);
+    // 1-255: 0 is the C6's own
+    message[1] = ask_sequence = sequence = (uint8_t)(sequence % 255 + 1);
+    ask_kind = kind;
+    ask_waiting = true;
+    taskEXIT_CRITICAL(&ask_guard);
+    TickType_t start = xTaskGetTickCount();
+    esp_err_t err = eh_host_peer_data_send(P4_TO_C6, message, size);
+    if (meanwhile != NULL) meanwhile(context);
+    TickType_t spent = xTaskGetTickCount() - start, limit = pdMS_TO_TICKS(timeout_ms);
+    if (err == ESP_OK && xSemaphoreTake(asked, spent < limit ? limit - spent : 0) != pdTRUE) err = ESP_ERR_TIMEOUT;
+    taskENTER_CRITICAL(&ask_guard);
+    ask_waiting = false;
+    if (err == ESP_OK) memcpy(answer, ask_answer, sizeof ask_answer);
+    taskEXIT_CRITICAL(&ask_guard);
+    xSemaphoreGive(ask_lock);
+    return err;
+}
+
+esp_err_t c6_internet(int timeout_ms, void (*meanwhile)(void* context), void* context, c6_reach_answer* answer) {
+    uint8_t message[2] = {P4_INTERNET}, body[sizeof ask_answer];
+    if (protocol < C6_INTERNET_SINCE) return ESP_ERR_NOT_SUPPORTED;
+    ESP_RETURN_ON_ERROR(ask(message, sizeof message, C6_INTERNET, timeout_ms, meanwhile, context, body), TAG, "internet");
+    *answer = (c6_reach_answer){.error = body[0], .milliseconds = body[1] | body[2] << 8};
+    snprintf(answer->address, sizeof answer->address, "%u.%u.%u.%u", body[3], body[4], body[5], body[6]);
+    return ESP_OK;
+}
+
+esp_err_t c6_join(const char* ssid, const char* password, int timeout_ms, uint8_t* reason) {
+    uint8_t message[4 + 32 + 64] = {P4_WIFI_JOIN}, body[sizeof ask_answer];
+    size_t s = strlen(ssid), p = strlen(password);
+    if (protocol < C6_JOIN_SINCE) return ESP_ERR_NOT_SUPPORTED;
+    if (s == 0 || s > 32 || p > 64) return ESP_ERR_INVALID_ARG;
+    message[2] = (uint8_t)s;
+    memcpy(message + 3, ssid, s);
+    message[3 + s] = (uint8_t)p;
+    memcpy(message + 4 + s, password, p);
+    esp_err_t err = ask(message, 4 + s + p, C6_WIFI_JOINED, timeout_ms, NULL, NULL, body);
+    memset(message, 0, sizeof message);
+    if (err != ESP_OK) return err;
+    *reason = body[1];
+    return body[0] == C6_JOIN_DONE        ? ESP_OK
+           : body[0] == C6_JOIN_NOT_FOUND ? ESP_ERR_NOT_FOUND
+           : body[0] == C6_JOIN_STOPPED   ? ESP_ERR_INVALID_STATE
+                                          : ESP_FAIL;
 }
 
 unsigned c6_wifi_state(c6_wifi_status* status) {

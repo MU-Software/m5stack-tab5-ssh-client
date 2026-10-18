@@ -24,6 +24,10 @@ It keeps a copy of the known networks and joins them itself (the first one a sca
 drop), so it stays joined through restarts of the Tab5. It also holds the Wi-Fi address (its own DHCP, ARP and ping;
 esp_hosted's Network Split), which the Tab5 shares with ports 49152-61439 and TCP 22 its own, so a restart of the Tab5
 needs no DHCP. Update the Tab5 before the C6: an older Tab5 gets no Wi-Fi address from it.
+It checks that its network reaches the internet (TCP 443 of 1.1.1.1, 8.8.8.8, 9.9.9.9) at each lease and moves to another
+known network in reach after two failures in a row; `wifi connect` and the Wi-Fi screen have it join a network. The Tab5
+resolves and checks the SSH host itself, with those addresses as DNS servers when the path's give no answer, and a session
+waiting to reconnect says whether the host, its name or the internet is missing.
 
 `nvs list|get NAMESPACE KEY|dump [NAMESPACE]|set NAMESPACE KEY TYPE VALUE|erase NAMESPACE [KEY]` reads and changes
 the Tab5's NVS, `c6 nvs …` the C6's, over USB (`tools/device.py send`) or SSH; values only in the reply, never in a log.

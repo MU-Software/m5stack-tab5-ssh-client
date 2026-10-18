@@ -260,6 +260,15 @@ esp_err_t wifi_join(const wifi_network* networks, const char* except, int timeou
     return err;
 }
 
+esp_err_t wifi_join_through_c6(const wifi_network* network, int timeout_ms) {
+    uint8_t reason = 0;
+    // The C6 may wait for Wi-Fi to start and leave the network joined before
+    esp_err_t err = c6_join(network->ssid, network->password, timeout_ms + 6000, &reason);
+    if (err == ESP_OK && !(xEventGroupWaitBits(events, GOT_IP, pdFALSE, pdFALSE, pdMS_TO_TICKS(timeout_ms)) & GOT_IP)) err = ESP_ERR_TIMEOUT;
+    ESP_LOGI(TAG, "%s joined by the C6: %s, reason %u", network->ssid, esp_err_to_name(err), reason);
+    return err;
+}
+
 esp_err_t wifi_on(void) {
     return esp_wifi_start();
 }

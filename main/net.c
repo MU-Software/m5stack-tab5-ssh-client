@@ -55,6 +55,7 @@ static SemaphoreHandle_t lock, suspected;
 static atomic_uint generation;
 static atomic_int current;
 static atomic_bool wifi_enabled = true, lte_enabled = true, lte_reset, suspect, wifi_started, got_ip;
+static _Atomic net_trouble trouble_now;
 static _Atomic net_lte_state lte_now = NET_LTE_DIALING;
 // The manager's view of Wi-Fi: since when it has an address, whether the internet check passed
 static int64_t wifi_since, wifi_lost, wifi_checked, wifi_tried;
@@ -71,66 +72,156 @@ static int64_t since(int64_t start) {
     return (esp_timer_get_time() - start) / 1000;
 }
 
-// A TCP connection to host:port, from local when it is not NULL; 0 or an errno
-static int reach(const char* host, uint16_t port, const esp_ip4_addr_t* local, int timeout_ms, char address[16]) {
-    char service[6];
-    snprintf(service, sizeof service, "%u", port);
-    struct addrinfo* ai;
-    if (getaddrinfo(host, service, &(struct addrinfo){.ai_family = AF_INET, .ai_socktype = SOCK_STREAM}, &ai) != 0) return EHOSTUNREACH;
-    if (address != NULL) strlcpy(address, inet_ntoa(((struct sockaddr_in*)ai->ai_addr)->sin_addr), 16);
+// lwIP's DNS servers are the path's, handed over again with each setting of the default interface (at each lease, redial and
+// change of path); after a lookup they did not answer, the public ones until then
+static const char* const public_servers[] = C6_INTERNET_ADDRESSES;
+static atomic_bool public_dns;
+
+static void set_default(esp_netif_t* netif) {
+    esp_netif_set_default_netif(netif);
+    public_dns = false;
+}
+
+static esp_err_t use_public_dns(void* arg) {
+    ip_addr_t server;
+    (void)arg;
+    for (int i = 0; i < DNS_MAX_SERVERS && i < (int)(sizeof public_servers / sizeof *public_servers); i++)
+        if (ipaddr_aton(public_servers[i], &server)) dns_setserver(i, &server);
+    return ESP_OK;
+}
+
+// host's address. lwIP tells no "no such name" from no answer: the public servers stay only when they found what the path's
+// did not, so a name that does not exist leaves the path's in place
+static bool resolve(const char* host, struct sockaddr_in* to) {
+    const struct addrinfo hints = {.ai_family = AF_INET, .ai_socktype = SOCK_STREAM};
+    struct addrinfo* ai = NULL;
+    bool found = getaddrinfo(host, NULL, &hints, &ai) == 0;
+    if (!found && !public_dns && esp_netif_tcpip_exec(use_public_dns, NULL) == ESP_OK) {
+        public_dns = true;
+        found = getaddrinfo(host, NULL, &hints, &ai) == 0;
+        if (found)
+            ESP_LOGW(TAG, "the path's DNS servers did not resolve %s: the public ones until the next lease or redial", host);
+        else if (esp_netif_get_default_netif() != NULL)
+            set_default(esp_netif_get_default_netif());
+    }
+    if (!found) return false;
+    *to = *(struct sockaddr_in*)ai->ai_addr;
+    freeaddrinfo(ai);
+    return true;
+}
+
+// A TCP connection to to, from local when it is not NULL (the source address picks the interface: lwIP's IP4_ROUTE_SRC
+// hook); 0 or an errno
+static int connect_to(const struct sockaddr_in* to, const esp_ip4_addr_t* local, int timeout_ms) {
     int rc = 0, fd = socket(AF_INET, SOCK_STREAM, 0);
     socklen_t length = sizeof rc;
-    // The source address picks the interface (lwIP's IP4_ROUTE_SRC hook)
     struct sockaddr_in source = {.sin_family = AF_INET, .sin_addr.s_addr = local != NULL ? local->addr : 0};
     if (fd < 0 || (local != NULL && bind(fd, (struct sockaddr*)&source, sizeof source) != 0) || fcntl(fd, F_SETFL, O_NONBLOCK) != 0)
         rc = errno;
-    else if (connect(fd, ai->ai_addr, ai->ai_addrlen) != 0 && (rc = errno) == EINPROGRESS) {
+    else if (connect(fd, (const struct sockaddr*)to, sizeof *to) != 0 && (rc = errno) == EINPROGRESS) {
         if (poll(&(struct pollfd){.fd = fd, .events = POLLOUT}, 1, timeout_ms) != 1)
             rc = ETIMEDOUT;
         else if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &rc, &length) != 0)
             rc = errno;
     }
     if (fd >= 0) close(fd);
-    freeaddrinfo(ai);
     return rc;
+}
+
+// TCP port 443 of the C6's addresses in turn, as the C6 checks its network
+static bool online(const esp_ip4_addr_t* local, char address[16]) {
+    for (size_t i = 0; i < sizeof public_servers / sizeof *public_servers; i++) {
+        struct sockaddr_in to = {.sin_family = AF_INET, .sin_port = htons(443), .sin_addr.s_addr = inet_addr(public_servers[i])};
+        strlcpy(address, public_servers[i], 16);
+        if (connect_to(&to, local, 3000) == 0) return true;
+    }
+    return false;
 }
 
 void net_check(const char* host, uint16_t port) {
     esp_netif_t* netif = esp_netif_get_default_netif();
     esp_netif_ip_info_t ip = {0};
-    char local[16], address[16] = "?", dns[2][IPADDR_STRLEN_MAX];
+    struct sockaddr_in to = {0};
+    char local[16], address[16] = "?", dns[3][IPADDR_STRLEN_MAX];
     if (netif != NULL) esp_netif_get_ip_info(netif, &ip);
     esp_ip4addr_ntoa(&ip.ip, local, sizeof local);
-    ESP_LOGI(TAG, "default %s %s, DNS %s %s", netif != NULL ? esp_netif_get_desc(netif) : "none", local,
-             ipaddr_ntoa_r(dns_getserver(0), dns[0], sizeof dns[0]), ipaddr_ntoa_r(dns_getserver(1), dns[1], sizeof dns[1]));
+    ESP_LOGI(TAG, "default %s %s, DNS %s %s %s", netif != NULL ? esp_netif_get_desc(netif) : "none", local,
+             ipaddr_ntoa_r(dns_getserver(0), dns[0], sizeof dns[0]), ipaddr_ntoa_r(dns_getserver(1), dns[1], sizeof dns[1]),
+             ipaddr_ntoa_r(dns_getserver(2), dns[2], sizeof dns[2]));
     int64_t start = esp_timer_get_time();
-    int rc = reach(host, port, NULL, 20000, address);
+    bool named = resolve(host, &to);
+    if (named) inet_ntoa_r(to.sin_addr, address, sizeof address), to.sin_port = htons(port);
+    int rc = named ? connect_to(&to, NULL, 20000) : EHOSTUNREACH;
     ESP_LOGI(TAG, "%s (%s) port %u: %s after %lld ms", host, address, port, rc == 0 ? "connected" : strerror(rc), since(start));
 }
 
-// The SSH host through Wi-Fi: it, not just any site, is what the session needs. The manager does not wait for a join
-// that a command started: it would hold every switch of path meanwhile. 1, 0, or -1 when busy
-static int wifi_reaches_host(TickType_t wait) {
-    const ssh_host* h = state->current_host;
-    esp_netif_ip_info_t ip;
-    if (h == NULL) return 1;
-    if (esp_netif_get_ip_info(wifi_netif(), &ip) != ESP_OK) return 0;
-    if (xSemaphoreTake(lock, wait) != pdTRUE) return -1;
+typedef struct {
+    const ssh_host* host;
+    esp_ip4_addr_t local;
+    bool done, named;
+    int error;
+    int64_t milliseconds;
+    char address[16];
+} host_check;
+
+static void check_host(void* context) {
+    host_check* c = context;
+    struct sockaddr_in to;
     int64_t start = esp_timer_get_time();
-    int rc = reach(h->hostname, h->port, &ip.ip, CHECK_MS, NULL);
-    xSemaphoreGive(lock);
-    ESP_LOGI(TAG, "Wi-Fi to %s: %s after %lld ms", h->hostname, rc == 0 ? "ok" : strerror(rc), since(start));
-    return rc == 0;
+    c->named = resolve(c->host->hostname, &to);
+    if (c->named) inet_ntoa_r(to.sin_addr, c->address, sizeof c->address), to.sin_port = htons(c->host->port);
+    c->error = c->named ? connect_to(&to, &c->local, CHECK_MS) : EHOSTUNREACH;
+    c->milliseconds = since(start);
+    c->done = true;
 }
 
 static esp_netif_t* netif_of(path p) {
     return p == PATH_WIFI ? wifi_netif() : p == PATH_LTE ? catm_netif() : NULL;
 }
 
+// The SSH host over p: it, not just any site, is what the session needs; when it does not answer, whether p reaches the
+// internet, so that only a network without it is left (on Wi-Fi from C6_INTERNET_SINCE as the C6 checks it, which then moves
+// to another network itself; the check runs on the C6 meanwhile)
+static net_trouble check_path(path p) {
+    const ssh_host* h = state->current_host;
+    esp_netif_ip_info_t ip = {0};
+    char address[16] = "";
+    if (h == NULL) return NET_FINE;
+    esp_netif_get_ip_info(netif_of(p), &ip);
+    host_check here = {.host = h, .local = ip.ip, .address = "?"};
+    c6_reach_answer c6 = {0};
+    esp_err_t asked = p == PATH_WIFI ? c6_internet(CHECK_MS + 12000, check_host, &here, &c6) : ESP_ERR_NOT_SUPPORTED;
+    if (!here.done) check_host(&here);
+    bool reached = here.error == 0, internet = reached;
+    if (!reached && asked == ESP_OK)
+        internet = c6.error == 0, strlcpy(address, c6.address, sizeof address);
+    else if (!reached)
+        internet = online(&ip.ip, address);
+    net_trouble trouble = net_judge(reached, here.named, internet);
+    if (reached)
+        ESP_LOGI(TAG, "%s to %s (%s): ok after %lld ms", path_names[p], h->hostname, here.address, here.milliseconds);
+    else
+        ESP_LOGW(TAG, "%s to %s (%s): %s after %lld ms; internet %s %s%s: %s", path_names[p], h->hostname, here.address, strerror(here.error),
+                 here.milliseconds, address, internet ? "reached" : "not reached", asked == ESP_OK ? " by the C6" : "", net_trouble_text(trouble));
+    if (p == current) trouble_now = trouble;
+    return trouble;
+}
+
+// Wi-Fi serves the session unless it lacks the internet or the host's name: a host that does not answer is no reason to leave
+// a network. 1, 0, or -1 when busy; the manager does not wait for a join that a command started, which would hold every switch
+// of path meanwhile
+static int wifi_reaches_host(TickType_t wait) {
+    if (xSemaphoreTake(lock, wait) != pdTRUE) return -1;
+    net_trouble trouble = check_path(PATH_WIFI);
+    xSemaphoreGive(lock);
+    return trouble == NET_FINE || trouble == NET_HOST_DOWN;
+}
+
 static void choose(path want) {
     if (want == current) return;
-    if (want != PATH_NONE) esp_netif_set_default_netif(netif_of(want));
+    if (want != PATH_NONE) set_default(netif_of(want));
     current = want;
+    trouble_now = NET_FINE;
     generation++;
     ESP_LOGI(TAG, "path %s", path_names[want]);
     if (want != PATH_NONE)
@@ -245,7 +336,7 @@ static void manage(void* arg) {
         bool up = wifi_started && wifi_enabled && wifi_connected();
         // Without a path the check of Wi-Fi needs its DNS servers, which lwIP gets only from the default interface
         if (current == PATH_NONE && up && (atomic_exchange(&got_ip, false) || esp_netif_get_default_netif() != wifi_netif()))
-            esp_netif_set_default_netif(wifi_netif());
+            set_default(wifi_netif());
         if (up && !was_up) {
             wifi_since = now;
             wifi_checked = 0;
@@ -269,6 +360,11 @@ static void manage(void* arg) {
                 wifi_ok = reached;
                 wifi_checked = esp_timer_get_time();
             }
+            // Over LTE only for the screen: there is no other network to move to
+            if (current == PATH_LTE && xSemaphoreTake(lock, pdMS_TO_TICKS(CHECK_MS)) == pdTRUE) {
+                check_path(PATH_LTE);
+                xSemaphoreGive(lock);
+            }
             suspect = false;
             xSemaphoreGive(suspected);
         }
@@ -279,7 +375,8 @@ static void manage(void* arg) {
                 wifi_ok = reached;
                 wifi_checked = esp_timer_get_time();
             }
-            // Joined but not getting through twice: another known network, if a scan sees one (the C6's own from stage S4)
+            // Joined but without the internet or the host's name twice: another known network, if a scan sees one (from
+            // C6_INTERNET_SINCE the C6 moves by itself)
             if (reached == 0 && !c6_joins() && ++wifi_failures >= 2) {
                 wifi_ap_record_t ap = {0};
                 wifi_failures = 0;
@@ -293,7 +390,7 @@ static void manage(void* arg) {
         // A redial or a lease keeps its DNS servers on its interface: only setting the default hands them to lwIP
         if (current != PATH_NONE && (atomic_exchange(&got_ip, false) || esp_netif_get_default_netif() != netif_of(current))) {
             if (esp_netif_get_default_netif() != netif_of(current)) ESP_LOGW(TAG, "default interface was changed: %s again", path_names[current]);
-            esp_netif_set_default_netif(netif_of(current));
+            set_default(netif_of(current));
         }
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
     }
@@ -392,6 +489,10 @@ unsigned net_generation(void) {
     return generation;
 }
 
+net_trouble net_trouble_now(void) {
+    return trouble_now;
+}
+
 void net_suspect(void) {
     suspect = true;
     xTaskNotifyGive(manager);
@@ -422,15 +523,17 @@ void net_keepalive(int fd) {
 esp_err_t net_join(const wifi_network* network) {
     if (!wifi_started) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(lock, portMAX_DELAY);
-    // Before Wi-Fi starts, or the C6 would try the known networks meanwhile; with the list, which says on now
-    hold_c6(true);
+    // From C6_JOIN_SINCE the C6 joins it; before, it is held from before Wi-Fi starts, or it would try the known networks
+    // meanwhile. With the list, which says on now
+    bool c6_joins_it = c6_protocol() >= C6_JOIN_SINCE;
+    if (!c6_joins_it) hold_c6(true);
     if (c6_protocol() >= 4) send_list();
     if (!wifi_enabled) {
         wifi_enabled = true;
         wifi_on();
     }
-    esp_err_t err = wifi_join(network, NULL, JOIN_MS);
-    hold_c6(false);
+    esp_err_t err = c6_joins_it ? wifi_join_through_c6(network, JOIN_MS) : wifi_join(network, NULL, JOIN_MS);
+    if (!c6_joins_it) hold_c6(false);
     // A failed join may have dropped the network joined before: the known ones are tried again now
     wifi_tried = err == ESP_OK ? esp_timer_get_time() : 0;
     xSemaphoreGive(lock);

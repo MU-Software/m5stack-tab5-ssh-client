@@ -22,6 +22,9 @@ target_compile_options(cjson PRIVATE -w)
 add_executable(c6_lease_test c6_lease_test.c ${TOP}/components/c6/c6_lease.c)
 target_include_directories(c6_lease_test PRIVATE ${TOP}/components/c6/include)
 
+add_executable(c6_pick_test c6_pick_test.c ${TOP}/components/c6/c6_pick.c)
+target_include_directories(c6_pick_test PRIVATE ${TOP}/components/c6/include)
+
 add_executable(c6_nvs_test c6_nvs_test.c ${TOP}/main/c6_nvs.c ${TOP}/main/control.c)
 target_include_directories(c6_nvs_test PRIVATE ${TOP}/components/c6/include)
 
@@ -36,6 +39,8 @@ add_executable(layout_test layout_test.c ${TOP}/main/layout.c)
 target_link_libraries(layout_test cjson)
 
 add_executable(modem_test modem_test.c ${TOP}/main/modem.c)
+
+add_executable(net_trouble_test net_trouble_test.c ${TOP}/main/net_trouble.c)
 
 add_executable(settings_test settings_test.c ${TOP}/main/layout.c ${TOP}/main/settings.c)
 target_link_libraries(settings_test cjson wolf)

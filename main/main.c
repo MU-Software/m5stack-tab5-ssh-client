@@ -458,6 +458,8 @@ static bool keep_connected(session* s, const ssh_host* h) {
         if (exit_status != -1) retry_ms = 1000;
         if (end == SESSION_MOVED) continue;
         net_suspect();
+        // What the check of the path found: the host down, its name, or no internet
+        if (net_trouble_text(net_trouble_now()) != NULL) waiting(s, net_trouble_text(net_trouble_now()), xTaskGetTickCount());
         // A new path is worth trying at once
         for (unsigned at = net_generation(), waited = 0; waited < (unsigned)retry_ms && net_generation() == at && !atomic_load(&s->end);
              waited += 100)

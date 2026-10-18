@@ -3,7 +3,7 @@
 // the kind
 #pragma once
 
-#define C6_PROTOCOL 8
+#define C6_PROTOCOL 9
 
 #define C6_TO_P4 0x54354336u // "T5C6"
 // After P4_KEEP: the C6's protocol version
@@ -70,6 +70,24 @@ enum {
 // From C6_NW_SPLIT_SINCE, at start before P4_WIFI_LIST: [name], the C6's DHCP hostname, kept in its NVS for the next lease
 #define P4_HOSTNAME 6
 #define C6_HOSTNAME 32
+
+// From protocol 9. The C6 checks that its network reaches the internet: TCP port 443 of C6_INTERNET_ADDRESSES in turn through
+// its own stack (ports 61440-65535), at each lease, on P4_INTERNET, and every 30 s while none answers; two failures in a row
+// move it to another known network in reach, the failed one tried last for 10 minutes
+#define C6_INTERNET_SINCE     9
+#define C6_INTERNET_ADDRESSES {"1.1.1.1", "8.8.8.8", "9.9.9.9"}
+// [sequence]: check now
+#define P4_INTERNET 7
+// [sequence][errno of the last address tried, 0 once one answered][milliseconds, 2 bytes][that address, 4 bytes]; the C6's own
+// checks carry sequence 0
+#define C6_INTERNET 5
+// From protocol 9: [sequence][SSID length][SSID][password length][password]: the C6 leaves its network for this one, scanning
+// every channel, and answers with C6_WIFI_JOINED once it is joined or failed
+#define C6_JOIN_SINCE 9
+#define P4_WIFI_JOIN  8
+// [sequence][C6_JOIN_*][reason of the failure]
+#define C6_WIFI_JOINED 6
+enum { C6_JOIN_DONE, C6_JOIN_NOT_FOUND, C6_JOIN_FAILED, C6_JOIN_STOPPED, C6_JOIN_INTERRUPTED };
 
 // After each SDIO card init the P4 raises esp_hosted's ESP_RESET (C6_SDIO_RESET) in HOST_TO_SLAVE_INTR: the C6, which may have
 // run on through the P4's restart, closes the data path, restarts its SDIO counters and writes C6_RESET_DONE to its scratch
