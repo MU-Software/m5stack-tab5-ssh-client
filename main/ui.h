@@ -59,8 +59,9 @@ const char* ui_panel(void);
 bool ui_terminal(layout_area* out);
 // A touch on cell (column, row)
 ui_event ui_touch(ui_touch_phase phase, int32_t column, int32_t row);
-// A key for the open dialog, else the open panel: arrows and Tab move (←→ along a list row's buttons), Enter chooses,
-// Escape cancels a dialog or a field's typing; `text` (UTF-8) for UI_KEY_TEXT
+// A key for the open dialog, else the open panel: arrows move to what is that way (←→ along a list row's buttons, and
+// change a setting's value), Tab in order, Enter chooses, Escape cancels a dialog or a field's typing; `text` (UTF-8) for
+// UI_KEY_TEXT
 ui_event ui_key(ui_key_code key, const char* text);
 
 typedef enum { UI_ALERT, UI_CONFIRM, UI_LIST, UI_SCREEN, UI_PROMPT, UI_PASSWORD } ui_dialog_kind;

@@ -708,6 +708,44 @@ ui_event ui_touch(ui_touch_phase phase, int32_t column, int32_t row) {
     return e;
 }
 
+// Focus to the nearest node beside the focused one (dx) on the rows it spans, else above or below it (dy); a list entered
+// from above or below takes its first or last row shown. Nothing there: it stays.
+static void move_toward(shown_screen* s, int dx, int dy) {
+    const layout_node* from = &s->screen->nodes[s->focus];
+    layout_area a = from->area;
+    int best = -1;
+    int64_t best_score = INT64_MAX;
+    if (from->kind == LAYOUT_LIST) {
+        a.row = from->inner.row + (int32_t)(s->chosen[s->focus] - s->first[s->focus]), a.rows = 1;
+        if (s->chosen_button[s->focus] >= 0)
+            a.column = button_column(s->screen, from, s->chosen_button[s->focus]),
+            a.columns = s->screen->nodes[from->first + s->chosen_button[s->focus]].size;
+    }
+    for (size_t i = 0; i < s->screen->count; i++) {
+        const layout_node* n = &s->screen->nodes[i];
+        const layout_area* b = &n->area;
+        if ((int)i == s->focus || !focusable(n) || !visible(n)) continue;
+        int32_t gap = dx > 0   ? b->column - (a.column + a.columns)
+                      : dx < 0 ? a.column - (b->column + b->columns)
+                      : dy > 0 ? b->row - (a.row + a.rows)
+                               : a.row - (b->row + b->rows);
+        bool level = b->row < a.row + a.rows && a.row < b->row + b->rows;
+        if (gap < 0 || (dx != 0 && !level)) continue;
+        // In pixels, the way it moves weighing 13 times (as Android's FocusFinder)
+        int64_t along = (int64_t)gap * (dx != 0 ? SHR_CELL_WIDTH : SHR_CELL_HEIGHT),
+                across = dx != 0 ? 0 : (int64_t)abs(b->column + b->columns / 2 - (a.column + a.columns / 2)) * SHR_CELL_WIDTH;
+        int64_t score = 13 * along * along + across * across;
+        if (score < best_score) best = (int)i, best_score = score;
+    }
+    if (best < 0) return;
+    const layout_node* n = &s->screen->nodes[best];
+    size_t count = n->kind == LAYOUT_LIST ? source->count(source->user, n->name) : 0;
+    s->focus = best;
+    if (count > 0 && dy > 0) s->chosen[best] = s->first[best];
+    if (count > 0 && dy < 0)
+        s->chosen[best] = s->first[best] + (size_t)n->inner.rows - 1 < count ? s->first[best] + (size_t)n->inner.rows - 1 : count - 1;
+}
+
 ui_event ui_key(ui_key_code key, const char* text) {
     shown_screen* screen = active();
     ui_event e = {.kind = UI_NONE};
@@ -732,9 +770,12 @@ ui_event ui_key(ui_key_code key, const char* text) {
             e = in_dialog ? dialog_action("dialog ok") : commit(!n->secret);
         } else if (key == UI_KEY_ESCAPE) {
             stop_editing(screen);
-        } else if (key == UI_KEY_TAB || key == UI_KEY_BACKTAB || key == UI_KEY_UP || key == UI_KEY_DOWN) {
+        } else if (key == UI_KEY_TAB || key == UI_KEY_BACKTAB) {
             e = commit(false);
-            move_focus(screen, key == UI_KEY_TAB || key == UI_KEY_DOWN ? 1 : -1);
+            move_focus(screen, key == UI_KEY_TAB ? 1 : -1);
+        } else if (key == UI_KEY_UP || key == UI_KEY_DOWN) {
+            e = commit(false);
+            move_toward(screen, 0, key == UI_KEY_DOWN ? 1 : -1);
         }
         return e;
     }
@@ -744,8 +785,8 @@ ui_event ui_key(ui_key_code key, const char* text) {
     } else if ((key == UI_KEY_UP || key == UI_KEY_DOWN) && n->kind == LAYOUT_LIST && count > 0 &&
                (key == UI_KEY_UP ? screen->chosen[screen->focus] > 0 : screen->chosen[screen->focus] + 1 < count)) {
         screen->chosen[screen->focus] += key == UI_KEY_UP ? (size_t)-1 : 1;
-    } else if (key == UI_KEY_UP || key == UI_KEY_DOWN || (in_dialog && (key == UI_KEY_LEFT || key == UI_KEY_RIGHT))) {
-        move_focus(screen, key == UI_KEY_UP || key == UI_KEY_LEFT ? -1 : 1);
+    } else if (key == UI_KEY_UP || key == UI_KEY_DOWN) {
+        move_toward(screen, 0, key == UI_KEY_DOWN ? 1 : -1);
     } else if ((key == UI_KEY_LEFT || key == UI_KEY_RIGHT) && n->kind == LAYOUT_LIST && count > 0) {
         // The next of the chosen item's buttons, or the item itself if it does anything
         int *k = &screen->chosen_button[screen->focus], step = key == UI_KEY_LEFT ? n->children : 1;
@@ -755,6 +796,8 @@ ui_event ui_key(ui_key_code key, const char* text) {
         }
     } else if ((key == UI_KEY_LEFT || key == UI_KEY_RIGHT) && n->kind >= LAYOUT_TOGGLE && n->kind <= LAYOUT_CHOICE) {
         e = activate(n, key == UI_KEY_LEFT ? n->inner.column : n->inner.column + n->inner.columns);
+    } else if (key == UI_KEY_LEFT || key == UI_KEY_RIGHT) {
+        move_toward(screen, key == UI_KEY_RIGHT ? 1 : -1, 0);
     } else if (key == UI_KEY_TEXT && n->kind == LAYOUT_FIELD) {
         activate(n, -1);
         e = ui_key(key, text);
