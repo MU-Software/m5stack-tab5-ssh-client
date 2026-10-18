@@ -90,7 +90,8 @@ static bool node(parser* p, layout_node* n, const cJSON* item, const layout_styl
     const char* align = NULL;
     int kinds = 0;
     size_t found = 0;
-    n->kind = LAYOUT_TEXT, n->text = NULL, n->item = "", n->style = *inherited;
+    const char* stripe = NULL;
+    n->kind = LAYOUT_TEXT, n->text = NULL, n->item = "", n->style = *inherited, n->stripe = -1;
     for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++)
         if (field(item, keys[i].key) != NULL) found = i, n->kind = keys[i].kind, kinds++;
     if (kinds > 1) return fail(p, "a node with more than one of rows, columns, button, terminal, list, toggle, number, choice and field");
@@ -99,6 +100,10 @@ static bool node(parser* p, layout_node* n, const cJSON* item, const layout_styl
         !string(p, item, "action", &n->action))
         return false;
     n->border = cJSON_IsTrue(field(item, "border"));
+    if (!string(p, item, "stripe", &stripe)) return false;
+    const cJSON* striped = stripe != NULL ? field(p->styles, stripe) : NULL;
+    if (stripe != NULL && !cJSON_IsObject(striped)) return fail(p, "no style %s", stripe);
+    if (striped != NULL && !color(p, field(striped, "background"), &n->stripe)) return false;
     n->secret = cJSON_IsTrue(field(item, "secret"));
     if (kinds == 0 && n->text == NULL) return fail(p, "a node without rows, columns, text or a widget");
     if (n->text == NULL) n->text = "";

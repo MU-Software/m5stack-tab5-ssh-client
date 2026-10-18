@@ -534,7 +534,10 @@ static bool draw_list(shown_screen* s, size_t i, bool focused) {
         bool marked = picks && focused && s->chosen_button[i] < 0;
         size_t length = item ? list_row(s->screen, n, top + r, text, labels, buttons) : 0;
         int32_t at = n->inner.row + (int32_t)r;
-        shr_text_style style = look(&n->style, marked);
+        layout_style row = n->style;
+        if (item && (top + r) % 2 == 0 && n->stripe >= 0) row.background = n->stripe;
+        shr_pl_lyr_tilemap_clear(layer, at, n->inner.column, 1, n->inner.columns, look(&row, false));
+        shr_text_style style = look(&row, marked);
         if (picks && !marked) style.flags |= SHR_STYLE_BOLD;
         text[length] = 0;
         draw_text(&(layout_area){n->inner.column, at, text_columns, 1}, n->align, style, text, length);
@@ -543,8 +546,8 @@ static bool draw_list(shown_screen* s, size_t i, bool focused) {
             bool on = item && labels[k][0] != 0;
             bool inverse = (on && mark && focused && s->chosen_button[i] == k) || (pressing && pressed == b && pressed_item == top + r);
             if (!on) labels[k][0] = 0;
-            draw_text(&(layout_area){button_column(s->screen, n, k), at, b->size, 1}, LAYOUT_CENTER, look(on ? &b->style : &n->style, inverse),
-                      labels[k], strlen(labels[k]));
+            draw_text(&(layout_area){button_column(s->screen, n, k), at, b->size, 1}, LAYOUT_CENTER, look(on ? &b->style : &row, inverse), labels[k],
+                      strlen(labels[k]));
         }
     }
     return true;

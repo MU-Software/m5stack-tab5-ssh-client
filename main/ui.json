@@ -38,6 +38,7 @@
           "height": 4,
           "when": "sessions.any",
           "list": "sessions",
+          "stripe": "stripe",
           "item": "  {number:3}{alias:16}{status}",
           "buttons": [
             {"width": 8, "when": "idle", "style": "button", "button": "session open", "text": "보기"},
@@ -51,6 +52,7 @@
           "rows": [
             {
               "list": "hosts",
+              "stripe": "stripe",
               "item": "  {alias:16}{user}@{hostname}{port}",
               "buttons": [{"width": 8, "style": "button", "button": "session create", "text": "연결"}]
             }
@@ -98,6 +100,7 @@
         },
         {
           "list": "wifi",
+          "stripe": "stripe",
           "item": " {order:3}{ssid:34}{joined}",
           "buttons": [
             {"width": 8, "when": "join", "style": "button", "button": "wifi join", "text": "연결"},
@@ -208,6 +211,7 @@
     "hint": {"foreground": "#707478"},
     "button": {"background": "#3a3d44", "foreground": "#ffffff"},
     "dialog": {"background": "#22252b", "foreground": "#e0e0e0"},
+    "stripe": {"background": "#1a1d21"},
     "field": {"background": "#24272e"}
   }
 }
