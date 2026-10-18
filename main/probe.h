@@ -15,7 +15,5 @@ typedef enum { PROBE_FOUND, PROBE_NO_NAME, PROBE_NO_ANSWER, PROBE_DOWN, PROBE_SL
 // name's address: an IP as it is, else from the path's DNS servers, then 1.1.1.1, all through netif and try_ms each, an answer
 // from one asked earlier counting meanwhile; a name the path's servers deny is asked of 1.1.1.1 once more
 probe_lookup probe_resolve(esp_netif_t* netif, const char* name, int try_ms, uint32_t* address);
-// TCP port 443 of the public addresses in turn through netif, any answer counting: 0, else the last errno; address the last tried
-int probe_internet(esp_netif_t* netif, int per_address_ms, char address[16]);
 // For tests: netif's DNS servers seen as 192.0.2.53, which never answers; NULL for none
 void probe_dead_dns(esp_netif_t* netif);

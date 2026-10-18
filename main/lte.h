@@ -25,5 +25,6 @@ void lte_received(void);
 // What the modem page shows as last read, without waiting
 void lte_snapshot(modem_snapshot* out);
 void lte_log_snapshot(void);
-// lte status, modem read, modem at COMMAND, lte probe dead on|off: the LTE task runs them between dials and logs what came
+// lte status, modem read, modem at COMMAND, lte probe dead on|off: the LTE task runs them between dials and between a check's steps,
+// and logs what came
 bool lte_command(const char* line);

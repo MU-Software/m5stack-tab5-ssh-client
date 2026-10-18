@@ -3,7 +3,6 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <string.h>
 #include <sys/poll.h>
 
 #include <esp_random.h>
@@ -58,17 +57,6 @@ int probe_connect(esp_netif_t* netif, uint32_t address, uint16_t port, int timeo
     if (fd >= 0) close(fd);
     if (!awake_since(sequence)) rc = EINTR;
     sleep_hold(false);
-    return rc;
-}
-
-int probe_internet(esp_netif_t* netif, int per_address_ms, char address[16]) {
-    int rc = ENETDOWN;
-    for (size_t i = 0; i < sizeof public_addresses / sizeof *public_addresses; i++) {
-        strlcpy(address, public_addresses[i], 16);
-        rc = probe_connect(netif, inet_addr(public_addresses[i]), 443, per_address_ms);
-        if (rc == ECONNREFUSED) rc = 0;
-        if (rc == 0 || rc == EINTR || rc == ENETDOWN || rc == ENODEV) break;
-    }
     return rc;
 }
 

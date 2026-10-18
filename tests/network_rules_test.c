@@ -14,9 +14,6 @@ static void check(int ok, const char* what) {
     failures += !ok;
 }
 
-#define ON  true
-#define OFF false
-
 // Seconds since boot; Wi-Fi started at 1 s, epoch 1
 typedef struct {
     const char* what;
@@ -31,50 +28,62 @@ typedef struct {
     network_path want;
 } choose_case;
 
-enum { NO = 0 };
-#define JOINED         ON, ON, ON, OFF, C6_WIFI_CONNECTED
-#define DROPPED(state) ON, ON, OFF, OFF, state
+#define JOINED      .on = true, .heard = true, .link = true, .state = C6_WIFI_CONNECTED
+#define DROPPED(c6) .on = true, .heard = true, .state = c6
 
 static const choose_case choose_cases[] = {
-    {"B1 boot, no C6 state yet: no LTE", ON, OFF, OFF, OFF, 0, NETWORK_UNKNOWN, NO, NO, NO, LTE_UP, NETWORK_UNKNOWN, NETWORK_NONE, 3, NETWORK_NONE},
-    {"B1 boot, C6 joining: no LTE", ON, ON, OFF, OFF, C6_WIFI_JOINING, NETWORK_UNKNOWN, NO, NO, NO, LTE_UP, NETWORK_UNKNOWN, NETWORK_NONE, 8,
-     NETWORK_NONE},
-    {"B1 lease, C6 checking: none yet", JOINED, NETWORK_UNKNOWN, 5, NO, NO, LTE_OFF, NETWORK_UNKNOWN, NETWORK_NONE, 6, NETWORK_NONE},
-    {"B1 lease, C6 good: Wi-Fi", JOINED, NETWORK_GOOD, 5, NO, NO, LTE_OFF, NETWORK_UNKNOWN, NETWORK_NONE, 7, NETWORK_WIFI},
-    {"B2 none in range ends the first try", DROPPED(C6_WIFI_NONE_IN_RANGE), NETWORK_UNKNOWN, NO, NO, NO, LTE_UP, NETWORK_UNKNOWN, NETWORK_NONE, 8,
-     NETWORK_LTE},
-    {"B2 first try over after 20 s", DROPPED(C6_WIFI_SCANNING), NETWORK_UNKNOWN, NO, NO, NO, LTE_UP, NETWORK_UNKNOWN, NETWORK_NONE, 21, NETWORK_LTE},
-    {"B3 LTE chosen first stays when the C6 starts trying", DROPPED(C6_WIFI_SCANNING), NETWORK_UNKNOWN, NO, NO, NO, LTE_UP, NETWORK_UNKNOWN,
-     NETWORK_LTE, 5, NETWORK_LTE},
-    {"B6 Wi-Fi off: LTE at once", OFF, OFF, OFF, OFF, 0, NETWORK_UNKNOWN, NO, NO, NO, LTE_UP, NETWORK_UNKNOWN, NETWORK_NONE, 3, NETWORK_LTE},
-    {"W3 drop seen before the C6's state: Wi-Fi kept", DROPPED(C6_WIFI_CONNECTED), NETWORK_GOOD, 5, 100, NO, LTE_UP, NETWORK_GOOD, NETWORK_WIFI, 100,
-     NETWORK_WIFI},
-    {"W3 C6 held during a scan: Wi-Fi kept", DROPPED(C6_WIFI_HELD), NETWORK_GOOD, 5, 100, NO, LTE_UP, NETWORK_GOOD, NETWORK_WIFI, 103, NETWORK_WIFI},
-    {"W3 C6 joining 9 s after: Wi-Fi kept", DROPPED(C6_WIFI_JOINING), NETWORK_GOOD, 5, 100, NO, LTE_UP, NETWORK_GOOD, NETWORK_WIFI, 109,
-     NETWORK_WIFI},
-    {"W3 10 s after: LTE", DROPPED(C6_WIFI_JOINING), NETWORK_GOOD, 5, 100, NO, LTE_UP, NETWORK_GOOD, NETWORK_WIFI, 110, NETWORK_LTE},
-    {"W3 back, C6 checking: Wi-Fi kept", JOINED, NETWORK_UNKNOWN, 108, 100, NO, LTE_UP, NETWORK_GOOD, NETWORK_WIFI, 116, NETWORK_WIFI},
-    {"W3 back, not checked in 10 s: LTE", JOINED, NETWORK_UNKNOWN, 108, 100, NO, LTE_UP, NETWORK_GOOD, NETWORK_WIFI, 118, NETWORK_LTE},
-    {"W3 back, C6 good: Wi-Fi", JOINED, NETWORK_GOOD, 108, 100, NO, LTE_UP, NETWORK_GOOD, NETWORK_WIFI, 118, NETWORK_WIFI},
-    {"W5 none in range ends the grace", DROPPED(C6_WIFI_NONE_IN_RANGE), NETWORK_GOOD, 5, 100, NO, LTE_UP, NETWORK_GOOD, NETWORK_WIFI, 101,
-     NETWORK_LTE},
-    {"W5 nothing else: none", DROPPED(C6_WIFI_JOIN_FAILED), NETWORK_GOOD, 5, 100, NO, LTE_OFF, NETWORK_UNKNOWN, NETWORK_WIFI, 101, NETWORK_NONE},
-    {"W6 no internet: LTE", JOINED, NETWORK_BAD, 5, NO, NO, LTE_UP, NETWORK_UNKNOWN, NETWORK_WIFI, 50, NETWORK_LTE},
-    {"W6 no internet, no LTE: none", JOINED, NETWORK_BAD, 5, NO, NO, LTE_WAITING, NETWORK_UNKNOWN, NETWORK_WIFI, 50, NETWORK_NONE},
-    {"W11 back from LTE to Wi-Fi that did not flap: at once", JOINED, NETWORK_GOOD, 200, 150, NO, LTE_UP, NETWORK_GOOD, NETWORK_LTE, 201,
-     NETWORK_WIFI},
-    {"W11 flapping: LTE kept for 30 s", JOINED, NETWORK_GOOD, 200, 150, 100, LTE_UP, NETWORK_GOOD, NETWORK_LTE, 229, NETWORK_LTE},
-    {"W11 flapping, stayed 30 s: Wi-Fi", JOINED, NETWORK_GOOD, 200, 150, 100, LTE_UP, NETWORK_GOOD, NETWORK_LTE, 230, NETWORK_WIFI},
-    {"W11 flapping but LTE gone: Wi-Fi", JOINED, NETWORK_GOOD, 200, 150, 100, LTE_WAITING, NETWORK_UNKNOWN, NETWORK_LTE, 201, NETWORK_WIFI},
-    {"W11 drops long ago are no flapping", JOINED, NETWORK_GOOD, 900, 150, 100, LTE_UP, NETWORK_GOOD, NETWORK_LTE, 901, NETWORK_WIFI},
-    {"W11 drops 10 min apart are no flapping", JOINED, NETWORK_GOOD, 800, 700, 100, LTE_UP, NETWORK_GOOD, NETWORK_LTE, 801, NETWORK_WIFI},
-    {"W13 wifi off: LTE at once", OFF, ON, ON, OFF, C6_WIFI_CONNECTED, NETWORK_GOOD, 5, NO, NO, LTE_UP, NETWORK_GOOD, NETWORK_WIFI, 50, NETWORK_LTE},
-    {"W15 planned join, 20 s after the drop: Wi-Fi kept", ON, ON, OFF, ON, C6_WIFI_JOIN_FAILED, NETWORK_GOOD, 5, 100, NO, LTE_UP, NETWORK_GOOD,
-     NETWORK_WIFI, 120, NETWORK_WIFI},
-    {"W15 planned join, 25 s: LTE", ON, ON, OFF, ON, C6_WIFI_JOINING, NETWORK_GOOD, 5, 100, NO, LTE_UP, NETWORK_GOOD, NETWORK_WIFI, 125, NETWORK_LTE},
-    {"LTE bad: none", OFF, OFF, OFF, OFF, 0, NETWORK_UNKNOWN, NO, NO, NO, LTE_UP, NETWORK_BAD, NETWORK_LTE, 50, NETWORK_NONE},
-    {"LTE unknown is used", OFF, OFF, OFF, OFF, 0, NETWORK_UNKNOWN, NO, NO, NO, LTE_UP, NETWORK_UNKNOWN, NETWORK_NONE, 50, NETWORK_LTE},
-    {"LTE dialing: none", OFF, OFF, OFF, OFF, 0, NETWORK_UNKNOWN, NO, NO, NO, LTE_DIALING, NETWORK_UNKNOWN, NETWORK_NONE, 50, NETWORK_NONE},
+    {"B1 boot, no C6 state yet: no LTE", .on = true, .lte = LTE_UP, .now = 3, .want = NETWORK_NONE},
+    {"B1 boot, C6 joining: no LTE", DROPPED(C6_WIFI_JOINING), .lte = LTE_UP, .now = 8, .want = NETWORK_NONE},
+    {"B1 lease, C6 checking: none yet", JOINED, .linked = 5, .now = 6, .want = NETWORK_NONE},
+    {"B1 lease, C6 good: Wi-Fi", JOINED, .internet = NETWORK_GOOD, .linked = 5, .now = 7, .want = NETWORK_WIFI},
+    {"B2 none in range ends the first try", DROPPED(C6_WIFI_NONE_IN_RANGE), .lte = LTE_UP, .now = 8, .want = NETWORK_LTE},
+    {"B2 first try over after 20 s", DROPPED(C6_WIFI_SCANNING), .lte = LTE_UP, .now = 21, .want = NETWORK_LTE},
+    {"B3 LTE chosen first stays when the C6 starts trying", DROPPED(C6_WIFI_SCANNING), .lte = LTE_UP, .previous = NETWORK_LTE, .now = 5,
+     .want = NETWORK_LTE},
+    {"B6 Wi-Fi off: LTE at once", .lte = LTE_UP, .now = 3, .want = NETWORK_LTE},
+    {"W3 drop seen before the C6's state: Wi-Fi kept", DROPPED(C6_WIFI_CONNECTED), .internet = NETWORK_GOOD, .linked = 5, .lost = 100, .lte = LTE_UP,
+     .lte_internet = NETWORK_GOOD, .previous = NETWORK_WIFI, .now = 100, .want = NETWORK_WIFI},
+    {"W3 C6 held during a scan: Wi-Fi kept", DROPPED(C6_WIFI_HELD), .internet = NETWORK_GOOD, .linked = 5, .lost = 100, .lte = LTE_UP,
+     .lte_internet = NETWORK_GOOD, .previous = NETWORK_WIFI, .now = 103, .want = NETWORK_WIFI},
+    {"W3 C6 joining 9 s after: Wi-Fi kept", DROPPED(C6_WIFI_JOINING), .internet = NETWORK_GOOD, .linked = 5, .lost = 100, .lte = LTE_UP,
+     .lte_internet = NETWORK_GOOD, .previous = NETWORK_WIFI, .now = 109, .want = NETWORK_WIFI},
+    {"W3 10 s after: LTE", DROPPED(C6_WIFI_JOINING), .internet = NETWORK_GOOD, .linked = 5, .lost = 100, .lte = LTE_UP, .lte_internet = NETWORK_GOOD,
+     .previous = NETWORK_WIFI, .now = 110, .want = NETWORK_LTE},
+    {"W3 back, C6 checking: Wi-Fi kept", JOINED, .linked = 108, .lost = 100, .lte = LTE_UP, .lte_internet = NETWORK_GOOD, .previous = NETWORK_WIFI,
+     .now = 116, .want = NETWORK_WIFI},
+    {"W3 back, not checked in 10 s: LTE", JOINED, .linked = 108, .lost = 100, .lte = LTE_UP, .lte_internet = NETWORK_GOOD, .previous = NETWORK_WIFI,
+     .now = 118, .want = NETWORK_LTE},
+    {"W3 back, C6 good: Wi-Fi", JOINED, .internet = NETWORK_GOOD, .linked = 108, .lost = 100, .lte = LTE_UP, .lte_internet = NETWORK_GOOD,
+     .previous = NETWORK_WIFI, .now = 118, .want = NETWORK_WIFI},
+    {"W5 none in range ends the grace", DROPPED(C6_WIFI_NONE_IN_RANGE), .internet = NETWORK_GOOD, .linked = 5, .lost = 100, .lte = LTE_UP,
+     .lte_internet = NETWORK_GOOD, .previous = NETWORK_WIFI, .now = 101, .want = NETWORK_LTE},
+    {"W5 nothing else: none", DROPPED(C6_WIFI_JOIN_FAILED), .internet = NETWORK_GOOD, .linked = 5, .lost = 100, .previous = NETWORK_WIFI, .now = 101,
+     .want = NETWORK_NONE},
+    {"W6 no internet: LTE", JOINED, .internet = NETWORK_BAD, .linked = 5, .lte = LTE_UP, .previous = NETWORK_WIFI, .now = 50, .want = NETWORK_LTE},
+    {"W6 no internet, no LTE: none", JOINED, .internet = NETWORK_BAD, .linked = 5, .lte = LTE_WAITING, .previous = NETWORK_WIFI, .now = 50,
+     .want = NETWORK_NONE},
+    {"W11 back from LTE to Wi-Fi that did not flap: at once", JOINED, .internet = NETWORK_GOOD, .linked = 200, .lost = 150, .lte = LTE_UP,
+     .lte_internet = NETWORK_GOOD, .previous = NETWORK_LTE, .now = 201, .want = NETWORK_WIFI},
+    {"W11 flapping: LTE kept for 30 s", JOINED, .internet = NETWORK_GOOD, .linked = 200, .lost = 150, .before = 100, .lte = LTE_UP,
+     .lte_internet = NETWORK_GOOD, .previous = NETWORK_LTE, .now = 229, .want = NETWORK_LTE},
+    {"W11 flapping, stayed 30 s: Wi-Fi", JOINED, .internet = NETWORK_GOOD, .linked = 200, .lost = 150, .before = 100, .lte = LTE_UP,
+     .lte_internet = NETWORK_GOOD, .previous = NETWORK_LTE, .now = 230, .want = NETWORK_WIFI},
+    {"W11 flapping but LTE gone: Wi-Fi", JOINED, .internet = NETWORK_GOOD, .linked = 200, .lost = 150, .before = 100, .lte = LTE_WAITING,
+     .previous = NETWORK_LTE, .now = 201, .want = NETWORK_WIFI},
+    {"W11 drops long ago are no flapping", JOINED, .internet = NETWORK_GOOD, .linked = 900, .lost = 150, .before = 100, .lte = LTE_UP,
+     .lte_internet = NETWORK_GOOD, .previous = NETWORK_LTE, .now = 901, .want = NETWORK_WIFI},
+    {"W11 drops 10 min apart are no flapping", JOINED, .internet = NETWORK_GOOD, .linked = 800, .lost = 700, .before = 100, .lte = LTE_UP,
+     .lte_internet = NETWORK_GOOD, .previous = NETWORK_LTE, .now = 801, .want = NETWORK_WIFI},
+    {"W13 wifi off: LTE at once", .heard = true, .link = true, .state = C6_WIFI_CONNECTED, .internet = NETWORK_GOOD, .linked = 5, .lte = LTE_UP,
+     .lte_internet = NETWORK_GOOD, .previous = NETWORK_WIFI, .now = 50, .want = NETWORK_LTE},
+    {"W15 planned join, 20 s after the drop: Wi-Fi kept", .on = true, .heard = true, .planned = true, .state = C6_WIFI_JOIN_FAILED,
+     .internet = NETWORK_GOOD, .linked = 5, .lost = 100, .lte = LTE_UP, .lte_internet = NETWORK_GOOD, .previous = NETWORK_WIFI, .now = 120,
+     .want = NETWORK_WIFI},
+    {"W15 planned join, 25 s: LTE", .on = true, .heard = true, .planned = true, .state = C6_WIFI_JOINING, .internet = NETWORK_GOOD, .linked = 5,
+     .lost = 100, .lte = LTE_UP, .lte_internet = NETWORK_GOOD, .previous = NETWORK_WIFI, .now = 125, .want = NETWORK_LTE},
+    {"LTE bad: none", .lte = LTE_UP, .lte_internet = NETWORK_BAD, .previous = NETWORK_LTE, .now = 50, .want = NETWORK_NONE},
+    {"LTE unknown is used", .lte = LTE_UP, .now = 50, .want = NETWORK_LTE},
+    {"LTE dialing: none", .lte = LTE_DIALING, .now = 50, .want = NETWORK_NONE},
 };
 
 static void choose(void) {
@@ -229,29 +238,36 @@ static void lte_checks(void) {
 }
 
 static void dials(void) {
-    int drops = 0, deaths = 0;
-    int64_t last = -S(60);
-    check(lte_dial_at(LTE_NOT_READY, 0, &drops, &deaths, 0, last, S(5)) == S(95), "not registered: 90 s");
-    check(lte_dial_at(LTE_UP_ENDED, S(100), &drops, &deaths, 0, S(0), S(200)) == S(320) && drops == 1, "a link lost: 120 s");
-    check(lte_dial_at(LTE_UP_ENDED, S(100), &drops, &deaths, 0, S(0), S(400)) == S(640) && drops == 2, "again: 240 s");
-    drops = 3;
-    check(lte_dial_at(LTE_UP_ENDED, S(100), &drops, &deaths, 0, S(0), S(400)) == S(1360) && drops == 3, "at most 960 s");
-    check(lte_dial_at(LTE_UP_ENDED, S(960), &drops, &deaths, 0, S(0), S(2000)) == S(2120) && drops == 1, "960 s up forgets the doubling");
-    check(lte_dial_at(LTE_ASKED, 0, &drops, &deaths, 0, S(100), S(130)) == S(160) && drops == 0, "lte on: at once, but 60 s after the last dial");
-    check(lte_dial_at(LTE_ASKED, 0, &drops, &deaths, 0, S(100), S(200)) == S(200), "lte on: at once");
-    check(lte_dial_at(LTE_SILENT, 0, &drops, &deaths, 0, S(0), S(100)) == S(1060), "silent modem: 960 s");
-    check(lte_dial_at(LTE_REFUSED, 0, &drops, &deaths, 0, S(0), S(100)) == S(1060), "refused: 960 s");
-    check(lte_dial_at(LTE_NEVER_ANSWERED, 0, &drops, &deaths, 0, S(0), S(100)) == NETWORK_NEVER, "no modem: until it speaks");
-    drops = 2;
-    check(lte_dial_at(LTE_BEARER_DEAD, S(200), &drops, &deaths, -S(7200), S(0), S(300)) == S(300) && deaths == 1 && drops == 2,
+    lte_dial_memory m = {.last_dial_at = -S(60)};
+    check(lte_dial_at(LTE_NOT_READY, 0, &m, S(5)) == S(95), "not registered: 90 s");
+    m.last_dial_at = 0;
+    check(lte_dial_at(LTE_UP_ENDED, S(100), &m, S(200)) == S(320) && m.drops == 1, "a link lost: 120 s");
+    check(lte_dial_at(LTE_UP_ENDED, S(100), &m, S(400)) == S(640) && m.drops == 2, "again: 240 s");
+    m.drops = 3;
+    check(lte_dial_at(LTE_UP_ENDED, S(100), &m, S(400)) == S(1360) && m.drops == 3, "at most 960 s");
+    check(lte_dial_at(LTE_UP_ENDED, S(960), &m, S(2000)) == S(2120) && m.drops == 1, "960 s up forgets the doubling");
+    m.last_dial_at = S(100);
+    check(lte_dial_at(LTE_ASKED, 0, &m, S(130)) == S(160) && m.drops == 0, "lte on: at once, but 60 s after the last dial");
+    check(lte_dial_at(LTE_ASKED, 0, &m, S(200)) == S(200), "lte on: at once");
+    m.last_dial_at = 0;
+    check(lte_dial_at(LTE_SILENT, 0, &m, S(100)) == S(1060), "silent modem: 960 s");
+    check(lte_dial_at(LTE_REFUSED, 0, &m, S(100)) == S(1060), "refused: 960 s");
+    check(lte_dial_at(LTE_NEVER_ANSWERED, 0, &m, S(100)) == NETWORK_NEVER, "no modem: until it speaks");
+    m = (lte_dial_memory){.drops = 2, .last_death_at = -S(7200)};
+    check(lte_dial_at(LTE_BEARER_DEAD, S(200), &m, S(300)) == S(300) && m.deaths == 1 && m.drops == 2 && m.last_death_at == S(300),
           "dead bearer: at once, the link doubling untouched");
-    check(lte_dial_at(LTE_BEARER_DEAD, S(200), &drops, &deaths, S(300), S(300), S(600)) == S(1200) && deaths == 2, "second: 10 min");
-    check(lte_dial_at(LTE_BEARER_DEAD, S(200), &drops, &deaths, S(600), S(1200), S(1500)) == S(3300) && deaths == 3, "third: 30 min");
-    check(lte_dial_at(LTE_BEARER_DEAD, S(200), &drops, &deaths, S(1500), S(3300), S(3600)) == S(7200), "then 60 min");
-    check(lte_dial_at(LTE_BEARER_DEAD, S(200), &drops, &deaths, S(3600), S(7200), S(3600 + 7200)) == S(3600 + 7200) && deaths == 1,
-          "2 h without one forgets them");
-    check(lte_dial_at(LTE_BEARER_REMADE, S(200), &drops, &deaths, S(10800), S(10800), S(10900)) == S(10900) && deaths == 1,
+    m.last_dial_at = S(300);
+    check(lte_dial_at(LTE_BEARER_DEAD, S(200), &m, S(600)) == S(1200) && m.deaths == 2, "second: 10 min");
+    m.last_dial_at = S(1200);
+    check(lte_dial_at(LTE_BEARER_DEAD, S(200), &m, S(1500)) == S(3300) && m.deaths == 3, "third: 30 min");
+    m.last_dial_at = S(3300);
+    check(lte_dial_at(LTE_BEARER_DEAD, S(200), &m, S(3600)) == S(7200), "then 60 min");
+    m.last_dial_at = S(7200);
+    check(lte_dial_at(LTE_BEARER_DEAD, S(200), &m, S(3600 + 7200)) == S(3600 + 7200) && m.deaths == 1, "2 h without one forgets them");
+    m.last_dial_at = S(10800);
+    check(lte_dial_at(LTE_BEARER_REMADE, S(200), &m, S(10900)) == S(10900) && m.deaths == 1 && m.last_death_at == S(10800),
           "a new bearer: at once, uncounted");
+    check(lte_dial_at(LTE_ASKED, 0, &m, S(11000)) == S(11000) && m.deaths == 1 && m.last_death_at == S(10800), "lte on keeps the deaths");
 }
 
 int main(void) {

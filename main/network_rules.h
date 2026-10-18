@@ -97,8 +97,12 @@ int64_t lte_check_at(const lte_view* lte, int64_t first_failed_at, int64_t check
 bool lte_bearer_dead(int64_t up_at, int64_t first_failed_at, int64_t failed_at, int64_t received_at);
 
 typedef enum { LTE_ASKED, LTE_UP_ENDED, LTE_BEARER_DEAD, LTE_BEARER_REMADE, LTE_NEVER_ANSWERED, LTE_SILENT, LTE_REFUSED, LTE_NOT_READY } lte_outcome;
+// What lte_dial_at keeps between calls; last_dial_at is the caller's, set at each dial
+typedef struct {
+    int drops, deaths;
+    int64_t last_dial_at, last_death_at;
+} lte_dial_memory;
 // When the next dial may go, never within 60 s of the last: lte on at once; after a link 120 s doubling to 960 s (the doubling
 // forgotten after 960 s up); after a dead bearer at once, then 10, 30 and 60 min (forgotten after 2 h without one), but at once
-// uncounted when the network made a new one; a modem silent
-// or refusing 960 s; not ready 90 s; one that never answered when it speaks
-int64_t lte_dial_at(lte_outcome outcome, int64_t up_for, int* drops, int* deaths, int64_t last_death_at, int64_t last_dial_at, int64_t now);
+// uncounted when the network made a new one; a modem silent or refusing 960 s; not ready 90 s; one that never answered when it speaks
+int64_t lte_dial_at(lte_outcome outcome, int64_t up_for, lte_dial_memory* memory, int64_t now);

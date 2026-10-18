@@ -98,22 +98,23 @@ bool lte_bearer_dead(int64_t up_at, int64_t first_failed_at, int64_t failed_at, 
            received_at < first_failed_at;
 }
 
-int64_t lte_dial_at(lte_outcome outcome, int64_t up_for, int* drops, int* deaths, int64_t last_death_at, int64_t last_dial_at, int64_t now) {
+int64_t lte_dial_at(lte_outcome outcome, int64_t up_for, lte_dial_memory* memory, int64_t now) {
     static const int64_t after_death[] = {0, 10 * MINUTE, 30 * MINUTE, 60 * MINUTE};
     int64_t at = now;
     switch (outcome) {
     case LTE_ASKED:
-        *drops = 0;
+        memory->drops = 0;
         break;
     case LTE_UP_ENDED:
-        if (up_for >= 960 * NETWORK_SECOND) *drops = 0;
-        at = now + (120 * NETWORK_SECOND << *drops);
-        if (*drops < 3) (*drops)++;
+        if (up_for >= 960 * NETWORK_SECOND) memory->drops = 0;
+        at = now + (120 * NETWORK_SECOND << memory->drops);
+        if (memory->drops < 3) memory->drops++;
         break;
     case LTE_BEARER_DEAD:
-        if (now - last_death_at >= 120 * MINUTE) *deaths = 0;
-        at = now + after_death[*deaths < 3 ? *deaths : 3];
-        (*deaths)++;
+        if (now - memory->last_death_at >= 120 * MINUTE) memory->deaths = 0;
+        at = now + after_death[memory->deaths < 3 ? memory->deaths : 3];
+        memory->deaths++;
+        memory->last_death_at = now;
         break;
     case LTE_BEARER_REMADE:
         break;
@@ -127,5 +128,5 @@ int64_t lte_dial_at(lte_outcome outcome, int64_t up_for, int* drops, int* deaths
         at = now + 90 * NETWORK_SECOND;
         break;
     }
-    return later(at, last_dial_at + 60 * NETWORK_SECOND);
+    return later(at, memory->last_dial_at + 60 * NETWORK_SECOND);
 }
