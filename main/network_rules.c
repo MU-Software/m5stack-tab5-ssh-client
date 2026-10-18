@@ -15,6 +15,10 @@ network_path network_other(network_path p) {
     return p == NETWORK_WIFI ? NETWORK_LTE : p == NETWORK_LTE ? NETWORK_WIFI : NETWORK_NONE;
 }
 
+bool wifi_good(const wifi_view* w) {
+    return w->enabled && w->link && w->internet == NETWORK_GOOD;
+}
+
 bool wifi_rejoining(const wifi_view* w, int64_t now) {
     bool final = w->c6_heard && (w->c6_state == C6_WIFI_NONE_IN_RANGE || w->c6_state == C6_WIFI_JOIN_FAILED || w->c6_state == C6_WIFI_STOPPED);
     return w->enabled && !w->link && w->lost_at != 0 && now - w->lost_at < 10 * NETWORK_SECOND && !final;
@@ -25,15 +29,15 @@ network_choice network_choose(const wifi_view* w, const lte_view* l, network_pat
     // The C6 checks a new link within 9 s
     bool checking = w->enabled && w->link && w->internet == NETWORK_UNKNOWN && now - w->linked_at < 10 * NETWORK_SECOND;
     bool planned = w->enabled && w->planned && now - w->lost_at < 25 * NETWORK_SECOND;
-    bool wifi_good = w->enabled && w->link && w->internet == NETWORK_GOOD;
+    bool good = wifi_good(w);
     bool lte_good = l->state == LTE_UP && l->internet != NETWORK_BAD;
     // Two failures within 10 min, the last of them recent, and the internet back for less than 30 s
     bool flapping = w->failed_before != 0 && w->failed_at - w->failed_before < 10 * MINUTE && now - w->failed_at < 10 * MINUTE &&
                     now - w->good_since < 30 * NETWORK_SECOND;
     bool first_try = w->enabled && now - w->started_at < 20 * NETWORK_SECOND &&
                      (!w->c6_heard || w->c6_state == C6_WIFI_SCANNING || w->c6_state == C6_WIFI_JOINING || checking);
-    network_choice c = {.usable = {false, wifi_good || rejoining || checking || planned, lte_good}, .epoch = {0, w->epoch, l->epoch}};
-    if ((wifi_good && !(previous == NETWORK_LTE && lte_good && flapping)) || (previous == NETWORK_WIFI && (rejoining || checking || planned)))
+    network_choice c = {.usable = {false, good || rejoining || checking || planned, lte_good}, .epoch = {0, w->epoch, l->epoch}};
+    if ((good && !(previous == NETWORK_LTE && lte_good && flapping)) || (previous == NETWORK_WIFI && (rejoining || checking || planned)))
         c.path = NETWORK_WIFI;
     else if (previous != NETWORK_LTE && first_try)
         c.path = NETWORK_NONE;
@@ -82,13 +86,11 @@ bool wifi_c6_silent(const wifi_view* w, int64_t now) {
     return w->asked_at != 0 && w->internet_at < w->asked_at && now - w->asked_at >= 17 * NETWORK_SECOND;
 }
 
-int64_t lte_check_at(const lte_view* l, int64_t first_failed_at, int64_t checked_at, bool suspected, bool chosen, int64_t now) {
+int64_t lte_check_at(const lte_view* l, int64_t first_failed_at, int64_t checked_at, bool suspected, int64_t now) {
     if (l->state != LTE_UP || l->received_at >= now - 10 * NETWORK_SECOND) return NETWORK_NEVER;
     if (first_failed_at != 0) return later(first_failed_at + 30 * NETWORK_SECOND, l->up_at + 60 * NETWORK_SECOND);
-    if (checked_at < l->up_at) return now;
-    bool recent = l->internet == NETWORK_GOOD && l->internet_at >= now - 5 * MINUTE;
-    if (suspected && !recent) return now;
-    return chosen && !(l->internet == NETWORK_GOOD && l->internet_at >= now - 10 * MINUTE) ? now : NETWORK_NEVER;
+    if (checked_at < l->up_at || l->internet != NETWORK_GOOD || (suspected && l->internet_at < now - 2 * MINUTE)) return now;
+    return l->internet_at + 10 * MINUTE;
 }
 
 bool lte_bearer_dead(int64_t up_at, int64_t first_failed_at, int64_t failed_at, int64_t received_at) {
@@ -112,6 +114,8 @@ int64_t lte_dial_at(lte_outcome outcome, int64_t up_for, int* drops, int* deaths
         if (now - last_death_at >= 120 * MINUTE) *deaths = 0;
         at = now + after_death[*deaths < 3 ? *deaths : 3];
         (*deaths)++;
+        break;
+    case LTE_BEARER_REMADE:
         break;
     case LTE_NEVER_ANSWERED:
         return NETWORK_NEVER;

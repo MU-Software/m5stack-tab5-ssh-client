@@ -46,7 +46,7 @@ static TaskHandle_t task;
 static QueueHandle_t lines, commands;
 static EventGroupHandle_t events;
 static esp_netif_t* netif;
-static atomic_bool dialing, data_mode, on, turned_on, chosen, suspected, dead_probe;
+static atomic_bool dialing, data_mode, on, turned_on, suspected, dead_probe;
 // When the modem last left a command unanswered: asking a quiet modem again keeps it quiet longer
 static int64_t unanswered = -90 * SECOND;
 static atomic_bool answered; // this boot
@@ -383,6 +383,8 @@ static void log_wait(int64_t next_dial, int64_t now) {
 static void run(void* arg) {
     (void)arg;
     int drops = 0, deaths = 0;
+    // The last link a check found good: only one proven can have had its bearer remade
+    unsigned proven = 0;
     int64_t next_dial = 0, last_dial = -60 * SECOND, last_death = -120 * 60 * SECOND, first_failed = 0, checked_at = 0;
     for (;;) {
         run_commands();
@@ -425,7 +427,7 @@ static void run(void* arg) {
             }
             wait = next_dial;
         } else {
-            int64_t check_at = lte_check_at(&v, first_failed, checked_at, suspected, chosen, now);
+            int64_t check_at = lte_check_at(&v, first_failed, checked_at, suspected, now);
             if (check_at <= now) {
                 char address[16] = "";
                 suspected = false;
@@ -436,19 +438,25 @@ static void run(void* arg) {
                 if (rc != EINTR) checked_at = now;
                 if (rc == 0) {
                     first_failed = 0;
+                    proven = v.epoch;
                     ESP_LOGI(TAG, "internet %s reached", address);
                     set_internet(NETWORK_GOOD, now);
                 } else if (rc != EINTR && lte_bearer_dead(v.up_at, first_failed, now, v.received_at)) {
                     esp_netif_ip_info_t ip = {0};
                     char ppp[16];
                     esp_netif_get_ip_info(netif, &ip);
+                    esp_ip4addr_ntoa(&ip.ip, ppp, sizeof ppp);
                     ESP_LOGW(TAG, "internet %s: %s, as %lld s ago: the bearer is dead, PPP %s ended", address, strerror(rc),
-                             (now - first_failed) / SECOND, esp_ip4addr_ntoa(&ip.ip, ppp, sizeof ppp));
+                             (now - first_failed) / SECOND, ppp);
                     set_internet(NETWORK_BAD, now);
                     disconnect();
-                    if (!data_mode && ask(MODEM_ADDRESS) >= 0) ESP_LOGW(TAG, "the modem's address now: %s", fresh.values[MODEM_ADDRESS]);
-                    next_dial = lte_dial_at(LTE_BEARER_DEAD, now - v.up_at, &drops, &deaths, last_death, last_dial, now);
-                    last_death = now;
+                    bool remade = false;
+                    if (!data_mode && ask(MODEM_ADDRESS) >= 0) {
+                        remade = proven == v.epoch && modem_address_moved(fresh.values[MODEM_ADDRESS], ppp);
+                        ESP_LOGW(TAG, "the modem's address now: %s%s", fresh.values[MODEM_ADDRESS], remade ? ", a new bearer" : "");
+                    }
+                    next_dial = lte_dial_at(remade ? LTE_BEARER_REMADE : LTE_BEARER_DEAD, now - v.up_at, &drops, &deaths, last_death, last_dial, now);
+                    if (!remade) last_death = now;
                     first_failed = 0;
                     set_state(LTE_WAITING);
                     log_wait(next_dial, now);
@@ -458,6 +466,9 @@ static void run(void* arg) {
                     // The first failure counts from 60 s into the link, and again once bytes came since
                     if (first_failed == 0 || first_failed - v.up_at < 60 * SECOND || v.received_at >= first_failed) first_failed = now;
                     ESP_LOGW(TAG, "internet %s: %s", address, strerror(rc));
+                } else {
+                    // No socket free stays so for a while: not again at once
+                    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
                 }
                 continue;
             }
@@ -539,16 +550,11 @@ void lte_turn(bool turn_on) {
     if (task != NULL) xTaskNotifyGive(task);
 }
 
-void lte_chosen(bool is_chosen) {
-    chosen = is_chosen;
-    if (is_chosen && task != NULL) xTaskNotifyGive(task);
-}
-
 int64_t lte_suspect(void) {
     lte_view v;
     lte_view_now(&v);
     int64_t now = esp_timer_get_time();
-    if (lte_check_at(&v, 0, v.up_at, true, false, now) > now) return 0;
+    if (lte_check_at(&v, 0, v.up_at, true, now) > now) return 0;
     suspected = true;
     if (task != NULL) xTaskNotifyGive(task);
     // Three addresses and three DNS servers

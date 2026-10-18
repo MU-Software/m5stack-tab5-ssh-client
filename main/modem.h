@@ -55,6 +55,8 @@ void modem_mask(const char* line, char* out, size_t size);
 bool modem_kept(const char* line, const char* prefix, const char* reply);
 // The NV back-off item's T3346 and timer 20 parts are 0
 bool modem_backoff_clear(const char* value);
+// A CGPADDR value that is an address other than 0.0.0.0 and ppp: the network made a new bearer
+bool modem_address_moved(const char* value, const char* ppp);
 // Whether modem_commands[item].write is due: a switch that reads 0, or eDRX the network grants for CAT-M
 bool modem_wanted(const modem_snapshot* snapshot, modem_item item);
 // What the modem page shows as `name`, and the item whose age goes with it; MODEM_ITEMS for no such name

@@ -67,6 +67,10 @@ int main(void) {
     check(modem_backoff_clear(s.values[MODEM_BACKOFF]) && !modem_backoff_clear("16,00000000000000010000000000000000") &&
               !modem_backoff_clear("16,00000000253E5A000000000000000000") && !modem_backoff_clear(""),
           "the NV back-off: zero front half only, the stale 253E5A00 of the research not");
+    check(modem_address_moved("10.37.187.15", "10.33.61.97") && !modem_address_moved("10.33.61.97", "10.33.61.97") &&
+              !modem_address_moved("", "10.33.61.97") && !modem_address_moved("0.0.0.0", "10.33.61.97") &&
+              !modem_address_moved("10.37.187.15,fe80::1", "10.33.61.97"),
+          "a new bearer: another address only, none or 0.0.0.0 unknown");
     check(strcmp(shown(&s, "qualcomm_urc"), "켬") == 0 && strcmp(shown(&s, "battery_check"), "켬") == 0, "switches as 켬");
     check(strcmp(shown(&s, "edrx"), "꺼짐 · 10.24초로 요청해 둠") == 0, "eDRX remembered but not granted");
     check(!modem_wanted(&s, MODEM_QUALCOMM_URC) && !modem_wanted(&s, MODEM_BATTERY_CHECK) && !modem_wanted(&s, MODEM_EDRX),

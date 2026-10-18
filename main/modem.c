@@ -90,6 +90,12 @@ bool modem_backoff_clear(const char* value) {
     return digits != NULL && strspn(digits, "0") >= 16;
 }
 
+bool modem_address_moved(const char* value, const char* ppp) {
+    unsigned a, b, c, d;
+    char rest;
+    return sscanf(value, "%u.%u.%u.%u%c", &a, &b, &c, &d, &rest) == 4 && (a | b | c | d) != 0 && strcmp(value, ppp) != 0;
+}
+
 // Field n (from 0) of a comma-separated reply, without quotes; "?" when there is none
 static const char* field(const char* value, int n, char* out, size_t size) {
     for (; n > 0 && value != NULL; n--)

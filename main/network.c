@@ -51,6 +51,7 @@ static void on_event(void* arg, esp_event_base_t base, int32_t id, void* data) {
 static void manage(void* arg) {
     (void)arg;
     network_path current = NETWORK_NONE;
+    bool wifi_was_good = false;
     for (;;) {
         wifi_view w;
         lte_view l;
@@ -63,7 +64,6 @@ static void manage(void* arg) {
         taskEXIT_CRITICAL(&choice_lock);
         if (c.path != current) {
             ESP_LOGI(TAG, "path %s", path_names[c.path]);
-            lte_chosen(c.path == NETWORK_LTE);
             if (c.path != NETWORK_NONE)
                 xEventGroupSetBits(paths, READY);
             else
@@ -71,6 +71,9 @@ static void manage(void* arg) {
         }
         // A lease or redial keeps its DNS servers on its interface: only setting the default hands them to lwIP, for SNTP
         if (c.path != NETWORK_NONE && (atomic_exchange(&got_ip, false) || c.path != current)) esp_netif_set_default_netif(netif_of(c.path));
+        // Wi-Fi off, dropped or without the internet: LTE checked, ready for what comes to it
+        if (wifi_was_good && !wifi_good(&w)) lte_suspect();
+        wifi_was_good = wifi_good(&w);
         current = c.path;
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
     }

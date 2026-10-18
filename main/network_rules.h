@@ -55,6 +55,8 @@ typedef struct {
 } network_choice;
 
 network_path network_other(network_path path);
+// Joined with the internet
+bool wifi_good(const wifi_view* wifi);
 // After a drop, until the C6 gives up on rejoining or 10 s passed: the drop may reach this chip before the C6's state that follows
 bool wifi_rejoining(const wifi_view* wifi, int64_t now);
 // Wi-Fi with the internet, but back from LTE only to Wi-Fi that stays; Wi-Fi kept while the C6 rejoins or checks a new link;
@@ -88,14 +90,15 @@ int64_t wifi_ask_at(const wifi_view* wifi, bool suspected);
 // Asked 17 s ago with no answer since
 bool wifi_c6_silent(const wifi_view* wifi, int64_t now);
 
-// When LTE is checked: after each PPP up; 30 s after a failure (60 s into the link at the earliest) until a verdict; on suspicion
-// unless good within 5 min; when chosen with no good result within 10 min. Never while LTE sessions receive
-int64_t lte_check_at(const lte_view* lte, int64_t first_failed_at, int64_t checked_at, bool suspected, bool chosen, int64_t now);
+// When LTE is checked, chosen or not: after each PPP up; 30 s after a failure (60 s into the link at the earliest) until a verdict;
+// on suspicion unless good within 2 min; 10 min after the last good result. Never while LTE sessions receive
+int64_t lte_check_at(const lte_view* lte, int64_t first_failed_at, int64_t checked_at, bool suspected, int64_t now);
 // Two failed checks 30 s apart, the first 60 s into the link, nothing received since it
 bool lte_bearer_dead(int64_t up_at, int64_t first_failed_at, int64_t failed_at, int64_t received_at);
 
-typedef enum { LTE_ASKED, LTE_UP_ENDED, LTE_BEARER_DEAD, LTE_NEVER_ANSWERED, LTE_SILENT, LTE_REFUSED, LTE_NOT_READY } lte_outcome;
+typedef enum { LTE_ASKED, LTE_UP_ENDED, LTE_BEARER_DEAD, LTE_BEARER_REMADE, LTE_NEVER_ANSWERED, LTE_SILENT, LTE_REFUSED, LTE_NOT_READY } lte_outcome;
 // When the next dial may go, never within 60 s of the last: lte on at once; after a link 120 s doubling to 960 s (the doubling
-// forgotten after 960 s up); after a dead bearer at once, then 10, 30 and 60 min (forgotten after 2 h without one); a modem silent
+// forgotten after 960 s up); after a dead bearer at once, then 10, 30 and 60 min (forgotten after 2 h without one), but at once
+// uncounted when the network made a new one; a modem silent
 // or refusing 960 s; not ready 90 s; one that never answered when it speaks
 int64_t lte_dial_at(lte_outcome outcome, int64_t up_for, int* drops, int* deaths, int64_t last_death_at, int64_t last_dial_at, int64_t now);

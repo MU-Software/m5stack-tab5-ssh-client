@@ -207,19 +207,20 @@ static void wifi_asks(void) {
 
 static void lte_checks(void) {
     lte_view l = {.state = LTE_UP, .epoch = 1, .up_at = S(30)};
-    check(lte_check_at(&l, 0, 0, false, false, S(31)) == S(31), "after PPP up");
+    check(lte_check_at(&l, 0, 0, false, S(31)) == S(31), "after PPP up");
     l.internet = NETWORK_GOOD, l.internet_at = S(32);
-    check(lte_check_at(&l, 0, S(32), false, false, S(100)) == NETWORK_NEVER, "good standby: never");
-    check(lte_check_at(&l, 0, S(32), true, false, S(100)) == NETWORK_NEVER, "suspected within 5 min of a good result: no check");
-    check(lte_check_at(&l, 0, S(32), true, false, S(333)) == S(333), "suspected 5 min after: checked");
-    check(lte_check_at(&l, 0, S(32), false, true, S(600)) == NETWORK_NEVER, "chosen, good within 10 min: no check");
-    check(lte_check_at(&l, 0, S(32), false, true, S(633)) == S(633), "chosen, good older than 10 min: checked");
-    check(lte_check_at(&l, S(40), S(40), false, false, S(41)) == S(90), "failed 10 s into the link: next at 60 s into it");
-    check(lte_check_at(&l, S(100), S(100), false, false, S(101)) == S(130), "failed later: next 30 s after");
+    check(lte_check_at(&l, 0, S(32), false, S(100)) == S(632), "good: again 10 min after");
+    check(lte_check_at(&l, 0, S(32), false, S(632)) == S(632), "10 min after a good result: checked");
+    check(lte_check_at(&l, 0, S(32), true, S(152)) == S(632), "suspected within 2 min of a good result: no check");
+    check(lte_check_at(&l, 0, S(32), true, S(153)) == S(153), "suspected 2 min after: checked");
+    l.internet = NETWORK_UNKNOWN;
+    check(lte_check_at(&l, 0, S(32), false, S(100)) == S(100), "no good result: checked");
+    check(lte_check_at(&l, S(40), S(40), false, S(41)) == S(90), "failed 10 s into the link: next at 60 s into it");
+    check(lte_check_at(&l, S(100), S(100), false, S(101)) == S(130), "failed later: next 30 s after");
     l.received_at = S(125);
-    check(lte_check_at(&l, S(100), S(100), false, false, S(130)) == NETWORK_NEVER, "sessions receive: no check");
+    check(lte_check_at(&l, S(100), S(100), false, S(130)) == NETWORK_NEVER, "sessions receive: no check");
     l.state = LTE_WAITING;
-    check(lte_check_at(&l, 0, 0, true, true, S(500)) == NETWORK_NEVER, "no PPP: no check");
+    check(lte_check_at(&l, 0, 0, true, S(500)) == NETWORK_NEVER, "no PPP: no check");
     check(!lte_bearer_dead(S(30), S(89), S(120), 0), "first failure 59 s into the link: not counted");
     check(lte_bearer_dead(S(30), S(90), S(120), 0), "60 s in, 30 s apart: dead");
     check(!lte_bearer_dead(S(30), S(90), S(119), 0), "29 s apart: not yet");
@@ -249,6 +250,8 @@ static void dials(void) {
     check(lte_dial_at(LTE_BEARER_DEAD, S(200), &drops, &deaths, S(1500), S(3300), S(3600)) == S(7200), "then 60 min");
     check(lte_dial_at(LTE_BEARER_DEAD, S(200), &drops, &deaths, S(3600), S(7200), S(3600 + 7200)) == S(3600 + 7200) && deaths == 1,
           "2 h without one forgets them");
+    check(lte_dial_at(LTE_BEARER_REMADE, S(200), &drops, &deaths, S(10800), S(10800), S(10900)) == S(10900) && deaths == 1,
+          "a new bearer: at once, uncounted");
 }
 
 int main(void) {
