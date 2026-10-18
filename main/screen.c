@@ -829,10 +829,14 @@ static void push(ui_event e) {
     if (e.kind != UI_NONE && event_count < sizeof events / sizeof events[0]) events[event_count++] = e;
 }
 
+// When the dialog shown opened
+static int64_t dialog_since;
+
 // x runs up the portrait panel's height, y along its width. A touch going down on the terminal while no panel is open
-// stays the terminal's: taps click, drags scroll.
+// stays the terminal's: taps click, drags scroll, but not under a dialog. A dialog takes no touch going down in its first
+// 300 ms: a second tap meant for the one before.
 static void poll_touch(void) {
-    static bool down, on_terminal;
+    static bool down, on_terminal, ignored;
     static int32_t column, row;
     static gesture finger = {.slop = SHR_CELL_HEIGHT};
     esp_lcd_touch_point_data_t p = {0};
@@ -844,7 +848,8 @@ static void poll_touch(void) {
     if (phase == UI_TOUCH_DOWN) {
         atomic_store(&input_seen, true);
         atomic_store(&touched_at, esp_timer_get_time());
-        on_terminal = ui_panel() == NULL && x >= origin_x && x < origin_x + columns * SHR_CELL_WIDTH && y >= origin_y &&
+        ignored = ui_dialog_shown() != 0 && esp_timer_get_time() - dialog_since < 300000;
+        on_terminal = ui_panel() == NULL && ui_dialog_shown() == 0 && x >= origin_x && x < origin_x + columns * SHR_CELL_WIDTH && y >= origin_y &&
                       y < origin_y + rows_count * SHR_CELL_HEIGHT;
         ESP_LOGD(TAG, "touch %u,%u%s", p.x, p.y, on_terminal ? " on the terminal" : "");
         finger.step = state->touch.wheel_px;
@@ -852,10 +857,11 @@ static void poll_touch(void) {
     down = n > 0;
     if (on_terminal) {
         gesture_event e = gesture_touch(&finger, down, x - origin_x, y - origin_y);
-        if (e.lines != 0) terminal_wheel(shown_terminal, e.lines, e.x, e.y, state->touch.arrows);
-        if (e.tap) terminal_click(shown_terminal, e.x, e.y);
+        if (e.lines != 0 && ui_dialog_shown() == 0) terminal_wheel(shown_terminal, e.lines, e.x, e.y, state->touch.arrows);
+        if (e.tap && ui_dialog_shown() == 0) terminal_click(shown_terminal, e.x, e.y);
         return;
     }
+    if (ignored) return;
     if (n > 0) {
         int32_t c = x / SHR_CELL_WIDTH, r = y / SHR_CELL_HEIGHT;
         if (phase == UI_TOUCH_MOVE && c == column && r == row) return;
@@ -864,7 +870,8 @@ static void poll_touch(void) {
     push(ui_touch(phase, column, row));
 }
 
-// Keys go to an open panel; once it closes the rest go to the terminal
+// Keys go to an open panel or dialog, else the terminal. A held Enter or Escape repeats nothing (a toggle would flip back),
+// and a dialog takes no key pressed before it opened.
 static void take_ui_keys(void) {
     static const struct {
         uint8_t usage;
@@ -873,23 +880,30 @@ static void take_ui_keys(void) {
                  {0x28, UI_KEY_ENTER}, {0x58, UI_KEY_ENTER}, {0x29, UI_KEY_ESCAPE}, {0x2a, UI_KEY_BACKSPACE}};
     key_event e;
     char c;
-    keys_divert(ui_panel() != NULL);
-    while (ui_panel() != NULL && keys_take(&e, &c)) {
+    bool taking = ui_panel() != NULL || ui_dialog_shown() != 0;
+    keys_divert(taking);
+    while (taking && keys_take(&e, &c)) {
         size_t i = 0;
         while (i < sizeof named / sizeof named[0] && named[i].usage != e.usage)
             i++;
+        bool known = i < sizeof named / sizeof named[0];
         atomic_store(&input_seen, true);
-        if (i < sizeof named / sizeof named[0])
+        if (known && e.action == GHOSTTY_KEY_ACTION_REPEAT && (named[i].key == UI_KEY_ENTER || named[i].key == UI_KEY_ESCAPE)) continue;
+        if (ui_dialog_shown() != 0 && e.time < dialog_since) continue;
+        if (known)
             push(ui_key(named[i].key == UI_KEY_TAB && (e.modifiers & 0x22) != 0 ? UI_KEY_BACKTAB : named[i].key, ""));
         else if (c >= 0x20 && c < 0x7f)
             push(ui_key(UI_KEY_TEXT, (char[]){c, 0}));
+        taking = ui_panel() != NULL || ui_dialog_shown() != 0;
     }
-    keys_divert(ui_panel() != NULL);
+    keys_divert(taking);
 }
 
 // The UI over the terminal, which moves and resizes with the layout
 static void draw_ui(void) {
+    static unsigned dialog_seen;
     if (atomic_exchange(&open_asked, false)) ui_open(atomic_load(&open_request));
+    if (ui_dialog_shown() != dialog_seen) dialog_seen = ui_dialog_shown(), dialog_since = esp_timer_get_time();
     poll_touch();
     take_ui_keys();
     ui_draw();

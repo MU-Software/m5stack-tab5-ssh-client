@@ -61,6 +61,14 @@ static atomic_uint resizes;
 
 typedef enum { JOB_CREATE, JOB_CONNECT, JOB_DELETE } session_job;
 
+// What a session's task asks on the screen; serial 0 for nothing
+typedef struct {
+    ui_dialog_kind kind;
+    char title[96], text[160], yes[16], typed[128];
+    unsigned serial, answered;
+    bool granted;
+} session_question;
+
 // Session number n is sessions[n - 1]: a record while used, in sessions.json once saved (its tmux session made). While
 // running it has a task for one job, which ends once the job is done or it is asked to end. The main loop makes its
 // terminal before starting the task, and frees it once the task ended and it is off the screen. Under sessions_lock but for
@@ -87,6 +95,11 @@ typedef struct {
     // Asked to end; to delete its tmux session and record once it has
     atomic_bool end, deleting;
     char tmux[24], alias[sizeof(((ssh_host*)0)->alias)];
+    session_question question;
+    // A failure to tell on the screen, NULL for none
+    const char* alert;
+    // Its task's: the last question was answered no
+    bool declined;
 } session;
 static session sessions[MAX_SESSIONS];
 // The one on the screen, NULL for none
@@ -102,8 +115,23 @@ static SemaphoreHandle_t input_lock, sessions_lock;
 static char tmux_prefix[16];
 // Sessions connected: while any is, logs may be quieter
 static atomic_int connected;
-// What came of the last session command, for the screen
-static char result_text[96];
+// A failure of no session to tell on the screen, NULL for none
+static const char* lone_alert;
+// Asked from the screen and not yet answered: a session on host `alias`, or session `number` (its tmux) deleted
+static struct {
+    bool pending, create;
+    char alias[sizeof(((ssh_host*)0)->alias)], tmux[24];
+    int number;
+} confirm;
+// The dialog on the screen, the main loop's: what it is for, the asking session and its question's serial, the dialog's
+// serial
+static struct {
+    enum { DIALOG_NONE, DIALOG_CONFIRM, DIALOG_QUESTION, DIALOG_ALERT } what;
+    int number;
+    unsigned asked, serial;
+} on_screen;
+// Questions wait for an answer only while there is a screen to answer them on
+static atomic_bool screen_up;
 // Set once the records are loaded and SSH can start: commands come before
 static atomic_bool sessions_loaded;
 
@@ -140,17 +168,7 @@ static const ssh_host* host_named(const char* alias) {
     return h;
 }
 
-// On the session list
-static void result(int n, const char* text) {
-    lock();
-    if (n > 0)
-        snprintf(result_text, sizeof result_text, "세션 %d: %s", n, text);
-    else
-        snprintf(result_text, sizeof result_text, "%s", text);
-    unlock();
-}
-
-// Logged, and shown on the session list as `shown_text` (Korean); n 0 for no session. 1 when it failed, else 0
+// Logged, and with `shown_text` (Korean, NULL for none) told on the screen; n 0 for no session. 1 when it failed, else 0
 static int report(int n, bool failed, const char* shown_text, const char* format, ...) {
     char text[300], prefix[24] = "sessions";
     va_list arguments;
@@ -162,13 +180,13 @@ static int report(int n, bool failed, const char* shown_text, const char* format
         ESP_LOGW(TAG, "%s: %s", prefix, text);
     else
         ESP_LOGI(TAG, "%s: %s", prefix, text);
-    result(n, shown_text);
+    lock();
+    if (shown_text != NULL && n > 0)
+        sessions[n - 1].alert = shown_text;
+    else if (shown_text != NULL)
+        lone_alert = shown_text;
+    unlock();
     return failed;
-}
-
-static void message(session* s, const char* text) {
-    terminal_write(s->terminal, text, strlen(text));
-    if (is_shown(s)) usb_terminal_write(text, strlen(text));
 }
 
 // From the keyboards or the USB terminal port, only for the shown session, which then shows the bottom of its scrollback
@@ -189,31 +207,43 @@ static void waiting(session* s, const char* what, TickType_t since) {
     if (is_shown(s)) screen_waiting(what, since);
 }
 
-// On the session's terminal, typed once it is shown; empty when the session is to end
-static void read_line(session* s, const char* prompt, char* buf, size_t size, int echo) {
-    session_status was = atomic_exchange(&s->status, SESSION_ASKING);
-    if (!is_shown(s)) report(number(s), false, "답을 기다림 · 보기로 열어 답하기", "answer it on the screen (session open %d)", number(s));
-    message(s, prompt);
-    size_t n = 0;
-    while (!atomic_load(&s->end)) {
-        char c;
-        if (read_input(s, &c, 1) != 1) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
-        }
-        if (c == '\r' || c == '\n') break;
-        if (c == 0x7f || c == '\b') {
-            if (n == 0) continue;
-            n--;
-            if (echo) message(s, "\b \b");
-        } else if (n + 1 < size) {
-            buf[n++] = c;
-            if (echo) message(s, (char[]){c, 0});
-        }
+// Asked on the screen once it can show there, for s's task: false for no, a cancel or the session ending. A prompt's answer
+// goes to `out`, and none typed is a no.
+static bool ask(session* s, ui_dialog_kind kind, const char* title, const char* text, const char* yes, char* out, size_t size) {
+    static unsigned serials;
+    if (!atomic_load(&screen_up)) {
+        ESP_LOGW(TAG, "session %d: no screen to ask %s on", number(s), title);
+        s->declined = true;
+        return false;
     }
-    buf[n] = 0;
-    message(s, "\r\n");
-    atomic_store(&s->status, was);
+    session_status was = atomic_load(&s->status);
+    if (was != SESSION_DELETING) atomic_store(&s->status, SESSION_ASKING);
+    lock();
+    session_question* q = &s->question;
+    q->kind = kind, q->serial = ++serials, q->answered = 0;
+    snprintf(q->title, sizeof q->title, "%s", title);
+    snprintf(q->text, sizeof q->text, "%s", text);
+    snprintf(q->yes, sizeof q->yes, "%s", yes);
+    unsigned serial = q->serial;
+    unlock();
+    ESP_LOGI(TAG, "session %d: asks %s on the screen", number(s), title);
+    bool answered = false, granted = false;
+    while (!answered && !atomic_load(&s->end)) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        lock();
+        answered = q->answered == serial;
+        if (answered) granted = q->granted;
+        if (granted && out != NULL) snprintf(out, size, "%s", q->typed);
+        unlock();
+    }
+    lock();
+    wc_ForceZero(q->typed, sizeof q->typed);
+    q->serial = 0;
+    unlock();
+    // Unless it is being deleted meanwhile
+    atomic_compare_exchange_strong(&s->status, &(session_status){SESSION_ASKING}, was);
+    s->declined = !granted;
+    return granted;
 }
 
 int accept_new_host(const ssh_session* connection, const char* name, const char* fingerprint, const char* line) {
@@ -221,13 +251,10 @@ int accept_new_host(const ssh_session* connection, const char* name, const char*
     for (size_t i = 0; i < MAX_SESSIONS; i++)
         if (&sessions[i].connection == connection) s = &sessions[i];
     if (s == NULL) return 0;
-    char prompt[512], answer[8];
-    snprintf(prompt, sizeof prompt,
-             "The authenticity of host '%s' can't be established.\r\nKey fingerprint is %s.\r\n"
-             "Are you sure you want to continue connecting (yes/no)? ",
-             name, fingerprint);
-    read_line(s, prompt, answer, sizeof answer, 1);
-    if (strcmp(answer, "yes") != 0) return 0;
+    char title[96], text[160];
+    snprintf(title, sizeof title, "처음 보는 호스트 %s", name);
+    snprintf(text, sizeof text, "%s\n이 키를 믿고 연결할까요?", fingerprint);
+    if (!ask(s, UI_CONFIRM, title, text, "연결", NULL, 0)) return 0;
     if (storage_add_known_host(line) != 0) ESP_LOGW(TAG, "could not add %s to " SD "/.ssh/known_hosts", name);
     return 1;
 }
@@ -306,11 +333,12 @@ static session_end run(session* s, const ssh_host* h, const char* command, bool 
         return SESSION_UNREACHED;
     }
     char* private_key = storage_get_private_key(h->identity_file);
-    char password[128] = "";
+    char password[sizeof(((session_question*)0)->typed)] = "";
+    s->declined = false;
     if (private_key == NULL) {
-        char prompt[300];
-        snprintf(prompt, sizeof prompt, "%s@%s's password: ", h->user, h->hostname);
-        read_line(s, prompt, password, sizeof password, 0);
+        char title[sizeof(((session_question*)0)->title)];
+        snprintf(title, sizeof title, "%.32s@%.60s", h->user, h->hostname);
+        if (!ask(s, UI_PROMPT, title, "비밀번호", "확인", password, sizeof password)) return SESSION_ENDED;
     }
     char* known_hosts = storage_get_known_hosts();
     s->connection = (ssh_session){.host = h,
@@ -330,7 +358,7 @@ static session_end run(session* s, const ssh_host* h, const char* command, bool 
     free(known_hosts);
     memset(password, 0, sizeof password);
     // Refused: the same keys and host key would only be refused again; anything else may pass another time
-    session_end end = rc == WS_USER_AUTH_E || rc == WS_PUBKEY_REJECTED_E ? SESSION_REFUSED : SESSION_UNREACHED;
+    session_end end = s->declined ? SESSION_ENDED : rc == WS_USER_AUTH_E || rc == WS_PUBKEY_REJECTED_E ? SESSION_REFUSED : SESSION_UNREACHED;
     if (rc != WS_SUCCESS) {
         ESP_LOGE(TAG, "session %d: ssh %s@%s:%u: %s", number(s), h->user, h->hostname, h->port, wolfSSH_ErrorToName(rc));
         return end;
@@ -428,9 +456,10 @@ static bool create_tmux(session* s, const ssh_host* h) {
         s->saved = true;
         save_records();
         unlock();
-        return !report(number(s), false, "만듦 · 연결 안 됨", "created as tmux session %s on %s, not connected", s->tmux, h->alias);
+        return !report(number(s), false, NULL, "created as tmux session %s on %s, not connected", s->tmux, h->alias);
     }
     forget(s);
+    if (s->declined) return !report(number(s), true, NULL, "not created: not answered on the screen");
     if (status == 127) return !report(number(s), true, "호스트에 tmux 없음 · 만들지 않음", "not created: no tmux on %s", h->alias);
     return !report(number(s), true, "만들지 못함", "not created: %s %s", h->alias,
                    status < 0 ? "could not be reached or refused" : "did not start the tmux session");
@@ -442,9 +471,8 @@ static bool kill_tmux(session* s, const ssh_host* h) {
     int status = h != NULL && tmux_kill_command(command, sizeof command, s->tmux) ? once(s, h, command) : -1;
     forget(s);
     if (status == 0 || status == 1)
-        return !report(number(s), false, "삭제함", "deleted, its tmux session %s %s", s->tmux, status == 0 ? "ended" : "already gone");
-    return !report(number(s), true, "Tab5에서만 삭제함 · 서버에 tmux 세션이 남음",
-                   "deleted on the Tab5 only; its tmux session %s remains on %s, which %s", s->tmux, s->alias,
+        return !report(number(s), false, NULL, "deleted, its tmux session %s %s", s->tmux, status == 0 ? "ended" : "already gone");
+    return !report(number(s), true, NULL, "deleted on the Tab5 only; its tmux session %s remains on %s, which %s", s->tmux, s->alias,
                    h == NULL ? "is not in .ssh/config" : "could not be reached or refused");
 }
 
@@ -459,15 +487,16 @@ static bool keep_connected(session* s, const ssh_host* h) {
         if (!tmux_command(command, sizeof command, s->tmux, tmux_prefix, keep, 60, state.touch.arrows)) return false;
         session_end end = run(s, h, command, true, &exit_status);
         if (end == SESSION_ENDED) break;
-        if (end == SESSION_REFUSED)
-            return !report(number(s), true, "서버가 거부함 · 끊음", "%s refused the login or its host key changed: disconnected", h->alias);
+        if (end == SESSION_REFUSED && s->connection.host_changed)
+            return !report(number(s), true, "호스트 키가 바뀜 · 끊음", "%s's host key changed: disconnected", h->alias);
+        if (end == SESSION_REFUSED) return !report(number(s), true, "서버가 거부함 · 끊음", "%s refused the login: disconnected", h->alias);
         if (end == SESSION_CLOSED && exit_status == 127)
             return !report(number(s), true, "호스트에 tmux 없음 · 끊음", "no tmux on %s: disconnected", h->alias);
         if (end == SESSION_CLOSED && exit_status == TMUX_GONE) {
             forget(s);
-            return !report(number(s), true, "서버에 tmux 세션이 없어 삭제함", "tmux session %s is gone from %s: deleted", s->tmux, h->alias);
+            return !report(number(s), true, NULL, "tmux session %s is gone from %s: deleted", s->tmux, h->alias);
         }
-        if (end == SESSION_CLOSED) return !report(number(s), false, "tmux에서 떨어짐 · 끊음", "detached in tmux: disconnected");
+        if (end == SESSION_CLOSED) return !report(number(s), false, NULL, "detached in tmux: disconnected");
         atomic_store(&s->status, SESSION_RECONNECTING);
         waiting(s, "reconnecting", xTaskGetTickCount());
         if (exit_status != -1) retry_ms = 1000;
@@ -482,8 +511,7 @@ static bool keep_connected(session* s, const ssh_host* h) {
             vTaskDelay(pdMS_TO_TICKS(100));
         retry_ms = retry_ms < 16000 ? retry_ms * 2 : 30000;
     }
-    if (!atomic_load(&s->deleting))
-        report(number(s), false, "끊음 · tmux 세션은 서버에 남음", "disconnected; its tmux session %s stays on %s", s->tmux, h->alias);
+    if (!atomic_load(&s->deleting)) report(number(s), false, NULL, "disconnected; its tmux session %s stays on %s", s->tmux, h->alias);
     return true;
 }
 
@@ -526,7 +554,7 @@ static void run_session(void* arg) {
 // Under the lock: job for s, whose task the main loop starts
 static void start_job(session* s, session_job job) {
     static unsigned started;
-    s->job = job, s->id = ++started, s->running = s->starting = true;
+    s->job = job, s->id = ++started, s->running = s->starting = true, s->declined = false;
     atomic_store(&s->end, false);
     atomic_store(&s->deleting, job == JOB_DELETE);
     atomic_store(&s->status, job == JOB_DELETE ? SESSION_DELETING : SESSION_CONNECTING);
@@ -582,7 +610,7 @@ static int session_create(const ssh_host* h, bool wait) {
         if (!sessions[i].used && !sessions[i].running) s = &sessions[i];
     if (s == NULL) {
         unlock();
-        return report(0, true, "세션 4개 · 하나를 삭제해야 만듦", "no room, %d at most", MAX_SESSIONS);
+        return report(0, true, "세션은 4개까지", "no room, %d at most", MAX_SESSIONS);
     }
     for (bool taken = true; taken;) {
         snprintf(s->tmux, sizeof s->tmux, "%s%06" PRIx32, tmux_prefix, esp_random() & 0xffffff);
@@ -591,7 +619,7 @@ static int session_create(const ssh_host* h, bool wait) {
             taken |= &sessions[i] != s && sessions[i].used && strcmp(sessions[i].tmux, s->tmux) == 0;
     }
     snprintf(s->alias, sizeof s->alias, "%s", h->alias);
-    s->used = true, s->saved = false;
+    s->used = true, s->saved = false, s->alert = NULL;
     start_job(s, JOB_CREATE);
     unsigned id = s->id;
     unlock();
@@ -613,7 +641,7 @@ static int connect_session(int n, bool wait, bool show) {
     unsigned id = refusal == NULL ? s->id : 0;
     bool connecting = refusal == NULL && s->job == JOB_CONNECT;
     unlock();
-    if (refusal != NULL) return report(n, true, s == NULL ? "없음" : "할 수 없음", "%s", refusal);
+    if (refusal != NULL) return report(n, true, NULL, "%s", refusal);
     if (started) ESP_LOGI(TAG, "session %d: connecting", n);
     return wait && connecting ? wait_for(s, id, true) : 0;
 }
@@ -634,8 +662,8 @@ static int session_disconnect(int n, bool wait) {
     if (connected_now) atomic_store(&s->end, true);
     unsigned id = s != NULL ? s->id : 0;
     unlock();
-    if (s == NULL) return report(n, true, "없음", "no such session");
-    if (!connected_now) return report(n, false, "연결되어 있지 않음", "not connected");
+    if (s == NULL) return report(n, true, NULL, "no such session");
+    if (!connected_now) return report(n, false, NULL, "not connected");
     return wait ? wait_for(s, id, false) : 0;
 }
 
@@ -654,7 +682,7 @@ static int session_delete(int n, bool wait) {
     }
     unsigned id = refusal == NULL ? s->id : 0;
     unlock();
-    if (refusal != NULL) return report(n, true, s == NULL ? "없음" : "할 수 없음", "%s", refusal);
+    if (refusal != NULL) return report(n, true, NULL, "%s", refusal);
     ESP_LOGI(TAG, "session %d: deleting", n);
     return wait ? wait_for(s, id, false) : 0;
 }
@@ -681,11 +709,11 @@ static const char* const session_verbs[] = {"open", "connect", "disconnect", "de
 static int session_command(const char* arguments) {
     char verb[12];
     int n;
-    if (!atomic_load(&sessions_loaded)) return report(0, true, "시작 중", "not loaded yet");
+    if (!atomic_load(&sessions_loaded)) return report(0, true, NULL, "not loaded yet");
     if (strcmp(arguments, "list") == 0) return session_list();
     if (strncmp(arguments, "create ", 7) == 0) {
         const ssh_host* h = host_named(arguments + 7);
-        return h != NULL ? session_create(h, true) : report(0, true, "호스트 없음", "no Host %s in the SD card's .ssh/config", arguments + 7);
+        return h != NULL ? session_create(h, true) : report(0, true, NULL, "no Host %s in the SD card's .ssh/config", arguments + 7);
     }
     if (sscanf(arguments, "%11s %d", verb, &n) != 2) return -1;
     for (size_t i = 0; i < sizeof session_verbs / sizeof session_verbs[0]; i++)
@@ -727,10 +755,111 @@ static void tend_sessions(void) {
             s->terminal = NULL;
         }
         if (s->used)
-            state.sessions[state.session_count++] =
-                (session_info){number(s), host_named(s->alias), s->alias, s->tmux, atomic_load(&s->status), is_shown(s)};
+            state.sessions[state.session_count++] = (session_info){.number = number(s),
+                                                                   .alias = s->alias,
+                                                                   .status = atomic_load(&s->status),
+                                                                   .shown = is_shown(s),
+                                                                   .creating = s->running && s->job == JOB_CREATE,
+                                                                   .alert = s->alert != NULL};
     }
-    memcpy(state.session_result, result_text, sizeof state.session_result);
+    unlock();
+}
+
+// Under the lock: s has a question not answered yet
+static bool asking(const session* s) {
+    return s->question.serial != 0 && s->question.answered != s->question.serial;
+}
+
+// A dialog's button: the main loop's, for the dialog still on the screen
+static void answer(const ui_event* e) {
+    char typed[sizeof(((session_question*)0)->typed)];
+    bool yes = strcmp(e->name, "dialog ok") == 0, create = false, delete = false;
+    if (on_screen.what == DIALOG_NONE || e->index != on_screen.serial) return;
+    ui_dialog_answer(typed, sizeof typed);
+    ui_dialog_close();
+    lock();
+    session* s = on_screen.what == DIALOG_QUESTION ? &sessions[on_screen.number - 1] : NULL;
+    if (s != NULL && asking(s) && s->question.serial == on_screen.asked) {
+        session_question* q = &s->question;
+        q->answered = q->serial, q->granted = yes && (q->kind != UI_PROMPT || typed[0] != 0);
+        memcpy(q->typed, typed, sizeof typed);
+    }
+    if (on_screen.what == DIALOG_CONFIRM) {
+        const session* d = numbered(confirm.number);
+        create = yes && confirm.create, delete = yes && !confirm.create && d != NULL && strcmp(d->tmux, confirm.tmux) == 0;
+        confirm.pending = false;
+    }
+    on_screen.what = DIALOG_NONE;
+    unlock();
+    wc_ForceZero(typed, sizeof typed);
+    const ssh_host* h = create ? host_named(confirm.alias) : NULL;
+    if (h != NULL) session_create(h, false);
+    if (delete) session_delete(confirm.number, false);
+}
+
+// The main loop's, after its events: once no dialog is up, a confirm asked from the screen, else the shown session's
+// question; while a screen is open also other sessions' questions and the failures. A question its task stopped asking
+// closes.
+static void tend_dialogs(void) {
+    session_question q = {.kind = UI_ALERT, .yes = "확인"};
+    lock();
+    const session* asker = on_screen.what == DIALOG_QUESTION ? &sessions[on_screen.number - 1] : NULL;
+    bool ended = asker != NULL && (!asking(asker) || asker->question.serial != on_screen.asked);
+    unlock();
+    if (ended) {
+        ui_dialog_close();
+        on_screen.what = DIALOG_NONE;
+    }
+    if (on_screen.what != DIALOG_NONE) return;
+    lock();
+    session* front = atomic_load(&shown);
+    bool open = ui_panel() != NULL;
+    if (front != NULL && !asking(front)) front = NULL;
+    for (size_t i = 0; front == NULL && open && i < MAX_SESSIONS; i++)
+        if (asking(&sessions[i])) front = &sessions[i];
+    if (confirm.pending) {
+        on_screen.what = DIALOG_CONFIRM, q.kind = UI_CONFIRM;
+        if (confirm.create) {
+            snprintf(q.text, sizeof q.text, "'%.64s'\n위 호스트의 세션을 생성할까요?", confirm.alias);
+            snprintf(q.yes, sizeof q.yes, "생성");
+        } else {
+            snprintf(q.title, sizeof q.title, "세션 %d %.64s", confirm.number, sessions[confirm.number - 1].alias);
+            snprintf(q.text, sizeof q.text, "삭제할까요?\n서버의 tmux 세션도 함께 끝납니다");
+            snprintf(q.yes, sizeof q.yes, "삭제");
+        }
+    } else if (front != NULL) {
+        on_screen.what = DIALOG_QUESTION, on_screen.number = number(front), on_screen.asked = front->question.serial;
+        q = front->question;
+    }
+    for (size_t i = 0; on_screen.what == DIALOG_NONE && open && i < MAX_SESSIONS; i++) {
+        if (sessions[i].alert == NULL) continue;
+        on_screen.what = DIALOG_ALERT;
+        snprintf(q.title, sizeof q.title, "세션 %d %.64s", (int)i + 1, sessions[i].alias);
+        snprintf(q.text, sizeof q.text, "%s", sessions[i].alert);
+        sessions[i].alert = NULL;
+    }
+    if (on_screen.what == DIALOG_NONE && open && lone_alert != NULL) {
+        on_screen.what = DIALOG_ALERT;
+        snprintf(q.text, sizeof q.text, "%s", lone_alert);
+        lone_alert = NULL;
+    }
+    unlock();
+    if (on_screen.what == DIALOG_NONE) return;
+    on_screen.serial = ui_dialog(q.kind, q.title[0] != 0 ? q.title : NULL, q.text, q.yes);
+    if (ui_dialog_shown() != 0) return;
+    ESP_LOGE(TAG, "no dialog for %s", q.text);
+    answer(&(ui_event){.kind = UI_ACTION, .name = "dialog cancel", .index = on_screen.serial});
+}
+
+// From the screen, one at a time: a session on h, or session n deleted, once confirmed
+static void ask_confirm(const ssh_host* h, int n) {
+    lock();
+    const session* s = h == NULL ? numbered(n) : NULL;
+    if (!confirm.pending && (h != NULL || s != NULL)) {
+        confirm.pending = true, confirm.create = h != NULL, confirm.number = n;
+        snprintf(confirm.alias, sizeof confirm.alias, "%s", h != NULL ? h->alias : "");
+        snprintf(confirm.tmux, sizeof confirm.tmux, "%s", s != NULL ? s->tmux : "");
+    }
     unlock();
 }
 
@@ -774,6 +903,17 @@ static void load_config(void) {
     state.hosts = text != NULL ? config_ssh_hosts(text) : NULL;
     free(text);
     state.current_host = state.hosts;
+    static const char* const told[] = {
+        [CONFIG_LOADED] = "",
+        [CONFIG_MISSING] = "SD 카드에 .config/tab5-ssh/config.json 없음\n기본값으로 실행 · 설정을 바꾸면 만듦",
+        [CONFIG_NO_CARD] = "SD 카드 없음\n기본값으로 실행 · 바꾼 설정은 저장 안 됨",
+        [CONFIG_INVALID] = "config.json이 올바른 JSON이 아님\n기본값으로 실행 · 고칠 때까지 저장 안 됨",
+    };
+    static char boot[192];
+    bool hostless = state.hosts == NULL && state.config != CONFIG_NO_CARD;
+    snprintf(boot, sizeof boot, "%s%s%s", told[state.config], hostless && state.config != CONFIG_LOADED ? "\n" : "",
+             hostless ? "SD 카드의 .ssh/config에 Host 없음" : "");
+    lone_alert = boot[0] != 0 ? boot : NULL;
 }
 
 // Before a join, which turns Wi-Fi on, as wifi on save does
@@ -1149,30 +1289,29 @@ static void power_profile(bool lit) {
 
 // From the screen's task, whose stack in internal RAM lets it write NVS
 static void apply(const ui_event* e) {
-    // The session whose delete button was pressed once
-    static int armed;
-    int n, was_armed = armed;
+    char verb[12];
+    int n;
+    if (e->kind == UI_ACTION && strncmp(e->name, "dialog ", 7) == 0) {
+        answer(e);
+        return;
+    }
     if (wifi_screen(e) || (e->kind == UI_SET && e->setting == NULL)) return;
-    armed = 0;
     if (e->kind == UI_ACTION && strcmp(e->name, "session create") == 0) {
         const ssh_host* h = state.hosts;
         for (size_t i = 0; h != NULL && i < e->index; i++)
             h = h->next;
-        if (h != NULL) session_create(h, false);
+        if (h != NULL) ask_confirm(h, 0);
         return;
     }
-    // The list only chooses the session that the buttons for it act on
-    if (e->kind == UI_ACTION && strcmp(e->name, "session select") == 0) return;
-    for (size_t i = 0; e->kind == UI_ACTION && strncmp(e->name, "session ", 8) == 0 && i < sizeof session_verbs / sizeof session_verbs[0]; i++) {
-        if (strcmp(e->name + 8, session_verbs[i]) != 0) continue;
-        if (e->index >= state.session_count) return;
-        n = state.sessions[e->index].number;
-        if (session_actions[i] == session_delete && was_armed != n) {
-            armed = n;
-            result(n, "한 번 더 누르면 삭제");
-        } else if (session_actions[i](n, false) == 0 && session_actions[i] == session_open) {
-            screen_open(NULL);
-        }
+    // A session's row
+    if (e->kind == UI_ACTION && sscanf(e->name, "session %11s %d", verb, &n) == 2) {
+        lock();
+        const session* s = numbered(n);
+        bool connect = s != NULL && atomic_load(&s->status) == SESSION_DISCONNECTED;
+        unlock();
+        if (strcmp(verb, "open") == 0 && session_open(n, false) == 0) screen_open(NULL);
+        if (strcmp(verb, "toggle") == 0) (connect ? session_connect : session_disconnect)(n, false);
+        if (strcmp(verb, "delete") == 0) ask_confirm(NULL, n);
         return;
     }
     // A session's tab: the shown one's opens the sessions screen
@@ -1243,6 +1382,7 @@ void app_main(void) {
     if (network_start(&state) != ESP_OK) ESP_LOGE(TAG, "no network");
     esp_err_t screen = screen_start(&state);
     if (screen == ESP_OK) screen_resized(&state.terminal_size);
+    atomic_store(&screen_up, screen == ESP_OK);
     keep_image_later();
     if (remote_start(&state, command) != ESP_OK) ESP_LOGE(TAG, "no remote control");
     // Held for good: the sessions' own Init and Cleanup then never tear wolfCrypt down under one another
@@ -1284,6 +1424,7 @@ void app_main(void) {
                 memset(&state.wifi_edit, 0, sizeof state.wifi_edit);
             while (screen_event(&e))
                 apply(&e);
+            tend_dialogs();
             memset(&e, 0, sizeof e);
             // Opened, it takes the shown session off the screen; a session a command shows closes it
             bool list = (panel = ui_panel()) != NULL && strcmp(panel, "sessions") == 0;

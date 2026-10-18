@@ -2,7 +2,7 @@
 // The UI on this computer: an SDL3 window over Shiroko's software driver as the Tab5 draws it before rotating, the
 // mouse as touch, made-up values and a stand-in terminal. The layout is read again whenever its file changes.
 // --input runs touches and keys first ("tap:COLUMN,ROW", "key:tab|backtab|up|down|left|right|enter|escape|backspace",
-// "text:UTF-8"), --shot saves the screen as BMP after a second and quits.
+// "text:UTF-8", "dialog:alert|confirm|prompt"), --shot saves the screen as BMP after a second and quits.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -74,7 +74,6 @@ static const struct {
     bool open;
 } visible[] = {{"MU_GL_XE3000", -48, false}, {"KT_GiGA_5G_3F21", -61, false}, {"YGYguest", -70, true}, {"DIRECT-7B-HP M28w", -77, false}};
 static const char* const session_states[] = {"끊김", "연결 중", "연결됨", "다시 연결 중", "입력 기다림", "삭제 중"};
-static const char* const tmux_names[] = {"tab5-e2d97b-d1e3b3", "tab5-e2d97b-07a1c4", "tab5-e2d97b-5f2e90", "tab5-e2d97b-c33b18"};
 
 static shr_status acquire(void* user, shr_surface* out) {
     (void)user;
@@ -124,21 +123,30 @@ static const char* text(void* user, const char* name) {
     (void)user;
     time_t now = time(NULL);
     static char tab[64];
-    int number;
-    if (sscanf(name, "session.%d", &number) == 1) {
+    int number, end = 0;
+    if (sscanf(name, "session.%d%n", &number, &end) == 1 && (name[end] == 0 || name[end] == '.')) {
+        const session_info* s = NULL;
+        const char* field = name[end] == '.' ? name + end + 1 : NULL;
         for (size_t i = 0; i < state.session_count; i++)
-            if (state.sessions[i].number == number) {
-                snprintf(tab, sizeof tab, "%s %d %s%s", state.sessions[i].shown ? "●" : "○", number, state.sessions[i].alias,
-                         (const char* const[]){" ×", " …", "", " …", " ?", " ×"}[state.sessions[i].status]);
-                return tab;
-            }
-        return NULL;
+            if (state.sessions[i].number == number) s = &state.sessions[i];
+        if (s == NULL) return NULL;
+        if (field == NULL)
+            snprintf(tab, sizeof tab, "%s %d %s%s", s->shown ? "●" : "○", number, s->alias,
+                     s->alert ? " !" : (const char* const[]){" ×", " …", "", " …", " ?", " ×"}[s->status]);
+        else if (strcmp(field, "number") == 0)
+            snprintf(tab, sizeof tab, "%d", number);
+        else if (strcmp(field, "alias") == 0)
+            return s->alias;
+        else if (strcmp(field, "status") == 0)
+            return session_states[s->status];
+        else if (strcmp(field, "toggle") == 0)
+            return s->status == SESSION_DISCONNECTED ? "연결" : "끊기";
+        else
+            return strcmp(field, "idle") == 0 && s->status != SESSION_DELETING && !s->creating ? "1" : NULL;
+        return tab;
     }
-    if (strcmp(name, "sessions.any") == 0) return state.session_count > 0 ? "1" : NULL;
     if (strcmp(name, "sessions.none") == 0) return state.session_count == 0 ? "1" : NULL;
-    if (strcmp(name, "sessions.result") == 0) return state.session_result[0] ? state.session_result : NULL;
-    if (strcmp(name, "sessions.room") == 0) return state.session_count < MAX_SESSIONS ? "1" : NULL;
-    if (strcmp(name, "sessions.full") == 0) return state.session_count >= MAX_SESSIONS ? "1" : NULL;
+    if (strcmp(name, "hosts.room") == 0) return state.session_count < MAX_SESSIONS ? "1" : NULL;
     if (strcmp(name, "sessions") == 0) {
         snprintf(tab, sizeof tab, "%zu/%d", state.session_count, MAX_SESSIONS);
         return tab;
@@ -175,7 +183,6 @@ static const char* text(void* user, const char* name) {
 static size_t count(void* user, const char* name) {
     (void)user;
     if (strcmp(name, "visible") == 0) return sizeof visible / sizeof visible[0];
-    if (strcmp(name, "sessions") == 0) return state.session_count;
     return strcmp(name, "hosts") == 0 ? sizeof hosts / sizeof hosts[0] : strcmp(name, "wifi") == 0 ? sizeof networks / sizeof networks[0] : 0;
 }
 
@@ -192,19 +199,13 @@ static const char* item(void* user, const char* name, size_t index, const char* 
         if (strcmp(field, "saved") == 0) return index == 0 || index == 2 ? "저장됨" : NULL;
         return NULL;
     }
-    const session_info* s = strcmp(name, "sessions") == 0 ? &state.sessions[index] : NULL;
-    if (s != NULL && strcmp(field, "number") == 0) return snprintf(number, sizeof number, "%d", s->number), number;
-    if (s != NULL && strcmp(field, "status") == 0) return session_states[s->status];
-    if (s != NULL && strcmp(field, "alias") == 0) return s->alias;
-    if (s != NULL && strcmp(field, "tmux") == 0) return s->tmux;
-    if (s != NULL) return NULL;
     const ssh_host* h = &hosts[index];
     if (strcmp(field, "alias") == 0) return h->alias;
     if (strcmp(field, "hostname") == 0) return h->hostname;
     if (strcmp(field, "user") == 0) return h->user;
-    if (strcmp(field, "port") == 0) {
+    if (strcmp(field, "port") == 0 && h->port != 22) {
         static char port[8];
-        snprintf(port, sizeof port, "%u", h->port);
+        snprintf(port, sizeof port, ":%u", h->port);
         return port;
     }
     return NULL;
@@ -212,10 +213,7 @@ static const char* item(void* user, const char* name, size_t index, const char* 
 
 static size_t chosen(void* user, const char* name) {
     (void)user;
-    size_t i = 0;
-    for (size_t j = 0; strcmp(name, "sessions") == 0 && j < state.session_count; j++)
-        if (state.sessions[j].shown) i = j;
-    return strcmp(name, "hosts") == 0 ? (size_t)(state.current_host - hosts) : i;
+    return strcmp(name, "hosts") == 0 ? (size_t)(state.current_host - hosts) : 0;
 }
 
 static void get(void* user, const setting* s, setting_value* out) {
@@ -268,14 +266,32 @@ static void wifi_screen(const ui_event* e) {
     if (strcmp(e->name, "wifi up") == 0) w->result = "한 칸 위로";
 }
 
-// As main.c's sessions, without connections: done at once
+static session_info* numbered(int number) {
+    for (size_t i = 0; i < state.session_count; i++)
+        if (state.sessions[i].number == number) return &state.sessions[i];
+    return NULL;
+}
+
+// As main.c's sessions, without connections: done at once, a host and a delete confirmed first
 static void sessions(const ui_event* e) {
-    static int armed;
-    int was_armed = armed, number = 0;
-    session_info* s = e->index < state.session_count ? &state.sessions[e->index] : NULL;
-    armed = 0;
-    state.session_result[0] = 0;
-    if (strcmp(e->name, "session create") == 0 && state.session_count < MAX_SESSIONS) {
+    static char asked[32];
+    char verb[16];
+    int number = 0;
+    if (strncmp(e->name, "dialog ", 7) == 0) {
+        ui_dialog_close();
+        if (strcmp(e->name, "dialog ok") == 0 && asked[0] != 0) sessions(&(ui_event){.kind = UI_ACTION, .name = asked, .index = e->index});
+        asked[0] = 0;
+        return;
+    }
+    if (strcmp(e->name, "session create") == 0) {
+        char question[96];
+        snprintf(asked, sizeof asked, "create %zu", e->index);
+        snprintf(question, sizeof question, "'%s'\n위 호스트의 세션을 생성할까요?", hosts[e->index].alias);
+        ui_dialog(UI_CONFIRM, NULL, question, "생성");
+        return;
+    }
+    size_t host;
+    if (sscanf(e->name, "create %zu", &host) == 1 && state.session_count < MAX_SESSIONS) {
         bool taken[MAX_SESSIONS + 1] = {0};
         for (size_t i = 0; i < state.session_count; i++)
             taken[state.sessions[i].number] = true;
@@ -284,36 +300,37 @@ static void sessions(const ui_event* e) {
         size_t i = state.session_count++;
         while (i > 0 && state.sessions[i - 1].number > number)
             state.sessions[i] = state.sessions[i - 1], i--;
-        state.sessions[i] = (session_info){number, &hosts[e->index], hosts[e->index].alias, tmux_names[number - 1], SESSION_DISCONNECTED, false};
-        snprintf(state.session_result, sizeof state.session_result, "세션 %d: 만듦 · 연결 안 됨", number);
+        state.sessions[i] = (session_info){.number = number, .alias = hosts[host].alias, .status = SESSION_DISCONNECTED};
+        return;
+    }
+    if (sscanf(e->name, "removed %d", &number) == 1 && numbered(number) != NULL) {
+        session_info* s = numbered(number);
+        memmove(s, s + 1, (size_t)(state.sessions + --state.session_count - s) * sizeof *s);
+        return;
     }
     bool tab = sscanf(e->name, "session %d", &number) == 1;
-    for (size_t i = 0; tab && i < state.session_count; i++)
-        if (state.sessions[i].number == number) s = &state.sessions[i];
-    if (s == NULL || (!tab && strcmp(e->name, "session open") != 0 && strcmp(e->name, "session connect") != 0 &&
-                      strcmp(e->name, "session disconnect") != 0 && strcmp(e->name, "session delete") != 0))
-        return;
+    if (!tab && sscanf(e->name, "session %15s %d", verb, &number) != 2) return;
+    session_info* s = numbered(number);
+    if (s == NULL) return;
     if (tab && s->shown) {
         ui_open("sessions");
         return;
     }
-    if (strcmp(e->name, "session delete") == 0 && was_armed != s->number) {
-        armed = s->number;
-        snprintf(state.session_result, sizeof state.session_result, "세션 %d: 한 번 더 누르면 삭제", s->number);
+    if (!tab && strcmp(verb, "delete") == 0) {
+        char title[64];
+        snprintf(asked, sizeof asked, "removed %d", number);
+        snprintf(title, sizeof title, "세션 %d %s", number, s->alias);
+        ui_dialog(UI_CONFIRM, title, "삭제할까요?\n서버의 tmux 세션도 함께 끝납니다", "삭제");
         return;
     }
-    if (strcmp(e->name, "session delete") == 0) {
-        snprintf(state.session_result, sizeof state.session_result, "세션 %d: 삭제함", s->number);
-        memmove(s, s + 1, (size_t)(state.sessions + --state.session_count - s) * sizeof *s);
-        return;
-    }
-    bool open = tab || strcmp(e->name, "session open") == 0;
-    if (open || strcmp(e->name, "session disconnect") == 0)
+    bool open = tab || strcmp(verb, "open") == 0, disconnect = !open && strcmp(verb, "toggle") == 0 && s->status != SESSION_DISCONNECTED;
+    if (open || disconnect)
         for (size_t i = 0; i < state.session_count; i++)
             state.sessions[i].shown = open && &state.sessions[i] == s;
-    if (open || strcmp(e->name, "session connect") == 0) s->status = SESSION_CONNECTED;
-    if (strcmp(e->name, "session disconnect") == 0) s->status = SESSION_DISCONNECTED;
-    if (open) state.current_host = s->host, ui_open(NULL);
+    s->status = disconnect ? SESSION_DISCONNECTED : SESSION_CONNECTED;
+    for (size_t i = 0; open && i < sizeof hosts / sizeof hosts[0]; i++)
+        if (strcmp(hosts[i].alias, s->alias) == 0) state.current_host = &hosts[i];
+    if (open) ui_open(NULL);
 }
 
 // What main.c is to do with an event
@@ -408,6 +425,12 @@ static void run_input(const char* script) {
             e = ui_touch(UI_TOUCH_UP, column, row);
         } else if (strncmp(step, "text:", 5) == 0) {
             e = ui_key(UI_KEY_TEXT, step + 5);
+        } else if (strcmp(step, "dialog:alert") == 0) {
+            ui_dialog(UI_ALERT, "세션 2 nas", "서버가 거부함 · 끊음", "확인");
+        } else if (strcmp(step, "dialog:confirm") == 0) {
+            ui_dialog(UI_CONFIRM, "처음 보는 호스트 nas.lan", "SHA256:Uq5Ow1Ql0hKdM2dQ3s9sQe3ZQfZQ0d0qk6m1n2o3p4q\n이 키를 믿고 연결할까요?", "연결");
+        } else if (strcmp(step, "dialog:prompt") == 0) {
+            ui_dialog(UI_PROMPT, "admin@nas.lan", "비밀번호", "확인");
         } else {
             size_t i = 0;
             while (i < sizeof keys / sizeof keys[0] && (strncmp(step, "key:", 4) != 0 || strcmp(step + 4, keys[i].name) != 0))
@@ -443,8 +466,8 @@ int main(int argc, char** argv) {
         hosts[i].next = &hosts[i + 1];
     state.hosts = hosts, state.current_host = hosts;
     // A disconnected session and a second one that waits for a password
-    state.sessions[0] = (session_info){1, &hosts[0], hosts[0].alias, tmux_names[0], SESSION_DISCONNECTED, false};
-    state.sessions[1] = (session_info){2, &hosts[1], hosts[1].alias, tmux_names[1], SESSION_ASKING, false};
+    state.sessions[0] = (session_info){.number = 1, .alias = hosts[0].alias, .status = SESSION_DISCONNECTED};
+    state.sessions[1] = (session_info){.number = 2, .alias = hosts[1].alias, .status = SESSION_ASKING};
     state.session_count = 2;
     SDL_Window* window;
     if (!SDL_Init(SDL_INIT_VIDEO) || !SDL_CreateWindowAndRenderer("tab5-ssh sim", WIDTH, HEIGHT, SDL_WINDOW_RESIZABLE, &window, &renderer) ||

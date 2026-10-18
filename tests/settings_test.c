@@ -180,7 +180,7 @@ int main(void) {
     int unknown = 0, editors = 0;
     char error[160];
     for (const cJSON* s = json != NULL ? cJSON_GetObjectItemCaseSensitive(json, "screens")->child : NULL; s != NULL; s = s->next) {
-        layout* l = layout_parse(json, s->string, error, sizeof error);
+        layout* l = layout_parse(json, s, error, sizeof error);
         for (size_t i = 0; l != NULL && i < l->count; i++) {
             const layout_node* node = &l->nodes[i];
             const char* name = node->kind > LAYOUT_LIST ? node->name : node->when;

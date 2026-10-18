@@ -56,8 +56,8 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
   `network.lte.enabled`. The settings screen saves each change there, under the same keys, making the file when there is
   none (never over one that is not JSON).
 - SSH: the SD card's `.ssh/` as `~/.ssh/`: the non-pattern `Host`s in `config`, `known_hosts`, keys
-  (`id_ed25519`, `id_ecdsa`, `id_rsa`). No key: password prompt. Unknown host: yes/no prompt; both are answered on the
-  session's terminal once it is shown.
+  (`id_ed25519`, `id_ecdsa`, `id_rsa`). No key: password prompt. Unknown host: yes/no prompt; both are dialogs on the Tab5,
+  the shown session's at once, others' while a screen is open. Cancelled, a session being created is not.
 - Sessions: up to 4, each a tmux session on a host (`tab5-MMMMMM-RRRRRR`: the MAC's last three bytes, then random), kept
   in `.local/state/tab5-ssh/sessions.json` on the SD card; tmux on the host is required. After a restart all are
   disconnected; nothing connects by itself. create makes the tmux session and the record, then disconnects; open connects
@@ -69,11 +69,12 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
   truecolor, strikethrough, overline, underline styles and colours, and kitty images as Unicode placeholders (`-T`); from
   tmux 3.3 the session's windows allow passthrough, for kitty images; its `mouse` is on, for touch.
 - The sessions screen (세션 on the bottom bar) shows no session: opening it takes the shown one off the screen, and it
-  stays open until a session is shown. It lists them with 보기, 연결, 끊기 and 삭제 (pressed twice) for the chosen one, and
-  creates one on a host from its list. Each also has a tab on the top bar, which shows it, or opens the sessions screen
-  when it is shown (`●` shown, `×` disconnected, `…` connecting, `?` waiting for an answer). Control command
-  `session list|create HOST|open N|connect N|disconnect N|delete N` waits up to 90 s for what it starts; one that needs
-  a password or host key says to answer it on the screen (`session open N`).
+  stays open until a session is shown. Each session's row has 보기, 연결 or 끊기, and 삭제
+  (confirmed); a host from its list makes one (confirmed). Each also has a tab on the top bar, which shows it, or opens the sessions screen
+  when it is shown (`●` shown, `×` disconnected, `…` connecting, `?` waiting for an answer, `!` a failure to tell, shown in a
+  dialog once a screen is open). Control command
+  `session list|create HOST|open N|connect N|disconnect N|delete N` waits up to 90 s for what it starts, or until it asks
+  on the screen.
 - Network: Wi-Fi while it reaches the internet (the C6 checks), else LTE through a Stamp CAT-M (Tab5 TX G6, RX G46), kept
   connected in the background. Each path is checked and resolves names through itself; a host only the other path's DNS
   knows goes over that one. Sessions ride out a short Wi-Fi drop and move once when the path changes. LTE that stops
@@ -128,7 +129,7 @@ make sim                               # the UI in an SDL3 window (vcpkg), the m
 
 `make sim` draws `main/ui.json` as the Tab5 does, with made-up values and a stand-in terminal, and reads it again when
 it is saved. `build/sim/tab5_sim [--input STEPS] [--shot FILE.bmp] main/ui.json build/shiroko-host/fonts` runs touches
-and keys first (`tap:COLUMN,ROW key:tab text:abc`, see `sim/sim.c`) and saves the screen and quits.
+and keys first (`tap:COLUMN,ROW key:tab text:abc dialog:prompt`, see `sim/sim.c`) and saves the screen and quits.
 
 `main/ui.json` lays the screens out in cells: `rows` stack their children by `height`, `columns` set them side by side
 by `width`, each a number of cells, `"N%"` or `"Nfr"` (a share of the rest; the default), `"when": SETTING` hides one

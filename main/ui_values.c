@@ -64,19 +64,30 @@ static const char* const session_states[] = {
     [SESSION_RECONNECTING] = "다시 연결 중", [SESSION_ASKING] = "입력 기다림", [SESSION_DELETING] = "삭제 중",
 };
 
-// A session's tab: ● for the shown one, and a mark for one that is not connected
-static const char* tab(int number) {
+// {session.N}: its tab, ● for the shown one and a mark for one that is not connected or has a failure to tell;
+// {session.N.FIELD}: its row on the sessions screen
+static const char* session_value(int number, const char* field) {
     static const char* const marks[] = {
         [SESSION_DISCONNECTED] = " ×", [SESSION_CONNECTING] = " …", [SESSION_CONNECTED] = "",
         [SESSION_RECONNECTING] = " …", [SESSION_ASKING] = " ?",     [SESSION_DELETING] = " ×",
     };
-    for (size_t i = 0; i < state->session_count; i++) {
-        const session_info* s = &state->sessions[i];
-        if (s->number != number) continue;
-        snprintf(text, sizeof text, "%s %d %.48s%s", s->shown ? "●" : "○", number, s->alias, marks[s->status]);
-        return text;
-    }
-    return NULL;
+    const session_info* s = NULL;
+    for (size_t i = 0; i < state->session_count; i++)
+        if (state->sessions[i].number == number) s = &state->sessions[i];
+    if (s == NULL) return NULL;
+    if (field == NULL)
+        snprintf(text, sizeof text, "%s %d %.48s%s", s->shown ? "●" : "○", number, s->alias, s->alert ? " !" : marks[s->status]);
+    else if (strcmp(field, "number") == 0)
+        snprintf(text, sizeof text, "%d", number);
+    else if (strcmp(field, "alias") == 0)
+        return s->alias;
+    else if (strcmp(field, "status") == 0)
+        return session_states[s->status];
+    else if (strcmp(field, "toggle") == 0)
+        return s->status == SESSION_DISCONNECTED ? "연결" : "끊기";
+    else
+        return strcmp(field, "idle") == 0 && s->status != SESSION_DELETING && !s->creating ? "1" : NULL;
+    return text;
 }
 
 static const char* network(void) {
@@ -134,14 +145,11 @@ static const char* wifi_value(const char* name) {
 static const char* value(void* user, const char* name) {
     (void)user;
     refresh();
-    int number;
-    if (sscanf(name, "session.%d", &number) == 1) return tab(number);
-    if (strcmp(name, "sessions.any") == 0) return state->session_count > 0 ? "1" : NULL;
+    int number, end = 0;
+    if (sscanf(name, "session.%d%n", &number, &end) == 1 && (name[end] == 0 || name[end] == '.'))
+        return session_value(number, name[end] == '.' ? name + end + 1 : NULL);
     if (strcmp(name, "sessions.none") == 0) return state->session_count == 0 ? "1" : NULL;
-    if (strcmp(name, "sessions.result") == 0) return state->session_result[0] ? state->session_result : NULL;
-    if (strcmp(name, "hosts.none") == 0) return state->hosts == NULL ? "1" : NULL;
-    if (strcmp(name, "sessions.room") == 0) return state->session_count < MAX_SESSIONS ? "1" : NULL;
-    if (strcmp(name, "sessions.full") == 0) return state->session_count >= MAX_SESSIONS ? "1" : NULL;
+    if (strcmp(name, "hosts.room") == 0) return state->hosts != NULL && state->session_count < MAX_SESSIONS ? "1" : NULL;
     if (strcmp(name, "sessions") == 0) {
         snprintf(text, sizeof text, "%zu/%d", state->session_count, MAX_SESSIONS);
         return text;
@@ -228,7 +236,6 @@ static size_t count(void* user, const char* name) {
     if (strcmp(name, "wifi") == 0)
         while (network_at(n) != NULL)
             n++;
-    if (strcmp(name, "sessions") == 0) n = state->session_count;
     return n;
 }
 
@@ -254,21 +261,13 @@ static const char* item(void* user, const char* name, size_t index, const char* 
         }
         return strcmp(field, "ssid") == 0 || strcmp(field, "signal") == 0 ? text : NULL;
     }
-    const session_info* s = strcmp(name, "sessions") == 0 && index < state->session_count ? &state->sessions[index] : NULL;
-    if (s != NULL && strcmp(field, "number") == 0) {
-        snprintf(text, sizeof text, "%d", s->number);
-        return text;
-    }
-    if (s != NULL && strcmp(field, "status") == 0) return session_states[s->status];
-    if (s != NULL && strcmp(field, "alias") == 0) return s->alias;
-    if (s != NULL && strcmp(field, "tmux") == 0) return s->tmux;
     const ssh_host* h = strcmp(name, "hosts") == 0 ? host(index) : NULL;
     if (h == NULL) return NULL;
     if (strcmp(field, "alias") == 0) return h->alias;
     if (strcmp(field, "hostname") == 0) return h->hostname;
     if (strcmp(field, "user") == 0) return h->user;
-    if (strcmp(field, "port") == 0) {
-        snprintf(text, sizeof text, "%u", h->port);
+    if (strcmp(field, "port") == 0 && h->port != 22) {
+        snprintf(text, sizeof text, ":%u", h->port);
         return text;
     }
     return NULL;
@@ -280,8 +279,6 @@ static size_t chosen(void* user, const char* name) {
     if (strcmp(name, "hosts") == 0)
         for (const ssh_host* h = state->hosts; h != NULL && state->current_host != NULL && h != state->current_host; h = h->next)
             i++;
-    for (size_t j = 0; strcmp(name, "sessions") == 0 && j < state->session_count; j++)
-        if (state->sessions[j].shown) i = j;
     return i;
 }
 

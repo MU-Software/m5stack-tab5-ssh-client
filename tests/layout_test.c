@@ -24,7 +24,7 @@ static bool shown(void* user, const char* name) {
 static layout* parse(const char* text, const char* name) {
     cJSON_Delete(json);
     json = cJSON_Parse(text);
-    return layout_parse(json, name, error, sizeof error);
+    return layout_parse(json, cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(json, "screens"), name), error, sizeof error);
 }
 
 // The screen "s" of {"screens": {"s": NODE}}, laid out in columns x rows
@@ -95,11 +95,6 @@ int main(void) {
     check(w != NULL && w[2].kind == LAYOUT_FIELD && strcmp(w[2].name, "timezone") == 0 && w[2].align == LAYOUT_LEFT && !w[2].secret, "a field");
     check(w != NULL && w[3].kind == LAYOUT_FIELD && w[3].secret, "a secret field");
     free(l);
-    l = screen("{\"rows\": [{\"button\": \"session end\", \"for\": \"sessions\", \"text\": \"끊기\"}, {\"button\": \"close\", \"text\": \"닫기\"}]}",
-               10, 2);
-    check(l != NULL && strcmp(l->nodes[1].action, "session end") == 0 && strcmp(l->nodes[1].name, "sessions") == 0 && l->nodes[2].name == NULL,
-          "a button for a list");
-    free(l);
 
     check(refused("{\"columns\": [{\"width\": \"3x\", \"text\": \"a\"}]}", "size 3x"), "a size without a unit refused");
     check(refused("{\"columns\": [{\"width\": \"120%\", \"text\": \"a\"}]}", "size"), "more than 100% refused");
@@ -117,7 +112,7 @@ int main(void) {
     for (int i = 0; i < 20; i++)
         at += snprintf(deep + at, sizeof deep - (size_t)at, "]}");
     check(refused(deep, "deeper"), "nesting past the limit refused");
-    check(parse("{\"screens\": {}}", "s") == NULL && strstr(error, "no screen s") != NULL, "a missing screen refused");
+    check(parse("{\"screens\": {}}", "s") == NULL && strstr(error, "not an object") != NULL, "a missing screen refused");
 
     FILE* f = fopen("main/ui.json", "rb");
     static char text[32768];
@@ -132,7 +127,7 @@ int main(void) {
     free(l);
     int screens = 0, parsed = 0;
     for (const cJSON* s = cJSON_GetObjectItemCaseSensitive(json, "screens")->child; s != NULL; s = s->next) {
-        layout* p = layout_parse(json, s->string, error, sizeof error);
+        layout* p = layout_parse(json, s, error, sizeof error);
         if (p == NULL) printf("     main/ui.json %s: %s\n", s->string, error);
         screens++, parsed += p != NULL;
         free(p);

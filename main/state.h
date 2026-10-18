@@ -43,6 +43,8 @@ typedef struct {
     word32 key_size;
     int error;
     byte host_key_sha256[WC_SHA256_DIGEST_SIZE];
+    // Its key is not the one known_hosts has
+    bool host_changed;
 } ssh_session;
 
 // Logs on the SD card, rotated daily and at file_kb, oldest deleted past keep_mb or keep_days
@@ -92,11 +94,10 @@ typedef struct {
 // A session as the screens show it
 typedef struct {
     int number;
-    // NULL once its alias left .ssh/config
-    const ssh_host* host;
-    const char *alias, *tmux;
+    const char* alias;
     session_status status;
-    bool shown;
+    // creating: its tmux session is being made; alert: a failure waits to be told
+    bool shown, creating, alert;
 } session_info;
 
 typedef struct {
@@ -109,8 +110,6 @@ typedef struct {
     // The sessions in the order of their numbers
     session_info sessions[MAX_SESSIONS];
     size_t session_count;
-    // What came of the last session command
-    char session_result[96];
     // network.wifi.enabled and network.lte.enabled: on from boot
     bool wifi_enabled, lte_enabled;
     // Where the settings came from

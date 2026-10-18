@@ -115,7 +115,6 @@ static bool node(parser* p, layout_node* n, const cJSON* item, const layout_styl
             n->action = list->valuestring;
         else if (list != NULL)
             n->name = list->valuestring;
-        if (n->kind == LAYOUT_BUTTON && !string(p, item, "for", &n->name)) return false;
         return true;
     }
     list = field(item, keys[found].key);
@@ -130,16 +129,15 @@ static bool node(parser* p, layout_node* n, const cJSON* item, const layout_styl
     return true;
 }
 
-layout* layout_parse(const cJSON* json, const char* name, char* error, size_t size) {
+layout* layout_parse(const cJSON* json, const cJSON* screen, char* error, size_t size) {
     parser p = {calloc(1, sizeof(layout) + LAYOUT_MAX_NODES * sizeof(layout_node)), field(json, "styles"), error, size};
-    const cJSON* screen = field(field(json, "screens"), name);
     layout_style none = {-1, -1, false};
     if (p.screen == NULL) {
         fail(&p, "no memory");
         return NULL;
     }
     p.screen->count = 1;
-    if (!(screen != NULL ? node(&p, &p.screen->nodes[0], screen, &none, NULL, 0) : fail(&p, "no screen %s", name))) {
+    if (!node(&p, &p.screen->nodes[0], screen, &none, NULL, 0)) {
         free(p.screen);
         return NULL;
     }

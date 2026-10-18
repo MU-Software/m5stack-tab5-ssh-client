@@ -34,35 +34,63 @@
     "sessions": {
       "style": "panel",
       "rows": [
+        {"height": 1, "style": "title", "text": " 세션 {sessions}"},
+        {"height": 1, "text": ""},
         {
           "height": 1,
+          "when": "session.1",
           "columns": [
-            {"style": "title", "text": " 세션"},
-            {"width": 8, "when": "sessions.any", "style": "button", "button": "session open", "for": "sessions", "text": "보기"},
-            {"width": 1, "when": "sessions.any", "text": ""},
-            {"width": 8, "when": "sessions.any", "style": "button", "button": "session connect", "for": "sessions", "text": "연결"},
-            {"width": 1, "when": "sessions.any", "text": ""},
-            {"width": 8, "when": "sessions.any", "style": "button", "button": "session disconnect", "for": "sessions", "text": "끊기"},
-            {"width": 1, "when": "sessions.any", "text": ""},
-            {"width": 8, "when": "sessions.any", "style": "button", "button": "session delete", "for": "sessions", "text": "삭제"}
+            {"text": "  {session.1.number:3}{session.1.alias:16}{session.1.status}"},
+            {"width": 8, "when": "session.1.idle", "style": "button", "button": "session open 1", "text": "보기"},
+            {"width": 1, "text": ""},
+            {"width": 8, "when": "session.1.idle", "style": "button", "button": "session toggle 1", "text": "{session.1.toggle}"},
+            {"width": 1, "text": ""},
+            {"width": 8, "when": "session.1.idle", "style": "button", "button": "session delete 1", "text": "삭제"},
+            {"width": 2, "text": ""}
           ]
         },
-        {"height": 1, "style": "hint", "text": " Tab·↑↓ 이동 · Enter 고르기·누르기"},
-        {"height": 1, "style": "alert", "text": " {sessions.result}"},
-        {"height": 1, "when": "config", "style": "alert", "text": " {config}"},
         {
-          "height": 6,
-          "when": "sessions.any",
-          "rows": [
-            {"height": 1, "style": "section", "text": " 세션 {sessions} · 고른 세션에 위 버튼 · 삭제는 그 tmux 세션까지 끝냄"},
-            {"height": 4, "list": "sessions", "item": "  {number:3}{alias:16}{tmux:22}{status:14}", "action": "session select"},
-            {"height": 1, "text": ""}
+          "height": 1,
+          "when": "session.2",
+          "columns": [
+            {"text": "  {session.2.number:3}{session.2.alias:16}{session.2.status}"},
+            {"width": 8, "when": "session.2.idle", "style": "button", "button": "session open 2", "text": "보기"},
+            {"width": 1, "text": ""},
+            {"width": 8, "when": "session.2.idle", "style": "button", "button": "session toggle 2", "text": "{session.2.toggle}"},
+            {"width": 1, "text": ""},
+            {"width": 8, "when": "session.2.idle", "style": "button", "button": "session delete 2", "text": "삭제"},
+            {"width": 2, "text": ""}
           ]
         },
-        {"height": 1, "when": "sessions.full", "style": "hint", "text": " 세션 4개 · 하나를 삭제하면 새로 만들 수 있음"},
-        {"height": 1, "when": "sessions.room", "style": "section", "text": " 새 세션 · 고른 호스트에 tmux 세션을 만듦, 연결은 하지 않음"},
-        {"height": 1, "when": "hosts.none", "style": "hint", "text": " SD 카드의 .ssh/config에 Host 없음"},
-        {"when": "sessions.room", "rows": [{"list": "hosts", "item": "  {alias:16}{user}@{hostname}:{port}", "action": "session create"}]}
+        {
+          "height": 1,
+          "when": "session.3",
+          "columns": [
+            {"text": "  {session.3.number:3}{session.3.alias:16}{session.3.status}"},
+            {"width": 8, "when": "session.3.idle", "style": "button", "button": "session open 3", "text": "보기"},
+            {"width": 1, "text": ""},
+            {"width": 8, "when": "session.3.idle", "style": "button", "button": "session toggle 3", "text": "{session.3.toggle}"},
+            {"width": 1, "text": ""},
+            {"width": 8, "when": "session.3.idle", "style": "button", "button": "session delete 3", "text": "삭제"},
+            {"width": 2, "text": ""}
+          ]
+        },
+        {
+          "height": 1,
+          "when": "session.4",
+          "columns": [
+            {"text": "  {session.4.number:3}{session.4.alias:16}{session.4.status}"},
+            {"width": 8, "when": "session.4.idle", "style": "button", "button": "session open 4", "text": "보기"},
+            {"width": 1, "text": ""},
+            {"width": 8, "when": "session.4.idle", "style": "button", "button": "session toggle 4", "text": "{session.4.toggle}"},
+            {"width": 1, "text": ""},
+            {"width": 8, "when": "session.4.idle", "style": "button", "button": "session delete 4", "text": "삭제"},
+            {"width": 2, "text": ""}
+          ]
+        },
+        {"height": 1, "text": ""},
+        {"height": 1, "when": "hosts.room", "style": "section", "text": " Host 목록"},
+        {"when": "hosts.room", "rows": [{"list": "hosts", "item": "  {alias:16}{user}@{hostname}{port}", "action": "session create"}]}
       ]
     },
     "network": {
@@ -295,6 +323,7 @@
     "label": {"foreground": "#a8a8a8"},
     "hint": {"foreground": "#707478"},
     "button": {"background": "#3a3d44", "foreground": "#ffffff"},
+    "dialog": {"background": "#22252b", "foreground": "#e0e0e0"},
     "field": {"background": "#24272e"}
   }
 }

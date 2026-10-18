@@ -67,7 +67,7 @@ static int check_host_key(const byte* key, word32 size, void* ctx) {
     char name[264], fingerprint[64], line[2048];
     snprintf(name, sizeof name, h->port == 22 ? "%s" : "[%s]:%u", h->hostname, h->port);
     host_state found = s->known_hosts != NULL ? known_hosts_check(s->known_hosts, name, key, size) : HOST_UNKNOWN;
-    if (found == HOST_CHANGED) return -1;
+    if ((s->host_changed = found == HOST_CHANGED)) return -1;
     if (found == HOST_UNKNOWN && (ssh_fingerprint(fingerprint, sizeof fingerprint, key, size) != 0 ||
                                   known_hosts_line(line, sizeof line, name, key, size) != 0 || !accept_new_host(s, name, fingerprint, line)))
         return -1;
