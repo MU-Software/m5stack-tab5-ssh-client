@@ -9,7 +9,7 @@ bool tmux_command(char* out, size_t size, const char* name, const char* prefix, 
     // images reach the screen, for this session's windows only; mouse (tmux 2.1) lets touches click and scroll in it.
     // '=': an exact name, not a prefix (set-hook takes none; set takes a pane, hence '=name:'). The wheel bindings are the
     // server's, tmux 3.2's but for @tab5_arrows: sessions with it send arrow keys to programs on the alternate screen that
-    // take no mouse, as Ghostty does.
+    // take no mouse, as Ghostty does. Not exec'd: a session ended (exit, killed, renamed) is told from a detach.
     int n = snprintf(out, size,
                      "sh -c 'f=-TRGB,strikethrough,overline,usstyle,kittygraphics; tmux $f -V >/dev/null 2>&1 || f=; s=%s; t=$(date +%%s); "
                      "tmux ls -F \"#{session_name} #{session_attached} #{session_created}\" 2>/dev/null | while read n a c; do "
@@ -23,8 +23,8 @@ bool tmux_command(char* out, size_t size, const char* name, const char* prefix, 
                      "\"if -F \\\"#{||:#{pane_in_mode},#{mouse_any_flag}}\\\" \\\"send -M\\\" \\\"copy-mode -e\\\"\" && "
                      "tmux bind -n WheelDownPane if -F \"$w\" \"send -N 3 Down\" \"send -M\"; "
                      "for w in $(tmux list-windows -t =$s -F \"#{window_id}\" 2>/dev/null); do tmux set -w -t $w allow-passthrough all; done; "
-                     "exec tmux $f attach-session -t =$s'",
-                     name, prefix, keep, age_s, TMUX_GONE, arrows);
+                     "tmux $f attach-session -t =$s; tmux has-session -t =$s 2>/dev/null || exit %d'",
+                     name, prefix, keep, age_s, TMUX_GONE, arrows, TMUX_GONE);
     return n > 0 && (size_t)n < size;
 }
 

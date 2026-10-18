@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-// The exit status of tmux_command when tmux session `name` is gone from the host
+// The exit status of tmux_command when tmux session `name` is gone from the host, before the attach or after it
 #define TMUX_GONE 3
 
 // The command of an SSH session attached to tmux session `name`, which it never starts. Before that, the host's sessions
