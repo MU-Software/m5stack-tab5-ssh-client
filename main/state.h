@@ -6,6 +6,9 @@
 #include <wolfssh/ssh.h>
 #include <wolfssl/wolfcrypt/sha256.h>
 
+#include "modem.h"
+#include "network_rules.h"
+
 typedef struct ssh_host {
     char alias[254], hostname[254], user[33], identity_file[128];
     uint16_t port;
@@ -92,6 +95,24 @@ typedef struct {
 } session_info;
 
 typedef struct {
+    // "none", "Wi-Fi" or "LTE"
+    const char* path;
+    bool wifi_on, wifi_joined, lte_on;
+    network_health wifi_internet;
+    lte_state lte;
+    char ssid[33], wifi_address[16], lte_address[16];
+    int8_t rssi;
+} network_info;
+
+// The battery pack charging, running the Tab5, idle on a charger, or missing with a charger in
+typedef enum { PACK_CHARGING, PACK_DISCHARGING, PACK_IDLE, PACK_MISSING } pack_flow;
+typedef struct {
+    bool known;
+    pack_flow flow;
+    int millivolts;
+} pack_reading;
+
+typedef struct {
     wifi_network* wifi;
     ssh_host* hosts;
     const char* terminal_type;
@@ -122,4 +143,8 @@ typedef struct {
         // Only this SSH user name; empty for any, the key alone deciding
         char user[33];
     } remote;
+    // What the screens show, refreshed while the screen is on
+    network_info network;
+    const modem_snapshot* modem;
+    pack_reading pack;
 } global_state;

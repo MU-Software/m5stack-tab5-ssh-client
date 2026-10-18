@@ -4,6 +4,7 @@
 #include <bsp/m5stack_tab5.h>
 #include <esp_check.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 
 // The PI4IOE5V6408 at 0x44: the BSP's driver resets it whenever it is created, which also cuts the C6's power
 #define EXPANDER   0x44
@@ -75,9 +76,21 @@ void power_report(void) {
     ESP_LOGI(TAG, "pack %d mV, %d mA, %s, LED %d", bus * 5 / 4, shunt / 2, charging_at(shunt) ? "charging" : "not charging", (stat & CHG_LED) != 0);
 }
 
-bool power_battery(int* millivolts, bool* charging) {
+void power_pack(pack_reading* out) {
+    static int64_t missing_at;
     int16_t shunt, bus;
-    if (monitor == NULL || read16(0x01, &shunt) != ESP_OK || read16(0x02, &bus) != ESP_OK) return false;
-    *millivolts = bus * 5 / 4, *charging = charging_at(shunt);
-    return true;
+    uint8_t reg = INPUT, stat = 0;
+    out->known = monitor != NULL && read16(0x01, &shunt) == ESP_OK && read16(0x02, &bus) == ESP_OK;
+    if (!out->known) return;
+    if (expander != NULL) i2c_master_transmit_receive(expander, &reg, 1, &stat, 1, 50);
+    int64_t now = esp_timer_get_time();
+    out->millivolts = bus * 5 / 4;
+    out->flow = charging_at(shunt) ? PACK_CHARGING : shunt / 2 >= 30 ? PACK_DISCHARGING : PACK_IDLE;
+    // No pack: the charger's output alone, which falls to ~4.4 V for ~5 s every ~16 s while CHG_LED blinks; a full pack keeps CHG_LED
+    // off (measured 10-19). Held 25 s, as it is read every 5 s.
+    if (out->flow != PACK_IDLE)
+        missing_at = 0;
+    else if (out->millivolts < 6000 || (stat & CHG_LED) != 0)
+        missing_at = now;
+    if (out->flow == PACK_IDLE && missing_at != 0 && now - missing_at < 25 * 1000000) out->flow = PACK_MISSING;
 }

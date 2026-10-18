@@ -5,24 +5,17 @@
 #include <string.h>
 #include <time.h>
 
-#include <esp_attr.h>
 #include <esp_timer.h>
 
 #include "c6_protocol.h"
 #include "clock.h"
-#include "lte.h"
-#include "network.h"
-#include "wifi.h"
-#include "power.h"
 #include "screen.h"
+#include "wifi.h"
 
 #define SECOND 1000000LL
 
 static const global_state* state;
-static network_info net;
-static int millivolts = -1;
-static bool charging;
-EXT_RAM_BSS_ATTR static modem_snapshot modem;
+static const network_info* net;
 // One value at a time: the UI copies each before asking for the next
 static char text[96];
 
@@ -34,21 +27,6 @@ static const char* const lte_states[] = {
     [LTE_WAITING] = "대기, 다시 시도 예정",
     [LTE_UP] = "연결됨",
 };
-
-// The network every 2 s (it asks the C6), the battery every 5 s
-static void refresh(void) {
-    static int64_t described = -2 * SECOND, measured = -5 * SECOND;
-    int64_t now = esp_timer_get_time();
-    if (now - described >= 2 * SECOND) {
-        network_describe(&net);
-        lte_snapshot(&modem);
-        described = now;
-    }
-    if (now - measured >= 5 * SECOND) {
-        if (!power_battery(&millivolts, &charging)) millivolts = -1;
-        measured = now;
-    }
-}
 
 // A 2S Li-ion pack under a light load, by cell voltage
 static int percent(int mv) {
@@ -81,14 +59,14 @@ static const char* tab(int number) {
 }
 
 static const char* network(void) {
-    if (strcmp(net.path, "Wi-Fi") == 0)
-        snprintf(text, sizeof text, "Wi-Fi %s", net.ssid);
-    else if (strcmp(net.path, "LTE") == 0 && net.wifi_joined && net.wifi_internet == NETWORK_BAD)
-        snprintf(text, sizeof text, "LTE · %s 인터넷 없음", net.ssid);
-    else if (strcmp(net.path, "LTE") == 0)
+    if (strcmp(net->path, "Wi-Fi") == 0)
+        snprintf(text, sizeof text, "Wi-Fi %s", net->ssid);
+    else if (strcmp(net->path, "LTE") == 0 && net->wifi_joined && net->wifi_internet == NETWORK_BAD)
+        snprintf(text, sizeof text, "LTE · %s 인터넷 없음", net->ssid);
+    else if (strcmp(net->path, "LTE") == 0)
         snprintf(text, sizeof text, "LTE");
     else
-        snprintf(text, sizeof text, "망 없음 · LTE %s", net.lte_on ? lte_states[net.lte] : "꺼짐");
+        snprintf(text, sizeof text, "망 없음 · LTE %s", net->lte_on ? lte_states[net->lte] : "꺼짐");
     return text;
 }
 
@@ -96,14 +74,14 @@ static const char* network(void) {
 static const char* modem_shown(const char* name) {
     char shown[32], scratch[96];
     // Read again only off PPP
-    if (strcmp(name, "read") == 0) return net.lte_address[0] != 0 ? "다이얼 전에 읽은 값" : NULL;
-    if (strcmp(name, "readable") == 0) return net.lte_address[0] != 0 ? NULL : "1";
+    if (strcmp(name, "read") == 0) return net->lte_address[0] != 0 ? "다이얼 전에 읽은 값" : NULL;
+    if (strcmp(name, "readable") == 0) return net->lte_address[0] != 0 ? NULL : "1";
     const char* age = strstr(name, ".age");
-    if (age == NULL) return modem_text(&modem, name, text, sizeof text) != MODEM_ITEMS ? text : NULL;
+    if (age == NULL) return modem_text(state->modem, name, text, sizeof text) != MODEM_ITEMS ? text : NULL;
     snprintf(shown, sizeof shown, "%.*s", (int)(age - name), name);
-    modem_item item = modem_text(&modem, shown, scratch, sizeof scratch);
-    if (item == MODEM_ITEMS || modem.read_at[item] == 0) return NULL;
-    int64_t ago = (esp_timer_get_time() - modem.read_at[item]) / SECOND;
+    modem_item item = modem_text(state->modem, shown, scratch, sizeof scratch);
+    if (item == MODEM_ITEMS || state->modem->read_at[item] == 0) return NULL;
+    int64_t ago = (esp_timer_get_time() - state->modem->read_at[item]) / SECOND;
     if (ago < 120)
         snprintf(text, sizeof text, "%d초 전", (int)ago);
     else
@@ -119,7 +97,7 @@ static const wifi_network* network_at(size_t index) {
 }
 
 static const char* wifi_value(const char* name) {
-    if (strcmp(name, "path") == 0) return strcmp(net.path, "Wi-Fi") == 0 ? "●" : NULL;
+    if (strcmp(name, "path") == 0) return strcmp(net->path, "Wi-Fi") == 0 ? "●" : NULL;
     if (strcmp(name, "toggle") == 0) return state->wifi_enabled ? "끄기" : "켜기";
     if (strcmp(name, "count") == 0) {
         size_t saved = 0;
@@ -131,7 +109,7 @@ static const char* wifi_value(const char* name) {
     if (strcmp(name, "scan") == 0) {
         wifi_visible_network v;
         wifi_scan_state scan = wifi_scan_now();
-        return !net.wifi_on                                                  ? "Wi-Fi가 꺼져 있음"
+        return !net->wifi_on                                                 ? "Wi-Fi가 꺼져 있음"
                : scan == WIFI_SCAN_RUNNING                                   ? "찾는 중…"
                : scan == WIFI_SCAN_FAILED                                    ? "찾지 못함"
                : scan == WIFI_SCAN_DONE && !wifi_visible(state->wifi, 0, &v) ? "사용 가능한 Wi-Fi 없음"
@@ -142,7 +120,6 @@ static const char* wifi_value(const char* name) {
 
 static const char* value(void* user, const char* name) {
     (void)user;
-    refresh();
     int number, end = 0;
     if (sscanf(name, "session.%d%n", &number, &end) == 1 && name[end] == 0) return tab(number);
     if (strcmp(name, "sessions.none") == 0) return state->session_count == 0 ? "1" : NULL;
@@ -155,12 +132,17 @@ static const char* value(void* user, const char* name) {
     if (strcmp(name, "status") == 0) return screen_status(text, sizeof text) ? text : NULL;
     if (strcmp(name, "network") == 0) return network();
     if (strcmp(name, "battery") == 0) {
-        if (millivolts < 0) return NULL;
-        const char* mark = charging ? "⚡" : "";
+        // A space after the one-cell Nerd glyphs, as ⚡ takes two
+        static const char* const marks[] = {
+            [PACK_CHARGING] = "\U000F0084 ", [PACK_DISCHARGING] = "\U000F0079 ", [PACK_IDLE] = "⚡", [PACK_MISSING] = "\uF0E7"};
+        const pack_reading* p = &state->pack;
+        int mv = p->millivolts;
+        if (!p->known) return NULL;
+        if (p->flow == PACK_MISSING) return marks[PACK_MISSING];
         if (state->battery == 1)
-            snprintf(text, sizeof text, "%s%d%%", mark, percent(millivolts));
+            snprintf(text, sizeof text, "%s%d%%", marks[p->flow], percent(mv));
         else
-            snprintf(text, sizeof text, "%s%d.%02d V", mark, millivolts / 1000, millivolts % 1000 / 10);
+            snprintf(text, sizeof text, "%s%d.%02d V", marks[p->flow], mv / 1000, mv % 1000 / 10);
         return text;
     }
     if (strcmp(name, "time") == 0) {
@@ -171,21 +153,21 @@ static const char* value(void* user, const char* name) {
         return text;
     }
     if (strcmp(name, "wifi.state") == 0) {
-        if (!net.wifi_on) return "꺼짐";
-        if (!net.wifi_joined) return "찾는 중";
-        snprintf(text, sizeof text, "%s %s", net.ssid,
-                 (const char* const[]){"연결됨, 인터넷 확인 중", "연결됨", "연결됨, 인터넷 없음"}[net.wifi_internet]);
+        if (!net->wifi_on) return "꺼짐";
+        if (!net->wifi_joined) return "찾는 중";
+        snprintf(text, sizeof text, "%s %s", net->ssid,
+                 (const char* const[]){"연결됨, 인터넷 확인 중", "연결됨", "연결됨, 인터넷 없음"}[net->wifi_internet]);
         return text;
     }
     if (strcmp(name, "wifi.detail") == 0) {
-        if (!net.wifi_joined) return NULL;
-        snprintf(text, sizeof text, "%s · %d dBm", net.wifi_address, net.rssi);
+        if (!net->wifi_joined) return NULL;
+        snprintf(text, sizeof text, "%s · %d dBm", net->wifi_address, net->rssi);
         return text;
     }
-    if (strcmp(name, "lte.state") == 0) return net.lte_on ? lte_states[net.lte] : "꺼짐";
-    if (strcmp(name, "lte.path") == 0) return strcmp(net.path, "LTE") == 0 ? "●" : NULL;
+    if (strcmp(name, "lte.state") == 0) return net->lte_on ? lte_states[net->lte] : "꺼짐";
+    if (strcmp(name, "lte.path") == 0) return strcmp(net->path, "LTE") == 0 ? "●" : NULL;
     if (strcmp(name, "lte.toggle") == 0) return state->lte_enabled ? "끄기" : "켜기";
-    if (strcmp(name, "lte.detail") == 0) return net.lte_address[0] != 0 ? net.lte_address : NULL;
+    if (strcmp(name, "lte.detail") == 0) return net->lte_address[0] != 0 ? net->lte_address : NULL;
     if (strncmp(name, "modem.", 6) == 0) return modem_shown(name + 6);
     if (strncmp(name, "wifi.", 5) == 0) return wifi_value(name + 5);
     return NULL;
@@ -220,7 +202,7 @@ static const char* item(void* user, const char* name, size_t index, const char* 
     if (strcmp(name, "wifi") == 0) {
         const wifi_network* w = network_at(index);
         if (w == NULL) return NULL;
-        bool joined = net.wifi_joined && strcmp(w->ssid, net.ssid) == 0;
+        bool joined = net->wifi_joined && strcmp(w->ssid, net->ssid) == 0;
         if (strcmp(field, "ssid") == 0) return w->ssid;
         if (strcmp(field, "joined") == 0) return joined ? "연결됨" : NULL;
         if (strcmp(field, "join") == 0) return joined ? NULL : "1";
@@ -265,6 +247,6 @@ static void get(void* user, const setting* s, setting_value* out) {
 
 const ui_source* ui_values(const global_state* global) {
     static const ui_source source = {value, count, item, get, NULL};
-    state = global;
+    state = global, net = &global->network;
     return &source;
 }

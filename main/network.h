@@ -34,15 +34,6 @@ void network_keepalive(int fd, network_path path);
 // The connection's step timeout over path: CAT-M is slow
 int network_timeout_ms(network_path path);
 
-typedef struct {
-    // "none", "Wi-Fi" or "LTE"
-    const char* path;
-    bool wifi_on, wifi_joined, lte_on;
-    network_health wifi_internet;
-    lte_state lte;
-    char ssid[33], wifi_address[16], lte_address[16];
-    int8_t rssi;
-} network_info;
 // What the screens show; asks the C6 for the access point's signal
 void network_describe(network_info* out);
 // wifi on|off|drop, lte on|off|status|probe dead on|off, modem read|at COMMAND, net status, net check HOST PORT [wifi|lte],

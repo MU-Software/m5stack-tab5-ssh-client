@@ -8,6 +8,7 @@
 #include <sys/param.h>
 
 #include <cJSON.h>
+#include <esp_attr.h>
 #include <esp_event.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -44,6 +45,7 @@
 #include "wifi.h"
 
 static const char* TAG = "main";
+EXT_RAM_BSS_ATTR static modem_snapshot modem;
 static global_state state = {
     .terminal_type = "xterm-256color",
     .terminal_size = {.columns = 106, .rows = 30, .width_pixels = 1272, .height_pixels = 720},
@@ -53,6 +55,8 @@ static global_state state = {
     .touch = {48, true},
     .wifi_enabled = true,
     .lte_enabled = true,
+    .network = {.path = "none"},
+    .modem = &modem,
 };
 
 // Bumped by each change of the terminal's size
@@ -1284,11 +1288,27 @@ static bool woken(void) {
     return true;
 }
 
+// The screen, what it shows read again: the network every 2 s (it asks the C6), the battery every 5 s
+static void draw(void) {
+    static int64_t described = -2000000, measured = -5000000;
+    int64_t now = esp_timer_get_time();
+    if (now - described >= 2000000) {
+        network_describe(&state.network);
+        lte_snapshot(&modem);
+        described = now;
+    }
+    if (now - measured >= 5000000) {
+        power_pack(&state.pack);
+        measured = now;
+    }
+    screen_draw();
+}
+
 // The battery's draw step by step, each the INA226's average over 8.5 s before the step ends. Only on battery: USB-C power
 // cuts the pack off.
 static void power_profile(bool lit) {
     static const char* const steps[] = {"keyboard LEDs at 100%", "screen on", "backlight off", "panel asleep", "USB-A off", "light sleep"};
-    if (!lit) screen_sleep(false), screen_draw();
+    if (!lit) screen_sleep(false), draw();
     sleeping.lit_at = esp_timer_get_time();
     ESP_LOGI(TAG, "power profile: unplug USB-C within a minute");
     for (int i = 0; usb_attached(); i++) {
@@ -1318,7 +1338,7 @@ static void power_profile(bool lit) {
     power_average(false);
     power_usb_a(true);
     screen_sleep(false);
-    screen_draw();
+    draw();
     sleeping.lit_at = esp_timer_get_time();
     ESP_LOGI(TAG, "power profile: done");
 }
@@ -1459,7 +1479,7 @@ void app_main(void) {
             xSemaphoreGive(input_lock);
         }
         if (screen == ESP_OK && lit) {
-            screen_draw();
+            draw();
             while (screen_event(&e))
                 apply(&e);
             tend_dialogs();
