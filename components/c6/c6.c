@@ -226,7 +226,7 @@ esp_err_t c6_start(void) {
         ESP_LOGW(TAG, "firmware %s, host %d.x: make c6-update", version, ESP_HOSTED_VERSION_MAJOR_1);
     // The C6 keeps a new image only once this reaches it
     if (eh_host_peer_data_register(C6_TO_P4, from_c6, NULL) != ESP_OK || eh_host_peer_data_send(P4_TO_C6, (const uint8_t[]){P4_KEEP}, 1) != ESP_OK) {
-        ESP_LOGW(TAG, "a C6 firmware without tools/c6's messages: make c6-update");
+        ESP_LOGW(TAG, "a C6 firmware without the messages of c6/: make c6-update");
         return ESP_OK;
     }
     // Its answer comes on its own

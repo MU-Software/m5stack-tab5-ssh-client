@@ -18,7 +18,7 @@ static void check(int ok, const char* what) {
     failures += !ok;
 }
 
-// The C6, as tools/c6 answers
+// The C6, as c6/ answers
 typedef struct {
     char space[16], key[16];
     uint8_t type, value[4096];

@@ -15,7 +15,7 @@ make build
 make flash      # OTA over USB; esptool while the Tab5 shows USB-Serial/JTAG
 make monitor    # logs
 make sd-on      # SD card as USB mass storage, until make sd-off
-make c6-update  # the ESP32-C6's esp_hosted (tools/c6), over USB (logged at boot when it differs)
+make c6-update  # the ESP32-C6's esp_hosted (c6/), over USB (logged at boot when it differs)
 ```
 
 The C6 keeps a new image once the Tab5 reaches it through esp_hosted, else it boots the one before after a minute: its
@@ -83,7 +83,7 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
   `network.wifi.enabled`, as the network screen's buttons and `wifi connect` do), `wifi connect SSID [PASSWORD]` (saved
   to the configuration), `wifi forget SSID`, `lte on|off [save]|status`, `net status`, `net check HOST PORT [wifi|lte]`,
   `settings`, `set NAME VALUE` (as in the configuration; text also without quotes); for tests `wifi drop`,
-  `net dns dead wifi|lte|off`, `lte probe dead on|off`. Wi-Fi needs tools/c6's firmware at protocol 9: update the C6
+  `net dns dead wifi|lte|off`, `lte probe dead on|off`. Wi-Fi needs the C6 firmware of c6/ at protocol 9: update the C6
   before the Tab5.
 - Modem: before each dial the firmware reads the registration, cell, signal, PDP context, SIM (ICCID masked) and back-off
   state; once a boot, when no back-off is in sight, also its settings, keeping QUALCOMM URCs and the battery check on and

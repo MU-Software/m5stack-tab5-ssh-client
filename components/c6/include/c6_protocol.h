@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// The messages between the P4 and the C6 firmware of tools/c6, over esp_hosted's peer data: one id each way, the first byte
+// The messages between the P4 and the C6 firmware of c6/, over esp_hosted's peer data: one id each way, the first byte
 // the kind
 #pragma once
 

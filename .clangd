@@ -3,7 +3,7 @@ Diagnostics:
     IgnoreHeader: errno\.h
 ---
 If:
-  PathMatch: (third_party|build|managed_components|tools/c6-update)/.*
+  PathMatch: (third_party|build|managed_components|c6)/.*
 Diagnostics:
   ClangTidy:
     Remove: "*"

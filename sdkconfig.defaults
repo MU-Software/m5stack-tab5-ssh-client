@@ -57,7 +57,7 @@ CONFIG_LOG_TIMESTAMP_SOURCE_SYSTEM=y
 # esp_hosted's SDIO transport buffers in PSRAM (the SDMMC DMA reaches it): Wi-Fi as fast, about 28 KB more internal RAM
 CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM=y
 
-# The C6 firmware of tools/c6 talks through it (components/c6/include/c6_protocol.h)
+# The C6 firmware of c6/ talks through it (components/c6/include/c6_protocol.h)
 CONFIG_ESP_HOSTED_HOST_FEAT_PEER_DATA=y
 
 # Network Split (C6_NW_SPLIT_SINCE): the C6 runs DHCP and this chip's Wi-Fi interface takes its address; this chip's ports are
@@ -69,7 +69,7 @@ CONFIG_ESP_HOSTED_HOST_FEAT_NW_SPLIT_NETIF_INTERNAL_STATIC=y
 # only when the card does not come up
 CONFIG_ESP_HOSTED_HOST_CP_RESET_STRATEGY_ONLY_IF_NECESSARY=y
 
-# The Wi-Fi buffers the C6 initialises with (tools/c6/sdkconfig.defaults): the C6 keeps Wi-Fi up through the P4's boots only
+# The Wi-Fi buffers the C6 initialises with (c6/sdkconfig.defaults): the C6 keeps Wi-Fi up through the P4's boots only
 # while the P4 asks for the same
 CONFIG_WIFI_RMT_STATIC_RX_BUFFER_NUM=20
 CONFIG_WIFI_RMT_DYNAMIC_RX_BUFFER_NUM=64
