@@ -9,7 +9,7 @@ DEVICE  = uv run python $(CURDIR)/tools/device.py
 SHIROKO = build/shiroko-host
 GHOSTTY = build/ghostty
 
-.PHONY: help build reconfigure menuconfig size clean ide check test test-linux flash monitor erase-flash c6-update sd-on sd-off shiroko-host ghostty sim
+.PHONY: help build reconfigure menuconfig size clean ide check test test-linux flash monitor decode erase-flash c6-update sd-on sd-off shiroko-host ghostty sim
 
 help:                ## List the targets
 	@grep -hE '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -86,3 +86,7 @@ c6-update:           ## Build the ESP32-C6's esp_hosted and send it over USB; th
 
 monitor:             ## Logs from the control port, with backtrace decoding
 	uv run python -m esp_idf_monitor --no-reset --port $$($(DEVICE) port control) --target esp32p4 $(APP)/tab5_ssh.elf
+
+decode:              ## A crash report's addresses as functions and lines: make decode ADDRESSES="0x... ..." (its ELF must match this build's)
+	@echo "ELF $$(shasum -a 256 $(APP)/tab5_ssh.elf | cut -c1-8)"
+	@docker compose run --rm idf riscv32-esp-elf-addr2line -pfiaC -e /workspace/$(APP)/tab5_ssh.elf $(ADDRESSES) 2>/dev/null | grep -E '^0x|inlined by'

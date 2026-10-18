@@ -22,6 +22,7 @@ static const struct {
     {"config set", CONTROL_SSH},
     // main.c's
     {"power [profile]", BOTH},
+    {"crash", BOTH},
     {"sleep|wake", BOTH},
     {"settings", BOTH},
     {"set NAME VALUE", BOTH},

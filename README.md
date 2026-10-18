@@ -93,6 +93,9 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
 - Slow links: keys typed at the end of a line show underlined until the host echoes them (only once it echoed one since
   the last Enter or other key, so not at password prompts); top right, the seconds typing has had no answer from the host,
   not even to a keepalive request, or a session reconnects. Over LTE each connection step may take 30 s.
+- Crashes: a panic or watchdog reset leaves its registers, task, abort message and the code addresses on its stack in RTC
+  memory; the next boot logs them (also on the SD card) with a `make decode ADDRESSES="…"` line that names the functions
+  and lines from this build's ELF (the report's ELF hash must match). `crash` logs the report again.
 - Logs: on the SD card in `.local/state/tab5-ssh/log/`, a file a day (`YYYY-MM-DD-NN.log`, a new `NN` past `file_kb`), the
   oldest deleted past `keep_mb` or `keep_days`; `log` and `timezone` (POSIX TZ, default `KST-9`) in the configuration.
   The time comes from the RTC, then SNTP (`pool.ntp.org`), which sets the RTC.

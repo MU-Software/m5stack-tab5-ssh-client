@@ -154,8 +154,11 @@ network_trouble network_find(const char* host, network_route* route) {
     uint32_t here = 0, there = 0;
     network_lookup on_chosen = lookup(c.path, host, &here), on_other = NETWORK_NO_ANSWER;
     network_health reaches = health(c.path);
-    // Its DNS silent: the path itself may have lost the internet
-    if (on_chosen == NETWORK_NO_ANSWER) reaches = verdict(c.path, suspect(c.path));
+    // Its DNS silent: the path itself may have lost the internet; if not, its DNS is asked once more (a new link's may be slow)
+    if (on_chosen == NETWORK_NO_ANSWER) {
+        reaches = verdict(c.path, suspect(c.path));
+        if (reaches == NETWORK_GOOD) on_chosen = lookup(c.path, host, &here);
+    }
     if (network_ask_other(&c, on_chosen, reaches == NETWORK_GOOD)) on_other = lookup(network_other(c.path), host, &there);
     network_use use = network_host_path(&c, on_chosen, on_other);
     if (use.pinned) ESP_LOGI(TAG, "%s: only %s's DNS knows it", host, path_names[use.path]);

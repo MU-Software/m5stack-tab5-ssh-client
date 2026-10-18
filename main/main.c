@@ -22,6 +22,7 @@
 
 #include "clock.h"
 #include "config.h"
+#include "crash.h"
 #include "keyboard_tab5.h"
 #include "keyboard_usb.h"
 #include "keys.h"
@@ -1016,6 +1017,10 @@ static int command(const char* line) {
         wifi_connect_command(line + 13);
         return 0;
     }
+    if (strcmp(line, "crash") == 0) {
+        crash_command();
+        return 0;
+    }
     if (strcmp(line, "power") == 0) {
         power_report();
         return 0;
@@ -1218,6 +1223,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(input_lock != NULL && sessions_lock != NULL ? ESP_OK : ESP_ERR_NO_MEM);
     memory_log_start();
     if (logs_start() != ESP_OK) ESP_LOGE(TAG, "no log ring");
+    crash_start();
     if (power_start() != ESP_OK) ESP_LOGE(TAG, "no power for the C6, the USB-A port or charging");
     ESP_ERROR_CHECK(keys_start());
     esp_err_t keyboard = keyboard_usb_start();
