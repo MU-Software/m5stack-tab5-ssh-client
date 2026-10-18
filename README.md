@@ -70,7 +70,7 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
   tmux 3.3 the session's windows allow passthrough, for kitty images; its `mouse` is on, for touch.
 - The screen shows a session or one of the screens: opening a screen takes the shown session off, showing a session
   closes the screen, and with no session shown the sessions screen (세션 on the bottom bar) is open. Each session's row
-  has 보기, 연결 or 끊기, and 삭제 (confirmed); a host from its list makes one (confirmed). Each also has a tab on the
+  has 보기, 연결 or 끊기, and 삭제 (confirmed); a host's 연결 in its list makes one (confirmed). Each also has a tab on the
   top bar, which shows it (`●` shown, `×` disconnected, `…` connecting, `?` waiting for an answer, `!` a failure to
   tell, shown in a dialog once a screen is open). Control command
   `session list|create HOST|open N|connect N|disconnect N|delete N` waits up to 90 s for what it starts, or until it asks

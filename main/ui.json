@@ -46,7 +46,16 @@
           ]
         },
         {"height": 1, "when": "hosts.room", "style": "section", "text": " Host 목록"},
-        {"when": "hosts.room", "rows": [{"list": "hosts", "item": "  {alias:16}{user}@{hostname}{port}", "action": "session create"}]}
+        {
+          "when": "hosts.room",
+          "rows": [
+            {
+              "list": "hosts",
+              "item": "  {alias:16}{user}@{hostname}{port}",
+              "buttons": [{"width": 8, "style": "button", "button": "session create", "text": "연결"}]
+            }
+          ]
+        }
       ]
     },
     "network": {

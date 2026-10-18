@@ -483,6 +483,13 @@ static int32_t button_column(const layout* screen, const layout_node* n, int k) 
     return at;
 }
 
+// The first of list n's buttons on item `index`, -1 for none
+static int first_button(const layout* screen, const layout_node* n, size_t index) {
+    for (int k = 0; k < n->children; k++)
+        if (on_item(&screen->nodes[n->first + k], n, index)) return k;
+    return -1;
+}
+
 // Item `index` of list n as its row shows it: its text, returning its length, and each button's label, empty where it is not
 static size_t list_row(const layout* screen, const layout_node* n, size_t index, char* text, char labels[][MAX_TEXT + 4], int buttons) {
     const item_context c = {n->name, index};
@@ -503,9 +510,10 @@ static bool draw_list(shown_screen* s, size_t i, bool focused) {
     if (choosing && s->chosen[i] >= count) s->chosen[i] = count > 0 ? count - 1 : 0;
     if (choosing && s->chosen[i] < s->first[i]) s->first[i] = s->chosen[i];
     if (choosing && shown_rows > 0 && s->chosen[i] >= s->first[i] + shown_rows) s->first[i] = s->chosen[i] - shown_rows + 1;
-    // A button the chosen item no longer has
+    // A button the chosen item no longer has; a list whose rows do nothing has one chosen while it can
     if (s->chosen_button[i] >= 0 && (count == 0 || !on_item(&s->screen->nodes[n->first + s->chosen_button[i]], n, s->chosen[i])))
         s->chosen_button[i] = -1;
+    if (n->action == NULL && s->chosen_button[i] < 0 && count > 0) s->chosen_button[i] = first_button(s->screen, n, s->chosen[i]);
     size_t top = choosing ? s->first[i] : 0;
     bool pressing = pressed != NULL && over && pressed >= &s->screen->nodes[n->first] && pressed < &s->screen->nodes[n->first + buttons];
     uint32_t h = mix(mix(mix(2166136261u, &count, sizeof count), &top, sizeof top), (bool[]){focused, pressing}, 2);
@@ -521,11 +529,13 @@ static bool draw_list(shown_screen* s, size_t i, bool focused) {
     s->drawn[i] = h;
     int32_t text_columns = buttons > 0 ? button_column(s->screen, n, 0) - n->inner.column : n->inner.columns;
     for (size_t r = 0; r < shown_rows; r++) {
-        bool item = top + r < count, mark = choosing && item && top + r == s->chosen[i], marked = mark && focused && s->chosen_button[i] < 0;
+        // Rows that do nothing show no choice, only their chosen button
+        bool item = top + r < count, mark = choosing && item && top + r == s->chosen[i], picks = mark && n->action != NULL;
+        bool marked = picks && focused && s->chosen_button[i] < 0;
         size_t length = item ? list_row(s->screen, n, top + r, text, labels, buttons) : 0;
         int32_t at = n->inner.row + (int32_t)r;
         shr_text_style style = look(&n->style, marked);
-        if (mark && !marked) style.flags |= SHR_STYLE_BOLD;
+        if (picks && !marked) style.flags |= SHR_STYLE_BOLD;
         text[length] = 0;
         draw_text(&(layout_area){n->inner.column, at, text_columns, 1}, n->align, style, text, length);
         for (int k = 0; k < buttons; k++) {
@@ -679,6 +689,8 @@ ui_event ui_touch(ui_touch_phase phase, int32_t column, int32_t row) {
         if (row < n->inner.row || index >= source->count(source->user, n->name)) n = list = NULL;
     }
     if (list != NULL && (k = button_under(s->screen, list, column, index)) >= 0) n = &s->screen->nodes[list->first + k];
+    // A row that does nothing is no button either
+    if (list != NULL && k < 0 && list->action == NULL) n = list = NULL;
     if (phase == UI_TOUCH_DOWN) {
         // Outside a dialog a touch does nothing
         if (s->editing && n != &s->screen->nodes[s->focus] && (s == &panel || n != NULL)) e = commit(false);
@@ -732,11 +744,12 @@ ui_event ui_key(ui_key_code key, const char* text) {
     } else if (key == UI_KEY_UP || key == UI_KEY_DOWN || (in_dialog && (key == UI_KEY_LEFT || key == UI_KEY_RIGHT))) {
         move_focus(screen, key == UI_KEY_UP || key == UI_KEY_LEFT ? -1 : 1);
     } else if ((key == UI_KEY_LEFT || key == UI_KEY_RIGHT) && n->kind == LAYOUT_LIST && count > 0) {
-        // The next of the chosen item's buttons, or the item itself
+        // The next of the chosen item's buttons, or the item itself if it does anything
         int *k = &screen->chosen_button[screen->focus], step = key == UI_KEY_LEFT ? n->children : 1;
-        do
+        for (int tries = 0; tries <= n->children; tries++) {
             *k = (*k + 1 + step) % (n->children + 1) - 1;
-        while (*k >= 0 && !on_item(&screen->screen->nodes[n->first + *k], n, screen->chosen[screen->focus]));
+            if (*k >= 0 ? on_item(&screen->screen->nodes[n->first + *k], n, screen->chosen[screen->focus]) : n->action != NULL) break;
+        }
     } else if ((key == UI_KEY_LEFT || key == UI_KEY_RIGHT) && n->kind >= LAYOUT_TOGGLE && n->kind <= LAYOUT_CHOICE) {
         e = activate(n, key == UI_KEY_LEFT ? n->inner.column : n->inner.column + n->inner.columns);
     } else if (key == UI_KEY_TEXT && n->kind == LAYOUT_FIELD) {
