@@ -115,18 +115,23 @@ static SemaphoreHandle_t input_lock, sessions_lock;
 static char tmux_prefix[16];
 // Sessions connected: while any is, logs may be quieter
 static atomic_int connected;
-// A failure of no session to tell on the screen, NULL for none
+// A failure of no session to tell on the screen under its title, NULL for none
 static const char* lone_alert;
-// Asked from the screen and not yet answered: a session on host `alias`, or session `number` (its tmux) deleted
-static struct {
-    bool pending, create;
-    char alias[sizeof(((ssh_host*)0)->alias)], tmux[24];
+static char lone_title[48];
+// Asked from the screen and not yet answered: host `name`'s new session, session `number` (its tmux) deleted, or Wi-Fi
+// network `name` joined (open, or with a password typed) or deleted, or a new one's SSID typed
+typedef enum { ASKED_SESSION, ASKED_DELETE, ASKED_WIFI_OPEN, ASKED_WIFI_PASSWORD, ASKED_WIFI_SSID, ASKED_WIFI_DELETE } asked_for;
+typedef struct {
+    bool pending;
+    asked_for what;
+    char name[sizeof(((ssh_host*)0)->alias)], tmux[24];
     int number;
-} confirm;
+} screen_request;
+static screen_request request;
 // The dialog on the screen, the main loop's: what it is for, the asking session and its question's serial, the dialog's
 // serial
 static struct {
-    enum { DIALOG_NONE, DIALOG_CONFIRM, DIALOG_QUESTION, DIALOG_ALERT } what;
+    enum { DIALOG_NONE, DIALOG_REQUEST, DIALOG_QUESTION, DIALOG_ALERT } what;
     int number;
     unsigned asked, serial;
 } on_screen;
@@ -168,6 +173,14 @@ static const ssh_host* host_named(const char* alias) {
     return h;
 }
 
+// A failure of no session, told on the screen
+static void tell(const char* title, const char* text) {
+    lock();
+    snprintf(lone_title, sizeof lone_title, "%.47s", title != NULL ? title : "");
+    lone_alert = text;
+    unlock();
+}
+
 // Logged, and with `shown_text` (Korean, NULL for none) told on the screen; n 0 for no session. 1 when it failed, else 0
 static int report(int n, bool failed, const char* shown_text, const char* format, ...) {
     char text[300], prefix[24] = "sessions";
@@ -181,11 +194,9 @@ static int report(int n, bool failed, const char* shown_text, const char* format
     else
         ESP_LOGI(TAG, "%s: %s", prefix, text);
     lock();
-    if (shown_text != NULL && n > 0)
-        sessions[n - 1].alert = shown_text;
-    else if (shown_text != NULL)
-        lone_alert = shown_text;
+    if (shown_text != NULL && n > 0) sessions[n - 1].alert = shown_text;
     unlock();
+    if (shown_text != NULL && n == 0) tell(NULL, shown_text);
     return failed;
 }
 
@@ -338,7 +349,7 @@ static session_end run(session* s, const ssh_host* h, const char* command, bool 
     if (private_key == NULL) {
         char title[sizeof(((session_question*)0)->title)];
         snprintf(title, sizeof title, "%.32s@%.60s", h->user, h->hostname);
-        if (!ask(s, UI_PROMPT, title, "비밀번호", "확인", password, sizeof password)) return SESSION_ENDED;
+        if (!ask(s, UI_PASSWORD, title, "비밀번호", "확인", password, sizeof password)) return SESSION_ENDED;
     }
     char* known_hosts = storage_get_known_hosts();
     s->connection = (ssh_session){.host = h,
@@ -765,104 +776,6 @@ static void tend_sessions(void) {
     unlock();
 }
 
-// Under the lock: s has a question not answered yet
-static bool asking(const session* s) {
-    return s->question.serial != 0 && s->question.answered != s->question.serial;
-}
-
-// A dialog's button: the main loop's, for the dialog still on the screen
-static void answer(const ui_event* e) {
-    char typed[sizeof(((session_question*)0)->typed)];
-    bool yes = strcmp(e->name, "dialog ok") == 0, create = false, delete = false;
-    if (on_screen.what == DIALOG_NONE || e->index != on_screen.serial) return;
-    ui_dialog_answer(typed, sizeof typed);
-    ui_dialog_close();
-    lock();
-    session* s = on_screen.what == DIALOG_QUESTION ? &sessions[on_screen.number - 1] : NULL;
-    if (s != NULL && asking(s) && s->question.serial == on_screen.asked) {
-        session_question* q = &s->question;
-        q->answered = q->serial, q->granted = yes && (q->kind != UI_PROMPT || typed[0] != 0);
-        memcpy(q->typed, typed, sizeof typed);
-    }
-    if (on_screen.what == DIALOG_CONFIRM) {
-        const session* d = numbered(confirm.number);
-        create = yes && confirm.create, delete = yes && !confirm.create && d != NULL && strcmp(d->tmux, confirm.tmux) == 0;
-        confirm.pending = false;
-    }
-    on_screen.what = DIALOG_NONE;
-    unlock();
-    wc_ForceZero(typed, sizeof typed);
-    const ssh_host* h = create ? host_named(confirm.alias) : NULL;
-    if (h != NULL) session_create(h, false);
-    if (delete) session_delete(confirm.number, false);
-}
-
-// The main loop's, after its events: once no dialog is up, a confirm asked from the screen, else the shown session's
-// question; while a screen is open also other sessions' questions and the failures. A question its task stopped asking
-// closes.
-static void tend_dialogs(void) {
-    session_question q = {.kind = UI_ALERT, .yes = "확인"};
-    lock();
-    const session* asker = on_screen.what == DIALOG_QUESTION ? &sessions[on_screen.number - 1] : NULL;
-    bool ended = asker != NULL && (!asking(asker) || asker->question.serial != on_screen.asked);
-    unlock();
-    if (ended) {
-        ui_dialog_close();
-        on_screen.what = DIALOG_NONE;
-    }
-    if (on_screen.what != DIALOG_NONE) return;
-    lock();
-    session* front = atomic_load(&shown);
-    bool open = ui_panel() != NULL;
-    if (front != NULL && !asking(front)) front = NULL;
-    for (size_t i = 0; front == NULL && open && i < MAX_SESSIONS; i++)
-        if (asking(&sessions[i])) front = &sessions[i];
-    if (confirm.pending) {
-        on_screen.what = DIALOG_CONFIRM, q.kind = UI_CONFIRM;
-        if (confirm.create) {
-            snprintf(q.text, sizeof q.text, "'%.64s'\n위 호스트의 세션을 생성할까요?", confirm.alias);
-            snprintf(q.yes, sizeof q.yes, "생성");
-        } else {
-            snprintf(q.title, sizeof q.title, "세션 %d %.64s", confirm.number, sessions[confirm.number - 1].alias);
-            snprintf(q.text, sizeof q.text, "삭제할까요?\n서버의 tmux 세션도 함께 끝납니다");
-            snprintf(q.yes, sizeof q.yes, "삭제");
-        }
-    } else if (front != NULL) {
-        on_screen.what = DIALOG_QUESTION, on_screen.number = number(front), on_screen.asked = front->question.serial;
-        q = front->question;
-    }
-    for (size_t i = 0; on_screen.what == DIALOG_NONE && open && i < MAX_SESSIONS; i++) {
-        if (sessions[i].alert == NULL) continue;
-        on_screen.what = DIALOG_ALERT;
-        snprintf(q.title, sizeof q.title, "세션 %d %.64s", (int)i + 1, sessions[i].alias);
-        snprintf(q.text, sizeof q.text, "%s", sessions[i].alert);
-        sessions[i].alert = NULL;
-    }
-    if (on_screen.what == DIALOG_NONE && open && lone_alert != NULL) {
-        on_screen.what = DIALOG_ALERT;
-        snprintf(q.text, sizeof q.text, "%s", lone_alert);
-        lone_alert = NULL;
-    }
-    unlock();
-    if (on_screen.what == DIALOG_NONE) return;
-    on_screen.serial = ui_dialog(q.kind, q.title[0] != 0 ? q.title : NULL, q.text, q.yes);
-    if (ui_dialog_shown() != 0) return;
-    ESP_LOGE(TAG, "no dialog for %s", q.text);
-    answer(&(ui_event){.kind = UI_ACTION, .name = "dialog cancel", .index = on_screen.serial});
-}
-
-// From the screen, one at a time: a session on h, or session n deleted, once confirmed
-static void ask_confirm(const ssh_host* h, int n) {
-    lock();
-    const session* s = h == NULL ? numbered(n) : NULL;
-    if (!confirm.pending && (h != NULL || s != NULL)) {
-        confirm.pending = true, confirm.create = h != NULL, confirm.number = n;
-        snprintf(confirm.alias, sizeof confirm.alias, "%s", h != NULL ? h->alias : "");
-        snprintf(confirm.tmux, sizeof confirm.tmux, "%s", s != NULL ? s->tmux : "");
-    }
-    unlock();
-}
-
 // The records of sessions.json, all disconnected
 static void load_sessions(void) {
     session_record records[MAX_SESSIONS];
@@ -954,10 +867,9 @@ static void wifi_connect_command(const char* arguments) {
     wifi_list_changed();
 }
 
-// The Wi-Fi screen's join takes seconds: on its own task, and saved by the main loop once joined
+// A join from the screen takes seconds: on its own task, and saved by the main loop once joined
 typedef enum { JOIN_IDLE, JOIN_RUNNING, JOIN_DONE } join_step;
 static struct {
-    char saved[33];
     wifi_network network;
     esp_err_t error;
     _Atomic join_step step;
@@ -968,6 +880,19 @@ static void join_wifi(void* arg) {
     join.error = wifi_join(&join.network);
     atomic_store(&join.step, JOIN_DONE);
     vTaskDeleteWithCaps(NULL);
+}
+
+static void start_join(const wifi_network* network) {
+    if (atomic_load(&join.step) != JOIN_IDLE) {
+        tell(network->ssid, "다른 연결을 기다리는 중");
+        return;
+    }
+    keep_wifi_on();
+    join.network = *network;
+    atomic_store(&join.step, JOIN_RUNNING);
+    if (xTaskCreatePinnedToCoreWithCaps(join_wifi, "join", 6144, NULL, 5, NULL, 1, MALLOC_CAP_SPIRAM) == pdPASS) return;
+    memset(&join, 0, sizeof join);
+    tell(network->ssid, "연결 못 함");
 }
 
 // Network ssid of the configuration in use changed, and the list the network task joins from with it; the old list is
@@ -984,24 +909,15 @@ static bool save_wifi(const char* ssid, const wifi_network* network, int move) {
     return saved;
 }
 
-// The screen's network, once saved, is changed as a saved one
-static const char* saved_wifi(wifi_edit* w, const char* ssid, const char* result) {
-    if (strcmp(w->network.ssid, ssid) == 0) snprintf(w->saved, sizeof w->saved, "%s", ssid);
-    return result;
-}
-
 static void joined_wifi(void) {
-    wifi_edit* w = &state.wifi_edit;
     ESP_LOGI(TAG, "wifi join %s: %s", join.network.ssid, esp_err_to_name(join.error));
-    if (join.error == ESP_OK)
-        w->result = save_wifi(join.saved[0] ? join.saved : join.network.ssid, &join.network, 0) ? saved_wifi(w, join.network.ssid, "연결됨, 저장함")
-                                                                                                : "연결됨, 저장 못 함";
-    else if (join.error == ESP_ERR_NOT_FOUND)
-        w->result = "보이지 않음, 저장 안 함";
-    else if (join.error == ESP_ERR_INVALID_STATE)
-        w->result = "Wi-Fi가 시작되지 않음";
-    else
-        w->result = "연결 못 함, 저장 안 함";
+    const char* failed = join.error == ESP_ERR_NOT_FOUND                   ? "보이지 않음"
+                         : join.error == ESP_ERR_INVALID_STATE             ? "Wi-Fi가 시작되지 않음"
+                         : join.error != ESP_OK                            ? "연결 못 함"
+                         : !save_wifi(join.network.ssid, &join.network, 0) ? "연결됐지만 저장 못 함"
+                                                                           : NULL;
+    if (failed != NULL) tell(join.network.ssid, failed);
+    wc_ForceZero(&join.network, sizeof join.network);
     memset(&join, 0, sizeof join);
 }
 
@@ -1017,68 +933,163 @@ static const wifi_network* saved_named(const char* ssid) {
     return NULL;
 }
 
-// The Wi-Fi screen: a saved network to change, or a new one picked from a scan or typed; saved as typed, or once joined
-static bool wifi_screen(const ui_event* e) {
-    wifi_edit* w = &state.wifi_edit;
-    static const char* const actions[] = {"add", "edit", "scan", "pick", "save", "join", "up", "delete"};
-    const char* action = e->kind == UI_ACTION && strncmp(e->name, "wifi ", 5) == 0 ? e->name + 5 : "";
-    const wifi_network* saved = strcmp(action, "edit") == 0 ? saved_at(e->index) : saved_named(w->saved);
-    bool ssid = e->kind == UI_SET && strcmp(e->name, "wifi.ssid") == 0, deleting = w->deleting;
-    size_t known = 0;
-    while (known < sizeof actions / sizeof actions[0] && strcmp(action, actions[known]) != 0)
-        known++;
-    if (ssid || (e->kind == UI_SET && strcmp(e->name, "wifi.password") == 0)) {
-        snprintf(ssid ? w->network.ssid : w->network.password, ssid ? sizeof w->network.ssid : sizeof w->network.password, "%s", e->value.text);
-        w->result = NULL, w->deleting = false;
-        return true;
+// From the screen, one at a time: host `name`'s new session, session n deleted, or Wi-Fi network `name`'s step
+static void request_dialog(asked_for what, const char* name, int n) {
+    lock();
+    const session* s = what == ASKED_DELETE ? numbered(n) : NULL;
+    if (!request.pending && (what != ASKED_DELETE || s != NULL)) {
+        request = (screen_request){.pending = true, .what = what, .number = n};
+        snprintf(request.name, sizeof request.name, "%s", name);
+        snprintf(request.tmux, sizeof request.tmux, "%s", s != NULL ? s->tmux : "");
     }
-    if (strcmp(action, "add") == 0 || strcmp(action, "edit") == 0) {
-        if (action[0] == 'e' && saved == NULL) return true;
-        memset(w, 0, sizeof *w);
-        if (saved != NULL) {
-            memcpy(w->saved, saved->ssid, sizeof w->saved);
-            memcpy(w->network.ssid, saved->ssid, sizeof w->network.ssid);
-            memcpy(w->network.password, saved->password, sizeof w->network.password);
-        } else {
-            wifi_scan();
-        }
-        screen_open("wifi");
-        return true;
+    unlock();
+}
+
+// What was asked from the screen, answered yes, with what was typed
+static void requested(const screen_request* r, const char* typed) {
+    wifi_network network = {0};
+    if (r->what == ASKED_SESSION || r->what == ASKED_DELETE) {
+        const ssh_host* h = r->what == ASKED_SESSION ? host_named(r->name) : NULL;
+        lock();
+        const session* d = numbered(r->number);
+        bool same = r->what == ASKED_DELETE && d != NULL && strcmp(d->tmux, r->tmux) == 0;
+        unlock();
+        if (h != NULL) session_create(h, false);
+        if (same) session_delete(r->number, false);
+        return;
     }
-    if (known == sizeof actions / sizeof actions[0]) return false;
-    w->result = NULL;
-    if (strcmp(action, "scan") == 0) {
-        wifi_scan();
-    } else if (strcmp(action, "pick") == 0) {
-        wifi_visible_network v;
-        if (wifi_visible(e->index, &v)) snprintf(w->network.ssid, sizeof w->network.ssid, "%s", v.ssid);
-    } else if ((strcmp(action, "save") == 0 || strcmp(action, "join") == 0) && !config_wifi_valid(&w->network)) {
-        w->result = "SSID 1~32자, 비밀번호는 없거나 8~63자";
-    } else if (strcmp(action, "save") == 0) {
-        w->result = save_wifi(w->saved[0] ? w->saved : w->network.ssid, &w->network, 0) ? saved_wifi(w, w->network.ssid, "저장함") : "저장 못 함";
-    } else if (strcmp(action, "join") == 0 && atomic_load(&join.step) != JOIN_IDLE) {
-        w->result = "다른 연결을 기다리는 중";
-    } else if (strcmp(action, "join") == 0) {
-        keep_wifi_on();
-        memcpy(join.saved, w->saved, sizeof join.saved);
-        join.network = w->network;
-        atomic_store(&join.step, JOIN_RUNNING);
-        w->result = "연결 중…";
-        if (xTaskCreatePinnedToCoreWithCaps(join_wifi, "join", 6144, NULL, 5, NULL, 1, MALLOC_CAP_SPIRAM) != pdPASS) {
-            memset(&join, 0, sizeof join);
-            w->result = "연결 못 함";
-        }
-    } else if (strcmp(action, "up") == 0) {
-        w->result = saved == NULL ? NULL : saved == saved_at(0) ? "이미 맨 위" : save_wifi(saved->ssid, saved, -1) ? "한 칸 위로" : "저장 못 함";
-    } else if (strcmp(action, "delete") == 0 && !deleting) {
-        w->result = saved != NULL ? "한 번 더 누르면 삭제" : NULL;
-    } else if (strcmp(action, "delete") == 0) {
-        if (saved != NULL && save_wifi(saved->ssid, NULL, 0))
-            screen_open("network");
+    snprintf(network.ssid, sizeof network.ssid, "%.32s", r->name);
+    bool valid = strlen(typed) < sizeof network.password;
+    if (valid) memcpy(network.password, typed, strlen(typed) + 1);
+    valid = valid && config_wifi_valid(&network);
+    if (r->what == ASKED_WIFI_SSID && (typed[0] == 0 || strlen(typed) >= sizeof network.ssid))
+        tell("직접 입력", "SSID는 1~32자");
+    else if (r->what == ASKED_WIFI_SSID)
+        request_dialog(ASKED_WIFI_PASSWORD, typed, 0);
+    else if (r->what == ASKED_WIFI_PASSWORD && !valid)
+        tell(r->name, "비밀번호는 없거나 8~63자");
+    else if (r->what == ASKED_WIFI_OPEN || r->what == ASKED_WIFI_PASSWORD)
+        start_join(&network);
+    else if (r->what == ASKED_WIFI_DELETE && saved_named(r->name) != NULL && !save_wifi(r->name, NULL, 0))
+        tell(r->name, "삭제 못 함");
+    wc_ForceZero(&network, sizeof network);
+}
+
+// Under the lock: s has a question not answered yet
+static bool asking(const session* s) {
+    return s->question.serial != 0 && s->question.answered != s->question.serial;
+}
+
+// A dialog's button: the main loop's, for the dialog still on the screen
+static void answer(const ui_event* e) {
+    char typed[sizeof(((session_question*)0)->typed)];
+    bool yes = strcmp(e->name, "dialog ok") == 0, asked = false;
+    screen_request r;
+    if (on_screen.what == DIALOG_NONE || e->index != on_screen.serial) return;
+    ui_dialog_answer(typed, sizeof typed);
+    ui_dialog_close();
+    lock();
+    session* s = on_screen.what == DIALOG_QUESTION ? &sessions[on_screen.number - 1] : NULL;
+    if (s != NULL && asking(s) && s->question.serial == on_screen.asked) {
+        session_question* q = &s->question;
+        q->answered = q->serial, q->granted = yes && (q->kind != UI_PASSWORD || typed[0] != 0);
+        memcpy(q->typed, typed, sizeof typed);
+    }
+    if (on_screen.what == DIALOG_REQUEST) r = request, asked = yes, request.pending = false;
+    on_screen.what = DIALOG_NONE;
+    unlock();
+    if (asked) requested(&r, typed);
+    wc_ForceZero(typed, sizeof typed);
+}
+
+// The main loop's, after its events: once no dialog is up, a request from the screen, else the shown session's question;
+// while a screen is open also other sessions' questions and the failures. A question its task stopped asking closes.
+static void tend_dialogs(void) {
+    session_question q = {.kind = UI_ALERT, .yes = "확인"};
+    lock();
+    const session* asker = on_screen.what == DIALOG_QUESTION ? &sessions[on_screen.number - 1] : NULL;
+    bool ended = asker != NULL && (!asking(asker) || asker->question.serial != on_screen.asked);
+    unlock();
+    if (ended) {
+        ui_dialog_close();
+        on_screen.what = DIALOG_NONE;
+    }
+    if (on_screen.what != DIALOG_NONE) return;
+    lock();
+    session* front = atomic_load(&shown);
+    bool open = ui_panel() != NULL;
+    if (front != NULL && !asking(front)) front = NULL;
+    for (size_t i = 0; front == NULL && open && i < MAX_SESSIONS; i++)
+        if (asking(&sessions[i])) front = &sessions[i];
+    static const struct {
+        ui_dialog_kind kind;
+        const char *text, *yes;
+    } asks[] = {
+        [ASKED_SESSION] = {UI_CONFIRM, "위 호스트의 세션을 생성할까요?", "생성"},
+        [ASKED_DELETE] = {UI_CONFIRM, "삭제할까요?\n서버의 tmux 세션도 함께 끝납니다", "삭제"},
+        [ASKED_WIFI_OPEN] = {UI_CONFIRM, "열린 망 · 연결되면 저장", "연결"},
+        [ASKED_WIFI_PASSWORD] = {UI_PASSWORD, "비밀번호를 입력하세요.\n비밀번호가 없는 개방형 네트워크는 비운 채로 저장해주세요.", "연결"},
+        [ASKED_WIFI_SSID] = {UI_PROMPT, "SSID", "다음"},
+        [ASKED_WIFI_DELETE] = {UI_CONFIRM, "삭제할까요?", "삭제"},
+    };
+    if (request.pending) {
+        on_screen.what = DIALOG_REQUEST, q.kind = asks[request.what].kind;
+        snprintf(q.yes, sizeof q.yes, "%s", asks[request.what].yes);
+        snprintf(q.text, sizeof q.text, "%s", asks[request.what].text);
+        if (request.what == ASKED_SESSION)
+            snprintf(q.text, sizeof q.text, "'%.64s'\n%s", request.name, asks[request.what].text);
+        else if (request.what == ASKED_DELETE)
+            snprintf(q.title, sizeof q.title, "세션 %d %.64s", request.number, sessions[request.number - 1].alias);
         else
-            w->result = "삭제 못 함";
+            snprintf(q.title, sizeof q.title, "%.64s", request.what == ASKED_WIFI_SSID ? "직접 입력" : request.name);
+    } else if (front != NULL) {
+        on_screen.what = DIALOG_QUESTION, on_screen.number = number(front), on_screen.asked = front->question.serial;
+        q = front->question;
     }
-    w->deleting = !deleting && saved != NULL && strcmp(action, "delete") == 0;
+    for (size_t i = 0; on_screen.what == DIALOG_NONE && open && i < MAX_SESSIONS; i++) {
+        if (sessions[i].alert == NULL) continue;
+        on_screen.what = DIALOG_ALERT;
+        snprintf(q.title, sizeof q.title, "세션 %d %.64s", (int)i + 1, sessions[i].alias);
+        snprintf(q.text, sizeof q.text, "%s", sessions[i].alert);
+        sessions[i].alert = NULL;
+    }
+    if (on_screen.what == DIALOG_NONE && open && lone_alert != NULL) {
+        on_screen.what = DIALOG_ALERT;
+        snprintf(q.title, sizeof q.title, "%s", lone_title);
+        snprintf(q.text, sizeof q.text, "%s", lone_alert);
+        lone_alert = NULL;
+    }
+    unlock();
+    if (on_screen.what == DIALOG_NONE) return;
+    on_screen.serial = ui_dialog(q.kind, q.title[0] != 0 ? q.title : NULL, q.text, q.yes);
+    if (ui_dialog_shown() != 0) return;
+    ESP_LOGE(TAG, "no dialog for %s", q.text);
+    answer(&(ui_event){.kind = UI_ACTION, .name = "dialog cancel", .index = on_screen.serial});
+}
+
+// The network screen's Wi-Fi: a saved network joined, moved up, joined with a new password or deleted, and one a scan saw
+// or typed joined; each saved once joined
+static bool wifi_screen(const ui_event* e) {
+    const char* action = e->kind == UI_ACTION && strncmp(e->name, "wifi ", 5) == 0 ? e->name + 5 : "";
+    const wifi_network* saved = saved_at(e->index);
+    wifi_visible_network v;
+    bool seen = strcmp(action, "pick") == 0 && wifi_visible(state.wifi, e->index, &v);
+    if (strcmp(action, "add") == 0)
+        state.wifi_adding = true, wifi_scan();
+    else if (strcmp(action, "type") == 0)
+        request_dialog(ASKED_WIFI_SSID, "", 0);
+    else if (seen)
+        request_dialog(v.open ? ASKED_WIFI_OPEN : ASKED_WIFI_PASSWORD, v.ssid, 0);
+    else if (strcmp(action, "join") == 0 && saved != NULL)
+        start_join(saved);
+    else if (strcmp(action, "up") == 0 && saved != NULL && !save_wifi(saved->ssid, saved, -1))
+        tell(saved->ssid, "저장 못 함");
+    else if (strcmp(action, "edit") == 0 && saved != NULL)
+        request_dialog(ASKED_WIFI_PASSWORD, saved->ssid, 0);
+    else if (strcmp(action, "delete") == 0 && saved != NULL)
+        request_dialog(ASKED_WIFI_DELETE, saved->ssid, 0);
+    else
+        return false;
     return true;
 }
 
@@ -1295,23 +1306,34 @@ static void apply(const ui_event* e) {
         answer(e);
         return;
     }
+    if (e->kind == UI_ACTION && (strcmp(e->name, "wifi toggle") == 0 || strcmp(e->name, "lte toggle") == 0)) {
+        // A second press soon after is taken for a slip: turning the modem off and on again risks a back-off
+        static int64_t toggled[2] = {INT64_MIN / 2, INT64_MIN / 2};
+        bool wifi = e->name[0] == 'w', on = wifi ? state.wifi_enabled : state.lte_enabled;
+        if (esp_timer_get_time() - toggled[wifi] < 3000000) return;
+        toggled[wifi] = esp_timer_get_time();
+        command(wifi ? (on ? "wifi off save" : "wifi on save") : on ? "lte off save" : "lte on save");
+        return;
+    }
     if (wifi_screen(e) || (e->kind == UI_SET && e->setting == NULL)) return;
     if (e->kind == UI_ACTION && strcmp(e->name, "session create") == 0) {
         const ssh_host* h = state.hosts;
         for (size_t i = 0; h != NULL && i < e->index; i++)
             h = h->next;
-        if (h != NULL) ask_confirm(h, 0);
+        if (h != NULL) request_dialog(ASKED_SESSION, h->alias, 0);
         return;
     }
     // A session's row
-    if (e->kind == UI_ACTION && sscanf(e->name, "session %11s %d", verb, &n) == 2) {
+    if (e->kind == UI_ACTION && sscanf(e->name, "session %11s", verb) == 1 &&
+        (strcmp(verb, "open") == 0 || strcmp(verb, "toggle") == 0 || strcmp(verb, "delete") == 0)) {
         lock();
+        n = e->index < state.session_count ? state.sessions[e->index].number : 0;
         const session* s = numbered(n);
         bool connect = s != NULL && atomic_load(&s->status) == SESSION_DISCONNECTED;
         unlock();
         if (strcmp(verb, "open") == 0 && session_open(n, false) == 0) screen_open(NULL);
         if (strcmp(verb, "toggle") == 0) (connect ? session_connect : session_disconnect)(n, false);
-        if (strcmp(verb, "delete") == 0) ask_confirm(NULL, n);
+        if (strcmp(verb, "delete") == 0) request_dialog(ASKED_DELETE, "", n);
         return;
     }
     // A session's tab: the shown one's opens the sessions screen
@@ -1418,10 +1440,9 @@ void app_main(void) {
         }
         if (screen == ESP_OK && lit) {
             screen_draw();
-            // What was typed there goes once it closes
+            // A scan's networks go once the network screen closes
             const char* panel = ui_panel();
-            if ((panel == NULL || strcmp(panel, "wifi") != 0) && (state.wifi_edit.network.ssid[0] != 0 || state.wifi_edit.saved[0] != 0))
-                memset(&state.wifi_edit, 0, sizeof state.wifi_edit);
+            if (panel == NULL || strcmp(panel, "network") != 0) state.wifi_adding = false;
             while (screen_event(&e))
                 apply(&e);
             tend_dialogs();

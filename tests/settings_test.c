@@ -184,15 +184,13 @@ int main(void) {
         for (size_t i = 0; l != NULL && i < l->count; i++) {
             const layout_node* node = &l->nodes[i];
             const char* name = node->kind > LAYOUT_LIST ? node->name : node->when;
-            if (name == NULL || (node->kind <= LAYOUT_LIST && strncmp(name, "bars.", 5) != 0) ||
-                (node->kind == LAYOUT_FIELD && strncmp(name, "wifi.", 5) == 0))
-                continue;
+            if (name == NULL || (node->kind <= LAYOUT_LIST && strncmp(name, "bars.", 5) != 0)) continue;
             editors++;
             if (settings_find(name) == NULL) printf("     main/ui.json %s: no setting %s\n", s->string, name), unknown++;
         }
         free(l);
     }
-    check(json != NULL && editors > 0 && unknown == 0, "main/ui.json: every editor and bar names a setting, but the Wi-Fi screen's fields");
+    check(json != NULL && editors > 0 && unknown == 0, "main/ui.json: every editor and bar names a setting");
     cJSON_Delete(json);
     free(text);
     return failures != 0;

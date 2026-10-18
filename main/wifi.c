@@ -492,10 +492,15 @@ wifi_scan_state wifi_scan_now(void) {
     return scan_state;
 }
 
-bool wifi_visible(size_t index, wifi_visible_network* out) {
-    taskENTER_CRITICAL(&visible_lock);
-    bool found = index < visible_count;
-    if (found) *out = visible[index];
-    taskEXIT_CRITICAL(&visible_lock);
-    return found;
+bool wifi_visible(const wifi_network* saved, size_t index, wifi_visible_network* out) {
+    for (size_t i = 0;; i++) {
+        taskENTER_CRITICAL(&visible_lock);
+        bool found = i < visible_count;
+        if (found) *out = visible[i];
+        taskEXIT_CRITICAL(&visible_lock);
+        const wifi_network* w = saved;
+        while (found && w != NULL && strcmp(w->ssid, out->ssid) != 0)
+            w = w->next;
+        if (!found || (w == NULL && index-- == 0)) return found;
+    }
 }

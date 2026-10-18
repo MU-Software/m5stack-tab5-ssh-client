@@ -115,17 +115,22 @@ static bool node(parser* p, layout_node* n, const cJSON* item, const layout_styl
             n->action = list->valuestring;
         else if (list != NULL)
             n->name = list->valuestring;
-        return true;
+        if (n->kind != LAYOUT_LIST || field(item, "buttons") == NULL) return true;
     }
-    list = field(item, keys[found].key);
-    if (!cJSON_IsArray(list)) return fail(p, "%s: not a list", keys[found].key);
+    const char* key = n->kind == LAYOUT_LIST ? "buttons" : keys[found].key;
+    list = field(item, key);
+    if (!cJSON_IsArray(list)) return fail(p, "%s: not a list", key);
     int count = cJSON_GetArraySize(list);
+    if (n->kind == LAYOUT_LIST && count > LAYOUT_MAX_BUTTONS) return fail(p, "more than %d buttons", LAYOUT_MAX_BUTTONS);
     if (p->screen->count + (size_t)count > LAYOUT_MAX_NODES) return fail(p, "more than %d nodes", LAYOUT_MAX_NODES);
     n->first = (uint16_t)p->screen->count, n->children = (uint16_t)count;
     p->screen->count += (size_t)count;
-    for (int i = 0; i < count; i++)
-        if (!node(p, &p->screen->nodes[n->first + i], cJSON_GetArrayItem(list, i), &n->style, n->kind == LAYOUT_ROWS ? "height" : "width", depth + 1))
-            return false;
+    for (int i = 0; i < count; i++) {
+        layout_node* c = &p->screen->nodes[n->first + i];
+        if (!node(p, c, cJSON_GetArrayItem(list, i), &n->style, n->kind == LAYOUT_ROWS ? "height" : "width", depth + 1)) return false;
+        c->per_item = n->kind == LAYOUT_LIST;
+        if (c->per_item && (c->kind != LAYOUT_BUTTON || c->unit != LAYOUT_CELLS)) return fail(p, "a list's buttons: not buttons N cells wide");
+    }
     return true;
 }
 

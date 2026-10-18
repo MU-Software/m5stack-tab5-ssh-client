@@ -39,7 +39,8 @@ static ssh_host hosts[] = {
     {"nas", "nas.lan", "admin", "", 22, NULL},
     {"cloud", "ssh.example.org", "me", "", 2222, NULL},
 };
-static const char* networks[] = {"MU_GL_XE3000", "YGYguest", "iPhone 15"};
+static char networks[16][33] = {"MU_GL_XE3000", "YGYguest", "iPhone 15"};
+static size_t network_count = 3;
 // As the research module answered; read_at only needs to be non-zero
 static const modem_snapshot modem = {
     .values =
@@ -107,15 +108,25 @@ static shr_status open_package(void* user, const char* package, shr_asset_source
     return shr_asset_source_file(path, out);
 }
 
+// visible[]'s index of the index-th network not saved, -1 past the last
+static int unsaved(size_t index) {
+    for (size_t i = 0; i < sizeof visible / sizeof visible[0]; i++) {
+        bool saved = false;
+        for (size_t k = 0; k < network_count; k++)
+            saved |= strcmp(networks[k], visible[i].ssid) == 0;
+        if (!saved && index-- == 0) return (int)i;
+    }
+    return -1;
+}
+
 static const char* wifi_text(const char* name) {
-    const wifi_edit* w = &state.wifi_edit;
-    if (strcmp(name, "title") == 0) return w->saved[0] ? " Wi-Fi 수정" : " Wi-Fi 추가";
-    if (strcmp(name, "ssid") == 0) return w->network.ssid;
-    if (strcmp(name, "password") == 0) return w->network.password;
-    if (strcmp(name, "saved") == 0) return w->saved;
-    if (strcmp(name, "new") == 0) return w->saved[0] ? NULL : "새 망";
-    if (strcmp(name, "result") == 0) return w->result;
-    if (strcmp(name, "scan") == 0) return "누르면 SSID에 넣음";
+    if (strcmp(name, "path") == 0) return state.wifi_enabled ? "●" : NULL;
+    if (strcmp(name, "toggle") == 0) return state.wifi_enabled ? "끄기" : "켜기";
+    if (strcmp(name, "adding") == 0) return state.wifi_adding ? "1" : NULL;
+    if (strcmp(name, "count") == 0) {
+        static char saved[8];
+        return snprintf(saved, sizeof saved, "%zu/16", network_count), saved;
+    }
     return NULL;
 }
 
@@ -124,28 +135,18 @@ static const char* text(void* user, const char* name) {
     time_t now = time(NULL);
     static char tab[64];
     int number, end = 0;
-    if (sscanf(name, "session.%d%n", &number, &end) == 1 && (name[end] == 0 || name[end] == '.')) {
-        const session_info* s = NULL;
-        const char* field = name[end] == '.' ? name + end + 1 : NULL;
-        for (size_t i = 0; i < state.session_count; i++)
-            if (state.sessions[i].number == number) s = &state.sessions[i];
-        if (s == NULL) return NULL;
-        if (field == NULL)
+    if (sscanf(name, "session.%d%n", &number, &end) == 1 && name[end] == 0) {
+        for (size_t i = 0; i < state.session_count; i++) {
+            const session_info* s = &state.sessions[i];
+            if (s->number != number) continue;
             snprintf(tab, sizeof tab, "%s %d %s%s", s->shown ? "●" : "○", number, s->alias,
                      s->alert ? " !" : (const char* const[]){" ×", " …", "", " …", " ?", " ×"}[s->status]);
-        else if (strcmp(field, "number") == 0)
-            snprintf(tab, sizeof tab, "%d", number);
-        else if (strcmp(field, "alias") == 0)
-            return s->alias;
-        else if (strcmp(field, "status") == 0)
-            return session_states[s->status];
-        else if (strcmp(field, "toggle") == 0)
-            return s->status == SESSION_DISCONNECTED ? "연결" : "끊기";
-        else
-            return strcmp(field, "idle") == 0 && s->status != SESSION_DELETING && !s->creating ? "1" : NULL;
-        return tab;
+            return tab;
+        }
+        return NULL;
     }
     if (strcmp(name, "sessions.none") == 0) return state.session_count == 0 ? "1" : NULL;
+    if (strcmp(name, "sessions.any") == 0) return state.session_count > 0 ? "1" : NULL;
     if (strcmp(name, "hosts.room") == 0) return state.session_count < MAX_SESSIONS ? "1" : NULL;
     if (strcmp(name, "sessions") == 0) {
         snprintf(tab, sizeof tab, "%zu/%d", state.session_count, MAX_SESSIONS);
@@ -153,12 +154,14 @@ static const char* text(void* user, const char* name) {
     }
     if (strcmp(name, "status") == 0) return now / 3 % 2 ? "held 2 s" : NULL;
     if (strcmp(name, "network") == 0) return !state.wifi_enabled ? "LTE" : "Wi-Fi MU_GL_XE3000";
-    if (strcmp(name, "path") == 0) return !state.wifi_enabled ? "LTE (ppp0 10.170.3.41)" : "Wi-Fi (10.1.0.23)";
-    if (strcmp(name, "wifi.state") == 0) return !state.wifi_enabled ? "꺼짐 (저장)" : "MU_GL_XE3000 연결됨";
-    if (strcmp(name, "wifi.detail") == 0) return !state.wifi_enabled ? "" : "10.1.0.23 · -58 dBm · 5 GHz";
+    if (strcmp(name, "wifi.state") == 0) return !state.wifi_enabled ? "꺼짐" : "MU_GL_XE3000 연결됨";
+    if (strcmp(name, "wifi.detail") == 0) return !state.wifi_enabled ? "" : "10.1.0.23 · -58 dBm";
+    if (strcmp(name, "wifi.scan") == 0) return now / 3 % 2 ? "찾는 중…" : NULL;
+    if (strcmp(name, "lte.path") == 0) return !state.wifi_enabled && state.lte_enabled ? "●" : NULL;
+    if (strcmp(name, "lte.toggle") == 0) return state.lte_enabled ? "끄기" : "켜기";
     if (strcmp(name, "lte.state") == 0) {
         static const char* const lte[] = {"연결됨", "미등록 · 다음 시도 73 s", "다이얼 중"};
-        return lte[now / 3 % 3];
+        return state.lte_enabled ? lte[now / 3 % 3] : "꺼짐";
     }
     if (strcmp(name, "lte.detail") == 0) return "SKT · CAT-M · -97 dBm";
     if (strncmp(name, "wifi.", 5) == 0) return wifi_text(name + 5);
@@ -182,21 +185,35 @@ static const char* text(void* user, const char* name) {
 
 static size_t count(void* user, const char* name) {
     (void)user;
-    if (strcmp(name, "visible") == 0) return sizeof visible / sizeof visible[0];
-    return strcmp(name, "hosts") == 0 ? sizeof hosts / sizeof hosts[0] : strcmp(name, "wifi") == 0 ? sizeof networks / sizeof networks[0] : 0;
+    size_t n = 0;
+    while (strcmp(name, "visible") == 0 && unsaved(n) >= 0)
+        n++;
+    if (strcmp(name, "visible") == 0) return n;
+    if (strcmp(name, "sessions") == 0) return state.session_count;
+    return strcmp(name, "hosts") == 0 ? sizeof hosts / sizeof hosts[0] : strcmp(name, "wifi") == 0 ? network_count : 0;
 }
 
 static const char* item(void* user, const char* name, size_t index, const char* field) {
     (void)user;
     static char number[16];
     if (strcmp(name, "wifi") == 0 && strcmp(field, "order") == 0) return snprintf(number, sizeof number, "%zu", index + 1), number;
-    if (strcmp(name, "wifi") == 0 && strcmp(field, "joined") == 0) return index == 0 ? "← 연결됨" : NULL;
+    if (strcmp(name, "wifi") == 0 && strcmp(field, "joined") == 0) return index == 0 && state.wifi_enabled ? "연결됨" : NULL;
+    if (strcmp(name, "wifi") == 0 && strcmp(field, "join") == 0) return index == 0 && state.wifi_enabled ? NULL : "1";
+    if (strcmp(name, "wifi") == 0 && strcmp(field, "up") == 0) return index > 0 ? "1" : NULL;
     if (strcmp(name, "wifi") == 0) return strcmp(field, "ssid") == 0 ? networks[index] : NULL;
+    const session_info* s = strcmp(name, "sessions") == 0 ? &state.sessions[index] : NULL;
+    if (s != NULL && strcmp(field, "number") == 0) return snprintf(number, sizeof number, "%d", s->number), number;
+    if (s != NULL && strcmp(field, "alias") == 0) return s->alias;
+    if (s != NULL && strcmp(field, "status") == 0) return session_states[s->status];
+    if (s != NULL && strcmp(field, "toggle") == 0) return s->status == SESSION_DISCONNECTED ? "연결" : "끊기";
+    if (s != NULL && strcmp(field, "idle") == 0) return s->status != SESSION_DELETING && !s->creating ? "1" : NULL;
+    if (s != NULL) return NULL;
     if (strcmp(name, "visible") == 0) {
-        if (strcmp(field, "ssid") == 0) return visible[index].ssid;
-        if (strcmp(field, "signal") == 0) return snprintf(number, sizeof number, "%d dBm", visible[index].rssi), number;
-        if (strcmp(field, "lock") == 0) return visible[index].open ? "열림" : NULL;
-        if (strcmp(field, "saved") == 0) return index == 0 || index == 2 ? "저장됨" : NULL;
+        int i = unsaved(index);
+        if (i < 0) return NULL;
+        if (strcmp(field, "ssid") == 0) return visible[i].ssid;
+        if (strcmp(field, "signal") == 0) return snprintf(number, sizeof number, "%d dBm", visible[i].rssi), number;
+        if (strcmp(field, "lock") == 0) return visible[i].open ? "열림" : NULL;
         return NULL;
     }
     const ssh_host* h = &hosts[index];
@@ -244,26 +261,37 @@ static void draw_terminal(void) {
     shr_pl_lyr_tilemap_set_text(terminal, 0, 0, lines, strlen(lines), (shr_text_style){SHR_RGB(0xd0, 0xd0, 0xd0), 0, 0}, NULL, 0, 0, NULL);
 }
 
-// As main.c's Wi-Fi screen, without saving or joining
+// The action a dialog's 확인 does
+static char asked[48];
+#define PASSWORD "비밀번호를 입력하세요.\n비밀번호가 없는 개방형 네트워크는 비운 채로 저장해주세요."
+
+// As main.c's network screen's Wi-Fi, without joining: a pick saved and a delete done once confirmed
 static void wifi_screen(const ui_event* e) {
-    wifi_edit* w = &state.wifi_edit;
-    bool ssid = e->name[5] == 's';
-    if (e->kind == UI_SET)
-        snprintf(ssid ? w->network.ssid : w->network.password, ssid ? sizeof w->network.ssid : sizeof w->network.password, "%s", e->value.text);
-    if (strcmp(e->name, "wifi add") == 0 || strcmp(e->name, "wifi edit") == 0) {
-        memset(w, 0, sizeof *w);
-        if (e->name[5] == 'e') {
-            snprintf(w->saved, sizeof w->saved, "%s", networks[e->index]);
-            snprintf(w->network.ssid, sizeof w->network.ssid, "%s", networks[e->index]);
-            snprintf(w->network.password, sizeof w->network.password, "made-up-pass");
-        }
-        ui_open("wifi");
+    size_t i = e->index;
+    if (strcmp(e->name, "wifi add") == 0) state.wifi_adding = true;
+    if (strcmp(e->name, "wifi type") == 0) snprintf(asked, sizeof asked, "wifi typed"), ui_dialog(UI_PROMPT, "직접 입력", "SSID", "다음");
+    if (strcmp(e->name, "wifi typed") == 0) ui_dialog(UI_PASSWORD, "(SSID)", PASSWORD, "연결");
+    if (strcmp(e->name, "wifi pick") == 0 && unsaved(i) >= 0) {
+        i = (size_t)unsaved(i);
+        snprintf(asked, sizeof asked, "wifi saved %zu", i);
+        if (visible[i].open)
+            ui_dialog(UI_CONFIRM, visible[i].ssid, "열린 망 · 연결되면 저장", "연결");
+        else
+            ui_dialog(UI_PASSWORD, visible[i].ssid, PASSWORD, "연결");
     }
-    if (strcmp(e->name, "wifi pick") == 0) snprintf(w->network.ssid, sizeof w->network.ssid, "%s", visible[e->index].ssid);
-    w->result = strcmp(e->name, "wifi join") == 0 ? "연결 중…" : strcmp(e->name, "wifi save") == 0 ? "저장함" : NULL;
-    if (w->result != NULL) snprintf(w->saved, sizeof w->saved, "%s", w->network.ssid);
-    if (strcmp(e->name, "wifi delete") == 0) w->result = (w->deleting = !w->deleting) ? "한 번 더 누르면 삭제" : NULL;
-    if (strcmp(e->name, "wifi up") == 0) w->result = "한 칸 위로";
+    if (sscanf(e->name, "wifi saved %zu", &i) == 1 && network_count < 16)
+        snprintf(networks[network_count++], sizeof networks[0], "%s", visible[i].ssid);
+    if (strcmp(e->name, "wifi up") == 0 && i > 0 && i < network_count) {
+        char swap[33];
+        memcpy(swap, networks[i - 1], sizeof swap), memcpy(networks[i - 1], networks[i], sizeof swap), memcpy(networks[i], swap, sizeof swap);
+    }
+    if (strcmp(e->name, "wifi edit") == 0 && i < network_count) ui_dialog(UI_PASSWORD, networks[i], PASSWORD, "연결");
+    if (strcmp(e->name, "wifi delete") == 0 && i < network_count) {
+        snprintf(asked, sizeof asked, "wifi removed %zu", i);
+        ui_dialog(UI_CONFIRM, networks[i], "삭제할까요?", "삭제");
+    }
+    if (sscanf(e->name, "wifi removed %zu", &i) == 1 && i < network_count)
+        memmove(networks[i], networks[i + 1], (--network_count - i) * sizeof networks[0]);
 }
 
 static session_info* numbered(int number) {
@@ -274,15 +302,8 @@ static session_info* numbered(int number) {
 
 // As main.c's sessions, without connections: done at once, a host and a delete confirmed first
 static void sessions(const ui_event* e) {
-    static char asked[32];
     char verb[16];
     int number = 0;
-    if (strncmp(e->name, "dialog ", 7) == 0) {
-        ui_dialog_close();
-        if (strcmp(e->name, "dialog ok") == 0 && asked[0] != 0) sessions(&(ui_event){.kind = UI_ACTION, .name = asked, .index = e->index});
-        asked[0] = 0;
-        return;
-    }
     if (strcmp(e->name, "session create") == 0) {
         char question[96];
         snprintf(asked, sizeof asked, "create %zu", e->index);
@@ -309,7 +330,8 @@ static void sessions(const ui_event* e) {
         return;
     }
     bool tab = sscanf(e->name, "session %d", &number) == 1;
-    if (!tab && sscanf(e->name, "session %15s %d", verb, &number) != 2) return;
+    if (!tab && sscanf(e->name, "session %15s", verb) != 1) return;
+    if (!tab && e->index < state.session_count) number = state.sessions[e->index].number;
     session_info* s = numbered(number);
     if (s == NULL) return;
     if (tab && s->shown) {
@@ -335,7 +357,18 @@ static void sessions(const ui_event* e) {
 
 // What main.c is to do with an event
 static void handle(const ui_event* e) {
-    if ((e->kind == UI_SET && e->setting == NULL) || (e->kind == UI_ACTION && strncmp(e->name, "wifi ", 5) == 0 && e->name[5] != 'o')) {
+    if (e->kind == UI_ACTION && strncmp(e->name, "dialog ", 7) == 0) {
+        char then[sizeof asked];
+        snprintf(then, sizeof then, "%s", strcmp(e->name, "dialog ok") == 0 ? asked : "");
+        asked[0] = 0;
+        ui_dialog_close();
+        if (then[0] != 0) handle(&(ui_event){.kind = UI_ACTION, .name = then});
+        snprintf(action, sizeof action, "%s", e->name);
+    } else if (e->kind == UI_ACTION && strcmp(e->name, "wifi toggle") == 0) {
+        state.wifi_enabled = !state.wifi_enabled, snprintf(action, sizeof action, "%s", e->name);
+    } else if (e->kind == UI_ACTION && strcmp(e->name, "lte toggle") == 0) {
+        state.lte_enabled = !state.lte_enabled, snprintf(action, sizeof action, "%s", e->name);
+    } else if (e->kind == UI_ACTION && strncmp(e->name, "wifi ", 5) == 0) {
         wifi_screen(e);
         snprintf(action, sizeof action, "%s %zu", e->name, e->index);
     } else if (e->kind == UI_SET) {
@@ -346,7 +379,6 @@ static void handle(const ui_event* e) {
     } else if (e->kind == UI_ACTION) {
         snprintf(action, sizeof action, "%s %zu", e->name, e->index);
         sessions(e);
-        if (strcmp(e->name, "wifi on save") == 0 || strcmp(e->name, "wifi off save") == 0) state.wifi_enabled = e->name[6] == 'n';
     } else {
         return;
     }
@@ -430,7 +462,7 @@ static void run_input(const char* script) {
         } else if (strcmp(step, "dialog:confirm") == 0) {
             ui_dialog(UI_CONFIRM, "처음 보는 호스트 nas.lan", "SHA256:Uq5Ow1Ql0hKdM2dQ3s9sQe3ZQfZQ0d0qk6m1n2o3p4q\n이 키를 믿고 연결할까요?", "연결");
         } else if (strcmp(step, "dialog:prompt") == 0) {
-            ui_dialog(UI_PROMPT, "admin@nas.lan", "비밀번호", "확인");
+            ui_dialog(UI_PASSWORD, "admin@nas.lan", "비밀번호", "확인");
         } else {
             size_t i = 0;
             while (i < sizeof keys / sizeof keys[0] && (strncmp(step, "key:", 4) != 0 || strcmp(step + 4, keys[i].name) != 0))

@@ -25,7 +25,7 @@ drop), so it stays joined through restarts of the Tab5. It also holds the Wi-Fi 
 esp_hosted's Network Split), which the Tab5 shares with ports 49152-61439 and TCP 22 its own, so a restart of the Tab5
 needs no DHCP. Update the Tab5 before the C6: an older Tab5 gets no Wi-Fi address from it.
 It checks that its network reaches the internet (TCP 443 of 1.1.1.1, 8.8.8.8, 9.9.9.9) at each lease and moves to another
-known network in reach after two failures in a row; `wifi connect` and the Wi-Fi screen have it join a network. The Tab5
+known network in reach after two failures in a row; `wifi connect` and the network screen have it join a network. The Tab5
 resolves and checks the SSH host itself, with those addresses as DNS servers when the path's give no answer, and a session
 waiting to reconnect says whether the host, its name or the internet is missing.
 
@@ -105,8 +105,9 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
   open. On the terminal a tap clicks and a drag turns the wheel every `touch.wheel_px` (48) for a program that asked for
   the mouse (tmux, vim with `mouse=a`, htop); otherwise a drag is Up/Down on the alternate screen (`touch.arrows`, as
   Ghostty's alternate scroll) or scrolls the scrollback until the next key. The settings screen restarts the Tab5 too.
-  The network screen lists the saved Wi-Fi networks in the order they are tried; one opens to change its password, move
-  it up, join or delete it, 추가 adds one from a scan or typed (연결 saves it once joined). `.config/tab5-ssh/ui.json` on
+  The network screen turns Wi-Fi and LTE on or off for good (● marks the path in use) and lists the saved Wi-Fi networks
+  in the order they are tried, each with 연결, 위로, 수정 (a new password) and 삭제; 추가 lists the networks a scan sees
+  that are not saved, one tapped or typed (직접 입력) joined and saved once joined. `.config/tab5-ssh/ui.json` on
   the SD card replaces the built-in `main/ui.json`.
 - Sleep: after `sleep.idle_minutes` without a key or a touch (화면 끄기; 0, the default: never), or on `sleep`, the screen
   goes off; a key or `wake` turns it on, the key going no further (touch does not). While no computer uses USB-C the

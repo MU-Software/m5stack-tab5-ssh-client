@@ -8,6 +8,7 @@
 #include <esp_attr.h>
 #include <esp_timer.h>
 
+#include "c6_protocol.h"
 #include "clock.h"
 #include "lte.h"
 #include "network.h"
@@ -64,30 +65,19 @@ static const char* const session_states[] = {
     [SESSION_RECONNECTING] = "다시 연결 중", [SESSION_ASKING] = "입력 기다림", [SESSION_DELETING] = "삭제 중",
 };
 
-// {session.N}: its tab, ● for the shown one and a mark for one that is not connected or has a failure to tell;
-// {session.N.FIELD}: its row on the sessions screen
-static const char* session_value(int number, const char* field) {
+// A session's tab: ● for the shown one, and a mark for one that is not connected or has a failure to tell
+static const char* tab(int number) {
     static const char* const marks[] = {
         [SESSION_DISCONNECTED] = " ×", [SESSION_CONNECTING] = " …", [SESSION_CONNECTED] = "",
         [SESSION_RECONNECTING] = " …", [SESSION_ASKING] = " ?",     [SESSION_DELETING] = " ×",
     };
-    const session_info* s = NULL;
-    for (size_t i = 0; i < state->session_count; i++)
-        if (state->sessions[i].number == number) s = &state->sessions[i];
-    if (s == NULL) return NULL;
-    if (field == NULL)
+    for (size_t i = 0; i < state->session_count; i++) {
+        const session_info* s = &state->sessions[i];
+        if (s->number != number) continue;
         snprintf(text, sizeof text, "%s %d %.48s%s", s->shown ? "●" : "○", number, s->alias, s->alert ? " !" : marks[s->status]);
-    else if (strcmp(field, "number") == 0)
-        snprintf(text, sizeof text, "%d", number);
-    else if (strcmp(field, "alias") == 0)
-        return s->alias;
-    else if (strcmp(field, "status") == 0)
-        return session_states[s->status];
-    else if (strcmp(field, "toggle") == 0)
-        return s->status == SESSION_DISCONNECTED ? "연결" : "끊기";
-    else
-        return strcmp(field, "idle") == 0 && s->status != SESSION_DELETING && !s->creating ? "1" : NULL;
-    return text;
+        return text;
+    }
+    return NULL;
 }
 
 static const char* network(void) {
@@ -120,24 +110,32 @@ static const char* modem_shown(const char* name) {
     return text;
 }
 
+// Forgotten networks keep their place with an empty SSID
+static const wifi_network* network_at(size_t index) {
+    for (const wifi_network* w = state->wifi; w != NULL; w = w->next)
+        if (w->ssid[0] != 0 && index-- == 0) return w;
+    return NULL;
+}
+
 static const char* wifi_value(const char* name) {
-    const wifi_edit* w = &state->wifi_edit;
-    if (strcmp(name, "title") == 0) return w->saved[0] ? " Wi-Fi 수정" : " Wi-Fi 추가";
-    if (strcmp(name, "ssid") == 0) return w->network.ssid;
-    if (strcmp(name, "password") == 0) return w->network.password;
-    if (strcmp(name, "saved") == 0) return w->saved;
-    if (strcmp(name, "new") == 0) return w->saved[0] ? NULL : "새 망";
-    if (strcmp(name, "result") == 0) return w->result;
+    if (strcmp(name, "path") == 0) return strcmp(net.path, "Wi-Fi") == 0 ? "●" : NULL;
+    if (strcmp(name, "toggle") == 0) return state->wifi_enabled ? "끄기" : "켜기";
+    if (strcmp(name, "adding") == 0) return state->wifi_adding ? "1" : NULL;
+    if (strcmp(name, "count") == 0) {
+        size_t saved = 0;
+        while (network_at(saved) != NULL)
+            saved++;
+        snprintf(text, sizeof text, "%zu/%d", saved, C6_NETWORKS);
+        return text;
+    }
     if (strcmp(name, "scan") == 0) {
-        static const char* const states[] = {
-            [WIFI_SCAN_NONE] = NULL,
-            [WIFI_SCAN_RUNNING] = "찾는 중…",
-            [WIFI_SCAN_DONE] = "누르면 SSID에 넣음",
-            [WIFI_SCAN_FAILED] = "찾지 못함",
-        };
         wifi_visible_network v;
-        if (!net.wifi_on) return "Wi-Fi가 꺼져 있음";
-        return wifi_scan_now() == WIFI_SCAN_DONE && !wifi_visible(0, &v) ? "보이는 망 없음" : states[wifi_scan_now()];
+        wifi_scan_state scan = wifi_scan_now();
+        return !net.wifi_on                                                  ? "Wi-Fi가 꺼져 있음"
+               : scan == WIFI_SCAN_RUNNING                                   ? "찾는 중…"
+               : scan == WIFI_SCAN_FAILED                                    ? "찾지 못함"
+               : scan == WIFI_SCAN_DONE && !wifi_visible(state->wifi, 0, &v) ? "사용 가능한 Wi-Fi 없음"
+                                                                             : NULL;
     }
     return NULL;
 }
@@ -146,9 +144,9 @@ static const char* value(void* user, const char* name) {
     (void)user;
     refresh();
     int number, end = 0;
-    if (sscanf(name, "session.%d%n", &number, &end) == 1 && (name[end] == 0 || name[end] == '.'))
-        return session_value(number, name[end] == '.' ? name + end + 1 : NULL);
+    if (sscanf(name, "session.%d%n", &number, &end) == 1 && name[end] == 0) return tab(number);
     if (strcmp(name, "sessions.none") == 0) return state->session_count == 0 ? "1" : NULL;
+    if (strcmp(name, "sessions.any") == 0) return state->session_count > 0 ? "1" : NULL;
     if (strcmp(name, "hosts.room") == 0) return state->hosts != NULL && state->session_count < MAX_SESSIONS ? "1" : NULL;
     if (strcmp(name, "sessions") == 0) {
         snprintf(text, sizeof text, "%zu/%d", state->session_count, MAX_SESSIONS);
@@ -172,14 +170,8 @@ static const char* value(void* user, const char* name) {
         strftime(text, sizeof text, "%H:%M", localtime_r(&now, &local));
         return text;
     }
-    if (strcmp(name, "path") == 0) {
-        bool lte = strcmp(net.path, "LTE") == 0;
-        if (strcmp(net.path, "none") == 0) return "없음";
-        snprintf(text, sizeof text, "%s (%s)", net.path, lte ? net.lte_address : net.wifi_address);
-        return text;
-    }
     if (strcmp(name, "wifi.state") == 0) {
-        if (!net.wifi_on) return !state->wifi_enabled ? "꺼짐 (재시작 후에도)" : "꺼짐";
+        if (!net.wifi_on) return "꺼짐";
         if (!net.wifi_joined) return "찾는 중";
         snprintf(text, sizeof text, "%s %s", net.ssid,
                  (const char* const[]){"연결됨, 인터넷 확인 중", "연결됨", "연결됨, 인터넷 없음"}[net.wifi_internet]);
@@ -190,10 +182,9 @@ static const char* value(void* user, const char* name) {
         snprintf(text, sizeof text, "%s · %d dBm", net.wifi_address, net.rssi);
         return text;
     }
-    if (strcmp(name, "lte.state") == 0) {
-        if (!net.lte_on) return !state->lte_enabled ? "꺼짐 (재시작 후에도)" : "꺼짐";
-        return lte_states[net.lte];
-    }
+    if (strcmp(name, "lte.state") == 0) return net.lte_on ? lte_states[net.lte] : "꺼짐";
+    if (strcmp(name, "lte.path") == 0) return strcmp(net.path, "LTE") == 0 ? "●" : NULL;
+    if (strcmp(name, "lte.toggle") == 0) return state->lte_enabled ? "끄기" : "켜기";
     if (strcmp(name, "lte.detail") == 0) return net.lte_address[0] != 0 ? net.lte_address : NULL;
     if (strncmp(name, "modem.", 6) == 0) return modem_shown(name + 6);
     if (strncmp(name, "wifi.", 5) == 0) return wifi_value(name + 5);
@@ -216,19 +207,12 @@ static const ssh_host* host(size_t index) {
     return h;
 }
 
-// Forgotten networks keep their place with an empty SSID
-static const wifi_network* network_at(size_t index) {
-    for (const wifi_network* w = state->wifi; w != NULL; w = w->next)
-        if (w->ssid[0] != 0 && index-- == 0) return w;
-    return NULL;
-}
-
 static size_t count(void* user, const char* name) {
     (void)user;
     size_t n = 0;
     wifi_visible_network v;
     if (strcmp(name, "visible") == 0)
-        while (wifi_visible(n, &v))
+        while (wifi_visible(state->wifi, n, &v))
             n++;
     if (strcmp(name, "hosts") == 0)
         while (host(n) != NULL)
@@ -236,6 +220,7 @@ static size_t count(void* user, const char* name) {
     if (strcmp(name, "wifi") == 0)
         while (network_at(n) != NULL)
             n++;
+    if (strcmp(name, "sessions") == 0) n = state->session_count;
     return n;
 }
 
@@ -244,21 +229,30 @@ static const char* item(void* user, const char* name, size_t index, const char* 
     if (strcmp(name, "wifi") == 0) {
         const wifi_network* w = network_at(index);
         if (w == NULL) return NULL;
+        bool joined = net.wifi_joined && strcmp(w->ssid, net.ssid) == 0;
         if (strcmp(field, "ssid") == 0) return w->ssid;
-        if (strcmp(field, "order") == 0) snprintf(text, sizeof text, "%zu", index + 1);
-        if (strcmp(field, "joined") == 0) return net.wifi_joined && strcmp(w->ssid, net.ssid) == 0 ? "← 연결됨" : NULL;
-        return strcmp(field, "order") == 0 ? text : NULL;
+        if (strcmp(field, "joined") == 0) return joined ? "연결됨" : NULL;
+        if (strcmp(field, "join") == 0) return joined ? NULL : "1";
+        if (strcmp(field, "up") == 0) return index > 0 ? "1" : NULL;
+        if (strcmp(field, "order") != 0) return NULL;
+        snprintf(text, sizeof text, "%zu", index + 1);
+        return text;
+    }
+    const session_info* s = strcmp(name, "sessions") == 0 && index < state->session_count ? &state->sessions[index] : NULL;
+    if (s != NULL) {
+        if (strcmp(field, "alias") == 0) return s->alias;
+        if (strcmp(field, "status") == 0) return session_states[s->status];
+        if (strcmp(field, "toggle") == 0) return s->status == SESSION_DISCONNECTED ? "연결" : "끊기";
+        if (strcmp(field, "idle") == 0) return s->status != SESSION_DELETING && !s->creating ? "1" : NULL;
+        if (strcmp(field, "number") != 0) return NULL;
+        snprintf(text, sizeof text, "%d", s->number);
+        return text;
     }
     wifi_visible_network v;
-    if (strcmp(name, "visible") == 0 && wifi_visible(index, &v)) {
+    if (strcmp(name, "visible") == 0 && wifi_visible(state->wifi, index, &v)) {
         if (strcmp(field, "ssid") == 0) snprintf(text, sizeof text, "%s", v.ssid);
         if (strcmp(field, "signal") == 0) snprintf(text, sizeof text, "%d dBm", v.rssi);
         if (strcmp(field, "lock") == 0) return v.open ? "열림" : NULL;
-        if (strcmp(field, "saved") == 0) {
-            for (const wifi_network* w = state->wifi; w != NULL; w = w->next)
-                if (strcmp(w->ssid, v.ssid) == 0) return "저장됨";
-            return NULL;
-        }
         return strcmp(field, "ssid") == 0 || strcmp(field, "signal") == 0 ? text : NULL;
     }
     const ssh_host* h = strcmp(name, "hosts") == 0 ? host(index) : NULL;

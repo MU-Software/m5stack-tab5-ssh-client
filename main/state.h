@@ -68,15 +68,6 @@ typedef struct {
     bool usb_a, wifi_wake;
 } sleep_settings;
 
-// The Wi-Fi screen: the saved network it changes ("" for a new one), the network as typed, what came of the last step, and
-// a delete waiting for a second press
-typedef struct {
-    char saved[33];
-    wifi_network network;
-    const char* result;
-    bool deleting;
-} wifi_edit;
-
 // The SD card's .config/tab5-ssh/config.json; without it, the defaults
 typedef enum { CONFIG_LOADED, CONFIG_MISSING, CONFIG_NO_CARD, CONFIG_INVALID } config_state;
 
@@ -137,5 +128,6 @@ typedef struct {
         // Only this SSH user name; empty for any, the key alone deciding
         char user[33];
     } remote;
-    wifi_edit wifi_edit;
+    // The network screen shows the networks a scan saw
+    bool wifi_adding;
 } global_state;

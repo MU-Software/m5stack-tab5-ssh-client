@@ -36,5 +36,5 @@ typedef struct {
 // The networks in reach, once the C6 is not rejoining
 void wifi_scan(void);
 wifi_scan_state wifi_scan_now(void);
-// Network index of the last scan, strongest first; false past the last
-bool wifi_visible(size_t index, wifi_visible_network* out);
+// Network index of the last scan that `saved` does not list, strongest first; false past the last
+bool wifi_visible(const wifi_network* saved, size_t index, wifi_visible_network* out);

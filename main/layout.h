@@ -9,10 +9,11 @@
 // A screen in cells from JSON. "rows" stacks its children, each sized by "height"; "columns" sets them side by side,
 // each sized by "width". A size is cells (a number), "N%" of the parent or "Nfr", a share of what the others leave
 // (absent: "1fr"); "when": SETTING hides a node while that setting is off. Leaves: "text" (may hold {name}), "button"
-// (an action, labelled by "text"), "terminal", "list" (a list's items, one a row, each as "item" with {field}s, and
-// "action" for the chosen one) and the settings' editors "toggle", "number", "choice" and "field" (also a value of the
-// screens' that is not a setting; "secret": shown as *).
-enum { LAYOUT_MAX_NODES = 256 };
+// (an action, labelled by "text"), "terminal", "list" (a list's items, one a row, each as "item" with {field}s, "action"
+// for the chosen one, and "buttons" at the end of each row, each "width" cells, whose "text" and "when" name the row's
+// fields) and the settings' editors "toggle", "number", "choice" and "field" (also a value of the screens' that is not a
+// setting; "secret": shown as *).
+enum { LAYOUT_MAX_NODES = 256, LAYOUT_MAX_BUTTONS = 6 };
 
 typedef enum {
     LAYOUT_ROWS,
@@ -45,7 +46,8 @@ typedef struct {
     const char *text, *action, *name, *item, *when;
     layout_style style;
     layout_align align;
-    bool border, secret;
+    // per_item: one of a list's buttons, on each of its rows
+    bool border, secret, per_item;
     layout_unit unit;
     int32_t size;
     // Children are nodes[first .. first + children - 1]

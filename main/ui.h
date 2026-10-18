@@ -62,15 +62,15 @@ const char* ui_panel(void);
 bool ui_terminal(layout_area* out);
 // A touch on cell (column, row)
 ui_event ui_touch(ui_touch_phase phase, int32_t column, int32_t row);
-// A key for the open dialog, else the open panel: arrows and Tab move, Enter chooses, Escape closes; `text` (UTF-8) for
-// UI_KEY_TEXT
+// A key for the open dialog, else the open panel: arrows and Tab move (←→ along a list row's buttons), Enter chooses,
+// Escape closes; `text` (UTF-8) for UI_KEY_TEXT
 ui_event ui_key(ui_key_code key, const char* text);
 
-typedef enum { UI_ALERT, UI_CONFIRM, UI_PROMPT } ui_dialog_kind;
+typedef enum { UI_ALERT, UI_CONFIRM, UI_PROMPT, UI_PASSWORD } ui_dialog_kind;
 
 // A box over the screens, which alone takes keys and touches until ui_dialog_close: `title` (NULL for none), up to three
-// \n-separated lines of `text`, a secret field for a prompt, and button "dialog ok" labelled `yes` with "dialog cancel" but
-// for an alert. Its buttons' events carry the serial it returns, 0 without a layout, as index.
+// \n-separated lines of `text`, a field for a prompt (secret for a password), and button "dialog ok" labelled `yes` with
+// "dialog cancel" but for an alert. Its buttons' events carry the serial it returns, 0 without a layout, as index.
 unsigned ui_dialog(ui_dialog_kind kind, const char* title, const char* text, const char* yes);
 void ui_dialog_close(void);
 // The serial of the dialog shown, 0 for none

@@ -37,58 +37,16 @@
         {"height": 1, "style": "title", "text": " 세션 {sessions}"},
         {"height": 1, "text": ""},
         {
-          "height": 1,
-          "when": "session.1",
-          "columns": [
-            {"text": "  {session.1.number:3}{session.1.alias:16}{session.1.status}"},
-            {"width": 8, "when": "session.1.idle", "style": "button", "button": "session open 1", "text": "보기"},
-            {"width": 1, "text": ""},
-            {"width": 8, "when": "session.1.idle", "style": "button", "button": "session toggle 1", "text": "{session.1.toggle}"},
-            {"width": 1, "text": ""},
-            {"width": 8, "when": "session.1.idle", "style": "button", "button": "session delete 1", "text": "삭제"},
-            {"width": 2, "text": ""}
+          "height": 4,
+          "when": "sessions.any",
+          "list": "sessions",
+          "item": "  {number:3}{alias:16}{status}",
+          "buttons": [
+            {"width": 8, "when": "idle", "style": "button", "button": "session open", "text": "보기"},
+            {"width": 8, "when": "idle", "style": "button", "button": "session toggle", "text": "{toggle}"},
+            {"width": 8, "when": "idle", "style": "button", "button": "session delete", "text": "삭제"}
           ]
         },
-        {
-          "height": 1,
-          "when": "session.2",
-          "columns": [
-            {"text": "  {session.2.number:3}{session.2.alias:16}{session.2.status}"},
-            {"width": 8, "when": "session.2.idle", "style": "button", "button": "session open 2", "text": "보기"},
-            {"width": 1, "text": ""},
-            {"width": 8, "when": "session.2.idle", "style": "button", "button": "session toggle 2", "text": "{session.2.toggle}"},
-            {"width": 1, "text": ""},
-            {"width": 8, "when": "session.2.idle", "style": "button", "button": "session delete 2", "text": "삭제"},
-            {"width": 2, "text": ""}
-          ]
-        },
-        {
-          "height": 1,
-          "when": "session.3",
-          "columns": [
-            {"text": "  {session.3.number:3}{session.3.alias:16}{session.3.status}"},
-            {"width": 8, "when": "session.3.idle", "style": "button", "button": "session open 3", "text": "보기"},
-            {"width": 1, "text": ""},
-            {"width": 8, "when": "session.3.idle", "style": "button", "button": "session toggle 3", "text": "{session.3.toggle}"},
-            {"width": 1, "text": ""},
-            {"width": 8, "when": "session.3.idle", "style": "button", "button": "session delete 3", "text": "삭제"},
-            {"width": 2, "text": ""}
-          ]
-        },
-        {
-          "height": 1,
-          "when": "session.4",
-          "columns": [
-            {"text": "  {session.4.number:3}{session.4.alias:16}{session.4.status}"},
-            {"width": 8, "when": "session.4.idle", "style": "button", "button": "session open 4", "text": "보기"},
-            {"width": 1, "text": ""},
-            {"width": 8, "when": "session.4.idle", "style": "button", "button": "session toggle 4", "text": "{session.4.toggle}"},
-            {"width": 1, "text": ""},
-            {"width": 8, "when": "session.4.idle", "style": "button", "button": "session delete 4", "text": "삭제"},
-            {"width": 2, "text": ""}
-          ]
-        },
-        {"height": 1, "text": ""},
         {"height": 1, "when": "hosts.room", "style": "section", "text": " Host 목록"},
         {"when": "hosts.room", "rows": [{"list": "hosts", "item": "  {alias:16}{user}@{hostname}{port}", "action": "session create"}]}
       ]
@@ -96,102 +54,66 @@
     "network": {
       "style": "panel",
       "rows": [
-        {
-          "height": 1,
-          "columns": [
-            {"style": "title", "text": " 망"},
-            {"width": 10, "style": "button", "button": "close", "text": "닫기"}
-          ]
-        },
-        {"height": 1, "style": "hint", "text": " Tab·↑↓ 이동 · Enter 누르기·수정 · Esc 닫기"},
-        {"height": 1, "text": ""},
-        {"height": 1, "columns": [{"width": 12, "style": "label", "text": " 경로"}, {"text": "{path}"}]},
+        {"height": 1, "style": "title", "text": " 망"},
         {"height": 1, "text": ""},
         {
           "height": 1,
           "columns": [
-            {"width": 12, "style": "label", "text": " Wi-Fi"},
+            {"width": 2, "align": "right", "text": "{wifi.path}"},
+            {"width": 8, "style": "label", "text": " Wi-Fi"},
             {"text": "{wifi.state}"},
-            {"width": 10, "style": "button", "button": "wifi on save", "text": "켜기"},
-            {"width": 1, "text": ""},
-            {"width": 10, "style": "button", "button": "wifi off save", "text": "끄기"},
-            {"width": 2, "text": ""}
+            {"width": 8, "style": "button", "button": "wifi toggle", "text": "{wifi.toggle}"},
+            {"width": 1, "text": ""}
           ]
         },
-        {"height": 1, "columns": [{"width": 12, "text": ""}, {"style": "hint", "text": "{wifi.detail}"}]},
-        {"height": 1, "text": ""},
+        {"height": 1, "columns": [{"width": 10, "text": ""}, {"style": "hint", "text": "{wifi.detail}"}]},
         {
           "height": 1,
           "columns": [
-            {"width": 12, "style": "label", "text": " LTE"},
+            {"width": 2, "align": "right", "text": "{lte.path}"},
+            {"width": 8, "style": "label", "text": " LTE"},
             {"text": "{lte.state}"},
-            {"width": 10, "style": "button", "button": "lte on save", "text": "켜기"},
-            {"width": 1, "text": ""},
-            {"width": 10, "style": "button", "button": "lte off save", "text": "끄기"},
-            {"width": 2, "text": ""}
+            {"width": 8, "style": "button", "button": "lte toggle", "text": "{lte.toggle}"},
+            {"width": 1, "text": ""}
           ]
         },
-        {"height": 1, "columns": [{"width": 12, "text": ""}, {"style": "hint", "text": "{lte.detail}"}]},
-        {"height": 1, "style": "hint", "text": " 켜고 끈 것은 재시작 뒤에도 그대로"},
+        {"height": 1, "columns": [{"width": 10, "text": ""}, {"style": "hint", "text": "{lte.detail}"}]},
         {"height": 1, "text": ""},
         {
           "height": 1,
           "columns": [
-            {"style": "section", "text": " 저장된 Wi-Fi · 보이는 것 중 위부터 접속"},
-            {"width": 10, "style": "button", "button": "wifi add", "text": "추가"},
-            {"width": 2, "text": ""}
+            {"style": "section", "text": " 저장된 Wi-Fi {wifi.count}"},
+            {"width": 8, "style": "button", "button": "wifi add", "text": "추가"},
+            {"width": 1, "text": ""}
           ]
         },
-        {"list": "wifi", "item": " {order:3}{ssid:34}{joined}", "action": "wifi edit"}
-      ]
-    },
-    "wifi": {
-      "style": "panel",
-      "rows": [
         {
-          "height": 1,
-          "columns": [
-            {"style": "title", "text": "{wifi.title}"},
-            {"width": 10, "style": "button", "button": "network", "text": "뒤로"},
-            {"width": 1, "text": ""},
-            {"width": 10, "style": "button", "button": "close", "text": "닫기"}
+          "list": "wifi",
+          "item": " {order:3}{ssid:34}{joined}",
+          "buttons": [
+            {"width": 8, "when": "join", "style": "button", "button": "wifi join", "text": "연결"},
+            {"width": 8, "when": "up", "style": "button", "button": "wifi up", "text": "위로"},
+            {"width": 8, "style": "button", "button": "wifi edit", "text": "수정"},
+            {"width": 8, "style": "button", "button": "wifi delete", "text": "삭제"}
           ]
         },
-        {"height": 1, "style": "hint", "text": " Tab·↑↓ 이동 · Enter 입력·누르기 · Esc 닫기"},
-        {"height": 1, "text": ""},
-        {"height": 1, "columns": [{"width": 12, "style": "label", "text": " SSID"}, {"width": 36, "style": "field", "field": "wifi.ssid"}]},
-        {"height": 1, "text": ""},
-        {"height": 1, "columns": [{"width": 12, "style": "label", "text": " 비밀번호"}, {"width": 36, "style": "field", "field": "wifi.password", "secret": true}]},
-        {"height": 1, "columns": [{"width": 12, "text": ""}, {"style": "hint", "text": "새로 입력하면 바뀜 · 비우면 열린 망"}]},
-        {"height": 1, "text": ""},
         {
-          "height": 1,
-          "columns": [
-            {"width": 1, "text": ""},
-            {"width": 10, "style": "button", "button": "wifi join", "text": "연결"},
-            {"width": 1, "text": ""},
-            {"width": 10, "style": "button", "button": "wifi save", "text": "저장"},
-            {"width": 1, "when": "wifi.saved", "text": ""},
-            {"width": 10, "when": "wifi.saved", "style": "button", "button": "wifi up", "text": "위로"},
-            {"width": 1, "when": "wifi.saved", "text": ""},
-            {"width": 10, "when": "wifi.saved", "style": "button", "button": "wifi delete", "text": "삭제"},
-            {"width": 2, "text": ""},
-            {"style": "alert", "text": "{wifi.result}"}
+          "when": "wifi.adding",
+          "rows": [
+            {"height": 1, "text": ""},
+            {
+              "height": 1,
+              "columns": [
+                {"style": "section", "text": " 사용 가능한 Wi-Fi"},
+                {"width": 20, "style": "hint", "align": "right", "text": "{wifi.scan}"},
+                {"width": 2, "text": ""},
+                {"width": 12, "style": "button", "button": "wifi type", "text": "직접 입력"},
+                {"width": 1, "text": ""}
+              ]
+            },
+            {"list": "visible", "item": "    {ssid:34}{signal:10}{lock}", "action": "wifi pick"}
           ]
-        },
-        {"height": 1, "style": "hint", "text": " 연결: 붙으면 저장 · 저장: 연결 없이 · 위로: 먼저 접속"},
-        {"height": 1, "text": ""},
-        {
-          "height": 1,
-          "when": "wifi.new",
-          "columns": [
-            {"style": "section", "text": " 보이는 Wi-Fi"},
-            {"width": 10, "style": "button", "button": "wifi scan", "text": "찾기"},
-            {"width": 2, "text": ""}
-          ]
-        },
-        {"height": 1, "when": "wifi.new", "style": "hint", "text": " {wifi.scan}"},
-        {"when": "wifi.new", "rows": [{"list": "visible", "item": "   {ssid:34}{signal:10}{lock:6}{saved}", "action": "wifi pick"}]}
+        }
       ]
     },
     "modem": {
