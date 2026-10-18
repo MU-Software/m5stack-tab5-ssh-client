@@ -14,6 +14,9 @@ typedef struct {
     int focus;
     bool editing, edited;
     char edit[128];
+    // For each list: the item chosen, the first shown, and the button chosen on the chosen item (-1 for none)
+    size_t chosen[LAYOUT_MAX_NODES], first[LAYOUT_MAX_NODES];
+    int chosen_button[LAYOUT_MAX_NODES];
 } shown_screen;
 
 // Every dialog, built in as they are opened by function; its styles come from the layout
@@ -27,8 +30,10 @@ static const char box[] =
     "{\"height\": 1, \"when\": \"dialog.prompt\", \"columns\": [{\"width\": 1, \"text\": \"\"},"
     " {\"style\": \"field\", \"field\": \"dialog.answer\"}, {\"width\": 1, \"text\": \"\"}]},"
     "{\"height\": 1, \"when\": \"dialog.prompt\", \"text\": \"\"},"
+    "{\"height\": 16, \"when\": \"dialog.list\", \"list\": \"dialog.list\", \"action\": \"dialog pick\"},"
+    "{\"height\": 1, \"when\": \"dialog.list\", \"text\": \"\"},"
     "{\"height\": 1, \"columns\": [{\"text\": \"\"},"
-    " {\"width\": 10, \"when\": \"dialog.cancel\", \"style\": \"button\", \"button\": \"dialog cancel\", \"text\": \"취소\"},"
+    " {\"width\": 10, \"when\": \"dialog.cancel\", \"style\": \"button\", \"button\": \"dialog cancel\", \"text\": \"{dialog.no}\"},"
     " {\"width\": 2, \"when\": \"dialog.cancel\", \"text\": \"\"},"
     " {\"width\": 10, \"style\": \"button\", \"button\": \"dialog ok\", \"text\": \"{dialog.yes}\"}, {\"width\": 1, \"text\": \"\"}]}"
     "]}";
@@ -51,15 +56,14 @@ static char home[sizeof panel_name];
 static ui_dialog_kind dialog_kind;
 static unsigned dialog_serial;
 static char dialog_title[96], dialog_lines[DIALOG_LINES][160], dialog_yes[32];
+// A list dialog's list, its items and the value over it
+static char dialog_list[32], dialog_item[96], dialog_note[32];
 static bool whole;
 static uint32_t laid_out; // hash of the "when"s
 // The node a touch went down on, its list's item for a list's button, and whether it is still over it
 static const layout_node* pressed;
 static size_t pressed_item;
 static bool over;
-// In the panel, for each list: the item chosen, the first shown, and the button chosen on the chosen item (-1 for none)
-static size_t chosen[LAYOUT_MAX_NODES], first[LAYOUT_MAX_NODES];
-static int chosen_button[LAYOUT_MAX_NODES];
 
 shr_status ui_start(shr_context* context, shr_pl_res_bitmap_font* font, int32_t z, int32_t columns_count, int32_t rows_count, int32_t width_pixels,
                     const ui_source* values) {
@@ -83,8 +87,11 @@ static const char* value_of(const char* name) {
     if (strncmp(name, "dialog.", 7) != 0) return source->text(source->user, name);
     name += 7;
     if (strcmp(name, "title") == 0) return dialog_title;
+    if (strcmp(name, "line.1") == 0 && dialog_kind == UI_LIST) return source->text(source->user, dialog_note);
     if (sscanf(name, "line.%d", &line) == 1 && line >= 1 && line <= DIALOG_LINES) return dialog_lines[line - 1];
     if (strcmp(name, "yes") == 0) return dialog_yes;
+    if (strcmp(name, "no") == 0) return dialog_kind == UI_LIST ? "닫기" : "취소";
+    if (strcmp(name, "list") == 0) return dialog_kind == UI_LIST ? "1" : NULL;
     if (strcmp(name, "prompt") == 0) return dialog_kind >= UI_PROMPT ? "1" : NULL;
     if (strcmp(name, "cancel") == 0) return dialog_kind != UI_ALERT ? "1" : NULL;
     return NULL;
@@ -125,13 +132,13 @@ static void lay_out(void) {
         t = layout_find(main_screen.screen, LAYOUT_TERMINAL);
     }
     if (panel.screen != NULL) layout_place(panel.screen, t != NULL ? t->area : all, shown, NULL);
-    // In the middle of the screen, its border and the rows shown (one cell each) high
+    // In the middle of the screen, as high as its border and the rows shown
     if (dialog.screen != NULL) {
         const layout_node* root = &dialog.screen->nodes[0];
         int32_t height = 2, across = DIALOG_COLUMNS < columns ? DIALOG_COLUMNS : columns;
         for (int i = 0; i < root->children; i++) {
-            const char* when = dialog.screen->nodes[root->first + i].when;
-            height += when == NULL || shown(NULL, when);
+            const layout_node* c = &dialog.screen->nodes[root->first + i];
+            if (c->when == NULL || shown(NULL, c->when)) height += c->size;
         }
         layout_place(dialog.screen, (layout_area){(columns - across) / 2, (rows - height) / 2, across, height}, shown, NULL);
     }
@@ -170,6 +177,15 @@ static bool in(const shown_screen* s, const layout_node* n) {
     return n != NULL && s->screen != NULL && n >= s->screen->nodes && n < s->screen->nodes + s->screen->count;
 }
 
+// Each list's item that the source chooses
+static void choose_first(shown_screen* s) {
+    for (size_t i = 0; s->screen != NULL && i < s->screen->count; i++) {
+        const layout_node* n = &s->screen->nodes[i];
+        s->chosen[i] = n->kind == LAYOUT_LIST && source->chosen != NULL ? source->chosen(source->user, n->name) : 0;
+        s->first[i] = 0, s->chosen_button[i] = -1;
+    }
+}
+
 bool ui_open(const char* name) {
     // Closing the home panel leaves it open
     if (name == NULL && home[0] != 0 && panel.screen != NULL && strcmp(panel_name, home) == 0) return true;
@@ -180,10 +196,7 @@ bool ui_open(const char* name) {
     if (!in(&dialog, pressed)) pressed = NULL;
     stop_editing(&panel);
     snprintf(panel_name, sizeof panel_name, "%s", name != NULL ? name : "");
-    for (size_t i = 0; screen != NULL && i < screen->count; i++) {
-        chosen[i] = screen->nodes[i].kind == LAYOUT_LIST && source->chosen != NULL ? source->chosen(source->user, screen->nodes[i].name) : 0;
-        first[i] = 0, chosen_button[i] = -1;
-    }
+    choose_first(&panel);
     lay_out();
     bool leading = false;
     for (size_t i = 0; screen != NULL && i < screen->count; i++) {
@@ -205,10 +218,13 @@ const char* ui_panel(void) {
     return panel.screen != NULL ? panel_name : NULL;
 }
 
-// The box's field shows * for a password
-static void hide_password(void) {
-    for (size_t i = 0; i < box_layout->count; i++)
-        if (box_layout->nodes[i].kind == LAYOUT_FIELD) box_layout->nodes[i].secret = dialog_kind == UI_PASSWORD;
+// The box's field shows * for a password, and its list is the list dialog's
+static void fit_box(void) {
+    for (size_t i = 0; i < box_layout->count; i++) {
+        layout_node* n = &box_layout->nodes[i];
+        if (n->kind == LAYOUT_FIELD) n->secret = dialog_kind == UI_PASSWORD;
+        if (n->kind == LAYOUT_LIST) n->name = dialog_list, n->item = dialog_item;
+    }
 }
 
 unsigned ui_dialog(ui_dialog_kind kind, const char* title, const char* text, const char* yes) {
@@ -224,16 +240,31 @@ unsigned ui_dialog(ui_dialog_kind kind, const char* title, const char* text, con
     }
     dialog.screen = box_layout, dialog.focus = -1, pressed = NULL;
     stop_editing(&dialog);
+    fit_box();
+    choose_first(&dialog);
     lay_out();
-    // The field, else the button that does nothing
-    const char* idle = kind >= UI_PROMPT ? NULL : kind == UI_ALERT ? "dialog ok" : "dialog cancel";
-    hide_password();
+    // The field or the list, else the button that does nothing
+    const char* idle = kind == UI_ALERT ? "dialog ok" : "dialog cancel";
+    layout_kind first = kind >= UI_PROMPT ? LAYOUT_FIELD : kind == UI_LIST ? LAYOUT_LIST : LAYOUT_BUTTON;
     for (size_t i = 0; dialog.focus < 0 && i < box_layout->count; i++) {
         const layout_node* n = &box_layout->nodes[i];
-        if (idle == NULL ? n->kind == LAYOUT_FIELD : n->kind == LAYOUT_BUTTON && strcmp(n->action, idle) == 0) dialog.focus = (int)i;
+        if (n->kind == first && (first != LAYOUT_BUTTON || strcmp(n->action, idle) == 0)) dialog.focus = (int)i;
     }
     dialog.editing = kind >= UI_PROMPT;
     return ++dialog_serial;
+}
+
+unsigned ui_dialog_list(const char* title, const char* list, const char* item, const char* note, const char* yes) {
+    snprintf(dialog_list, sizeof dialog_list, "%s", list);
+    snprintf(dialog_item, sizeof dialog_item, "%s", item);
+    snprintf(dialog_note, sizeof dialog_note, "%s", note);
+    return ui_dialog(UI_LIST, title, "", yes);
+}
+
+size_t ui_dialog_chosen(void) {
+    for (size_t i = 0; dialog.screen != NULL && i < dialog.screen->count; i++)
+        if (dialog.screen->nodes[i].kind == LAYOUT_LIST) return dialog.chosen[i];
+    return 0;
 }
 
 void ui_dialog_close(void) {
@@ -292,7 +323,8 @@ bool ui_load(const char* text, char* error, size_t size) {
         screen_count++;
     }
     main_screen.screen = find("main");
-    if (dialog.screen != NULL) dialog.screen = box_layout, hide_password();
+    if (box_layout != NULL) fit_box();
+    if (dialog.screen != NULL) dialog.screen = box_layout;
     char open[sizeof panel_name];
     memcpy(open, panel_name, sizeof open);
     if (!ui_open(open[0] != 0 ? open : NULL)) ui_open(NULL);
@@ -469,17 +501,18 @@ static bool draw_list(shown_screen* s, size_t i, bool focused) {
     const layout_node* n = &s->screen->nodes[i];
     size_t count = source->count(source->user, n->name), shown_rows = n->inner.rows > 0 ? (size_t)n->inner.rows : 0;
     int buttons = n->children;
-    bool choosing = s == &panel && focusable(n);
+    bool choosing = s != &main_screen && focusable(n);
     char text[MAX_TEXT + 4], labels[LAYOUT_MAX_BUTTONS][MAX_TEXT + 4];
-    if (choosing && chosen[i] >= count) chosen[i] = count > 0 ? count - 1 : 0;
-    if (choosing && chosen[i] < first[i]) first[i] = chosen[i];
-    if (choosing && shown_rows > 0 && chosen[i] >= first[i] + shown_rows) first[i] = chosen[i] - shown_rows + 1;
+    if (choosing && s->chosen[i] >= count) s->chosen[i] = count > 0 ? count - 1 : 0;
+    if (choosing && s->chosen[i] < s->first[i]) s->first[i] = s->chosen[i];
+    if (choosing && shown_rows > 0 && s->chosen[i] >= s->first[i] + shown_rows) s->first[i] = s->chosen[i] - shown_rows + 1;
     // A button the chosen item no longer has
-    if (chosen_button[i] >= 0 && (count == 0 || !on_item(&s->screen->nodes[n->first + chosen_button[i]], n, chosen[i]))) chosen_button[i] = -1;
-    size_t top = choosing ? first[i] : 0;
+    if (s->chosen_button[i] >= 0 && (count == 0 || !on_item(&s->screen->nodes[n->first + s->chosen_button[i]], n, s->chosen[i])))
+        s->chosen_button[i] = -1;
+    size_t top = choosing ? s->first[i] : 0;
     bool pressing = pressed != NULL && over && pressed >= &s->screen->nodes[n->first] && pressed < &s->screen->nodes[n->first + buttons];
     uint32_t h = mix(mix(mix(2166136261u, &count, sizeof count), &top, sizeof top), (bool[]){focused, pressing}, 2);
-    if (choosing) h = mix(mix(h, &chosen[i], sizeof chosen[i]), &chosen_button[i], sizeof chosen_button[i]);
+    if (choosing) h = mix(mix(h, &s->chosen[i], sizeof s->chosen[i]), &s->chosen_button[i], sizeof s->chosen_button[i]);
     size_t button = pressing ? (size_t)(pressed - s->screen->nodes) : 0;
     if (pressing) h = mix(mix(h, &button, sizeof button), &pressed_item, sizeof pressed_item);
     for (size_t r = 0; r < shown_rows && top + r < count; r++) {
@@ -491,7 +524,7 @@ static bool draw_list(shown_screen* s, size_t i, bool focused) {
     s->drawn[i] = h;
     int32_t text_columns = buttons > 0 ? button_column(s->screen, n, 0) - n->inner.column : n->inner.columns;
     for (size_t r = 0; r < shown_rows; r++) {
-        bool item = top + r < count, mark = choosing && item && top + r == chosen[i], marked = mark && focused && chosen_button[i] < 0;
+        bool item = top + r < count, mark = choosing && item && top + r == s->chosen[i], marked = mark && focused && s->chosen_button[i] < 0;
         size_t length = item ? list_row(s->screen, n, top + r, text, labels, buttons) : 0;
         int32_t at = n->inner.row + (int32_t)r;
         shr_text_style style = look(&n->style, marked);
@@ -501,7 +534,7 @@ static bool draw_list(shown_screen* s, size_t i, bool focused) {
         for (int k = 0; k < buttons; k++) {
             const layout_node* b = &s->screen->nodes[n->first + k];
             bool on = item && labels[k][0] != 0;
-            bool inverse = (on && mark && focused && chosen_button[i] == k) || (pressing && pressed == b && pressed_item == top + r);
+            bool inverse = (on && mark && focused && s->chosen_button[i] == k) || (pressing && pressed == b && pressed_item == top + r);
             if (!on) labels[k][0] = 0;
             draw_text(&(layout_area){button_column(s->screen, n, k), at, b->size, 1}, LAYOUT_CENTER, look(on ? &b->style : &n->style, inverse),
                       labels[k], strlen(labels[k]));
@@ -602,7 +635,7 @@ static ui_event activate(const layout_node* n, int32_t column) {
     shown_screen* screen = active();
     const setting* s = n->name != NULL ? settings_find(n->name) : NULL;
     setting_value v;
-    if (n->per_item) return (ui_event){.kind = UI_ACTION, .name = n->action, .index = chosen[panel.focus]};
+    if (n->per_item) return (ui_event){.kind = UI_ACTION, .name = n->action, .index = screen->chosen[screen->focus]};
     if (n->kind == LAYOUT_BUTTON) {
         if (screen == &dialog) return dialog_action(n->action);
         if (strcmp(n->action, "close") == 0 || (panel.screen != NULL && strcmp(n->action, panel_name) == 0))
@@ -611,10 +644,10 @@ static ui_event activate(const layout_node* n, int32_t column) {
             return (ui_event){.kind = UI_ACTION, .name = n->action};
         return (ui_event){.kind = UI_NONE};
     }
-    size_t i = panel.screen != NULL ? (size_t)(n - panel.screen->nodes) : 0;
     if (n->kind == LAYOUT_LIST) {
         if (n->action == NULL || source->count(source->user, n->name) == 0) return (ui_event){.kind = UI_NONE};
-        return (ui_event){.kind = UI_ACTION, .name = n->action, .index = chosen[i]};
+        if (screen == &dialog) return dialog_action(n->action);
+        return (ui_event){.kind = UI_ACTION, .name = n->action, .index = screen->chosen[n - screen->screen->nodes]};
     }
     // A secret is typed again, not changed; a dialog's answer stays
     if (n->kind == LAYOUT_FIELD && !screen->editing && screen == &panel)
@@ -646,7 +679,7 @@ ui_event ui_touch(ui_touch_phase phase, int32_t column, int32_t row) {
     if (n == NULL && s == &panel && main_screen.screen != NULL) n = layout_at(main_screen.screen, column, row);
     if (n != NULL && !(n->kind == LAYOUT_BUTTON || (in(s, n) && focusable(n)))) n = NULL;
     if (n != NULL && n->kind == LAYOUT_LIST) {
-        list = n, index = first[n - s->screen->nodes] + (size_t)(row - n->inner.row);
+        list = n, index = s->first[n - s->screen->nodes] + (size_t)(row - n->inner.row);
         // Rows past a list's last item are no item
         if (row < n->inner.row || index >= source->count(source->user, n->name)) n = list = NULL;
     }
@@ -656,7 +689,7 @@ ui_event ui_touch(ui_touch_phase phase, int32_t column, int32_t row) {
         if (s->editing && n != &s->screen->nodes[s->focus] && (s == &panel || n != NULL)) e = commit(false);
         pressed = n, pressed_item = index;
         if (in(s, list != NULL ? list : n)) s->focus = (int)((list != NULL ? list : n) - s->screen->nodes);
-        if (list != NULL) chosen[s->focus] = index, chosen_button[s->focus] = k;
+        if (list != NULL) s->chosen[s->focus] = index, s->chosen_button[s->focus] = k;
     }
     over = pressed != NULL && n == pressed && index == pressed_item;
     if (phase != UI_TOUCH_UP) return e;
@@ -704,24 +737,24 @@ ui_event ui_key(ui_key_code key, const char* text) {
     } else if (key == UI_KEY_TAB || key == UI_KEY_BACKTAB) {
         move_focus(screen, key == UI_KEY_TAB ? 1 : -1);
     } else if ((key == UI_KEY_UP || key == UI_KEY_DOWN) && n->kind == LAYOUT_LIST && count > 0 &&
-               (key == UI_KEY_UP ? chosen[screen->focus] > 0 : chosen[screen->focus] + 1 < count)) {
-        chosen[screen->focus] += key == UI_KEY_UP ? (size_t)-1 : 1;
+               (key == UI_KEY_UP ? screen->chosen[screen->focus] > 0 : screen->chosen[screen->focus] + 1 < count)) {
+        screen->chosen[screen->focus] += key == UI_KEY_UP ? (size_t)-1 : 1;
     } else if (key == UI_KEY_UP || key == UI_KEY_DOWN || (in_dialog && (key == UI_KEY_LEFT || key == UI_KEY_RIGHT))) {
         move_focus(screen, key == UI_KEY_UP || key == UI_KEY_LEFT ? -1 : 1);
     } else if ((key == UI_KEY_LEFT || key == UI_KEY_RIGHT) && n->kind == LAYOUT_LIST && count > 0) {
         // The next of the chosen item's buttons, or the item itself
-        int *k = &chosen_button[screen->focus], step = key == UI_KEY_LEFT ? n->children : 1;
+        int *k = &screen->chosen_button[screen->focus], step = key == UI_KEY_LEFT ? n->children : 1;
         do
             *k = (*k + 1 + step) % (n->children + 1) - 1;
-        while (*k >= 0 && !on_item(&screen->screen->nodes[n->first + *k], n, chosen[screen->focus]));
+        while (*k >= 0 && !on_item(&screen->screen->nodes[n->first + *k], n, screen->chosen[screen->focus]));
     } else if ((key == UI_KEY_LEFT || key == UI_KEY_RIGHT) && n->kind >= LAYOUT_TOGGLE && n->kind <= LAYOUT_CHOICE) {
         e = activate(n, key == UI_KEY_LEFT ? n->inner.column : n->inner.column + n->inner.columns);
     } else if (key == UI_KEY_TEXT && n->kind == LAYOUT_FIELD) {
         activate(n, -1);
         e = ui_key(key, text);
-    } else if (key == UI_KEY_ENTER && n->kind == LAYOUT_LIST && chosen_button[screen->focus] >= 0) {
-        const layout_node* b = &screen->screen->nodes[n->first + chosen_button[screen->focus]];
-        if (count > 0 && on_item(b, n, chosen[screen->focus])) e = activate(b, -1);
+    } else if (key == UI_KEY_ENTER && n->kind == LAYOUT_LIST && screen->chosen_button[screen->focus] >= 0) {
+        const layout_node* b = &screen->screen->nodes[n->first + screen->chosen_button[screen->focus]];
+        if (count > 0 && on_item(b, n, screen->chosen[screen->focus])) e = activate(b, -1);
     } else if (key == UI_KEY_ENTER) {
         e = activate(n, -1);
     }

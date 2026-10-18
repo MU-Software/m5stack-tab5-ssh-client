@@ -128,6 +128,4 @@ typedef struct {
         // Only this SSH user name; empty for any, the key alone deciding
         char user[33];
     } remote;
-    // The network screen shows the networks a scan saw
-    bool wifi_adding;
 } global_state;

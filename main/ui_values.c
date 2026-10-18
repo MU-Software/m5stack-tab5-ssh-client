@@ -120,7 +120,6 @@ static const wifi_network* network_at(size_t index) {
 static const char* wifi_value(const char* name) {
     if (strcmp(name, "path") == 0) return strcmp(net.path, "Wi-Fi") == 0 ? "●" : NULL;
     if (strcmp(name, "toggle") == 0) return state->wifi_enabled ? "끄기" : "켜기";
-    if (strcmp(name, "adding") == 0) return state->wifi_adding ? "1" : NULL;
     if (strcmp(name, "count") == 0) {
         size_t saved = 0;
         while (network_at(saved) != NULL)

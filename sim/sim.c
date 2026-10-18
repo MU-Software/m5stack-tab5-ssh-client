@@ -122,7 +122,6 @@ static int unsaved(size_t index) {
 static const char* wifi_text(const char* name) {
     if (strcmp(name, "path") == 0) return state.wifi_enabled ? "●" : NULL;
     if (strcmp(name, "toggle") == 0) return state.wifi_enabled ? "끄기" : "켜기";
-    if (strcmp(name, "adding") == 0) return state.wifi_adding ? "1" : NULL;
     if (strcmp(name, "count") == 0) {
         static char saved[8];
         return snprintf(saved, sizeof saved, "%zu/16", network_count), saved;
@@ -268,7 +267,9 @@ static char asked[48];
 // As main.c's network screen's Wi-Fi, without joining: a pick saved and a delete done once confirmed
 static void wifi_screen(const ui_event* e) {
     size_t i = e->index;
-    if (strcmp(e->name, "wifi add") == 0) state.wifi_adding = true;
+    if (strcmp(e->name, "wifi add") == 0)
+        snprintf(asked, sizeof asked, "wifi type"),
+            ui_dialog_list("사용 가능한 Wi-Fi", "visible", "  {ssid:34}{signal:10}{lock}", "wifi.scan", "직접 입력");
     if (strcmp(e->name, "wifi type") == 0) snprintf(asked, sizeof asked, "wifi typed"), ui_dialog(UI_PROMPT, "직접 입력", "SSID", "다음");
     if (strcmp(e->name, "wifi typed") == 0) ui_dialog(UI_PASSWORD, "(SSID)", PASSWORD, "연결");
     if (strcmp(e->name, "wifi pick") == 0 && unsaved(i) >= 0) {
@@ -359,10 +360,12 @@ static void sessions(const ui_event* e) {
 static void handle(const ui_event* e) {
     if (e->kind == UI_ACTION && strncmp(e->name, "dialog ", 7) == 0) {
         char then[sizeof asked];
-        snprintf(then, sizeof then, "%s", strcmp(e->name, "dialog ok") == 0 ? asked : "");
+        bool pick = strcmp(e->name, "dialog pick") == 0;
+        size_t picked = ui_dialog_chosen();
+        snprintf(then, sizeof then, "%s", pick ? "wifi pick" : strcmp(e->name, "dialog ok") == 0 ? asked : "");
         asked[0] = 0;
         ui_dialog_close();
-        if (then[0] != 0) handle(&(ui_event){.kind = UI_ACTION, .name = then});
+        if (then[0] != 0) handle(&(ui_event){.kind = UI_ACTION, .name = then, .index = pick ? picked : 0});
         snprintf(action, sizeof action, "%s", e->name);
     } else if (e->kind == UI_ACTION && strcmp(e->name, "wifi toggle") == 0) {
         state.wifi_enabled = !state.wifi_enabled, snprintf(action, sizeof action, "%s", e->name);

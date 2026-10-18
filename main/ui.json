@@ -96,23 +96,6 @@
             {"width": 8, "style": "button", "button": "wifi edit", "text": "수정"},
             {"width": 8, "style": "button", "button": "wifi delete", "text": "삭제"}
           ]
-        },
-        {
-          "when": "wifi.adding",
-          "rows": [
-            {"height": 1, "text": ""},
-            {
-              "height": 1,
-              "columns": [
-                {"style": "section", "text": " 사용 가능한 Wi-Fi"},
-                {"width": 20, "style": "hint", "align": "right", "text": "{wifi.scan}"},
-                {"width": 2, "text": ""},
-                {"width": 12, "style": "button", "button": "wifi type", "text": "직접 입력"},
-                {"width": 1, "text": ""}
-              ]
-            },
-            {"list": "visible", "item": "    {ssid:34}{signal:10}{lock}", "action": "wifi pick"}
-          ]
         }
       ]
     },

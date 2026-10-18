@@ -482,7 +482,11 @@ void wifi_drop(void) {
     ESP_LOGI(TAG, "drop: %s", esp_err_to_name(esp_wifi_disconnect()));
 }
 
+// The last scan's networks go: a pick then names a network of the new one
 void wifi_scan(void) {
+    taskENTER_CRITICAL(&visible_lock);
+    visible_count = 0;
+    taskEXIT_CRITICAL(&visible_lock);
     scan_state = WIFI_SCAN_RUNNING;
     scan_wanted = true;
     wake();
