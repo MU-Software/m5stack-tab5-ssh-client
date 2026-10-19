@@ -105,7 +105,8 @@ size_t config_sessions(const cJSON* list, session_record* records, size_t capaci
             taken |= other->number == r.number;
         if (count == capacity || taken || r.number < 1 || (size_t)r.number > capacity ||
             copy(r.alias, sizeof r.alias, cJSON_GetObjectItemCaseSensitive(item, "host")) != 0 || !r.alias[0] ||
-            copy(r.tmux, sizeof r.tmux, cJSON_GetObjectItemCaseSensitive(item, "tmux")) != 0 || !r.tmux[0])
+            copy(r.tmux, sizeof r.tmux, cJSON_GetObjectItemCaseSensitive(item, "tmux")) != 0 || !r.tmux[0] ||
+            r.tmux[strspn(r.tmux, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")] != 0)
             continue;
         records[count++] = r;
     }
@@ -282,6 +283,21 @@ static int hashed_match(const char* entry, size_t n, const char* name) {
     return ok;
 }
 
+static int hosts_match(const char* hosts, size_t n, const char* name) {
+    return n > 3 && strncmp(hosts, "|1|", 3) == 0 ? hashed_match(hosts, n, name) : match_list(hosts, hosts + n, ",", name);
+}
+
+bool known_hosts_lists(const char* text, const char* name) {
+    const char *p, *end;
+    while ((p = next_line(&text, &end)) != NULL) {
+        if (p == end || *p == '#' || *p == '@') continue;
+        size_t n;
+        const char* hosts = word(&p, end, &n);
+        if (hosts_match(hosts, n, name)) return true;
+    }
+    return false;
+}
+
 host_state known_hosts_check(const char* text, const char* name, const uint8_t* key, size_t key_length) {
     if (key_length < 4 || be32(key) > key_length - 4) return HOST_UNKNOWN;
     size_t type_len = be32(key);
@@ -293,9 +309,7 @@ host_state known_hosts_check(const char* text, const char* name, const uint8_t* 
         const char* hosts = word(&p, end, &hosts_len);
         const char* t = word(&p, end, &t_len);
         const char* b64 = word(&p, end, &b64_len);
-        int listed =
-            hosts_len > 3 && strncmp(hosts, "|1|", 3) == 0 ? hashed_match(hosts, hosts_len, name) : match_list(hosts, hosts + hosts_len, ",", name);
-        if (!listed || t_len != type_len || memcmp(t, key + 4, type_len) != 0) continue;
+        if (!hosts_match(hosts, hosts_len, name) || t_len != type_len || memcmp(t, key + 4, type_len) != 0) continue;
         byte known[2048];
         word32 known_len = sizeof known;
         if (Base64_Decode((const byte*)b64, (word32)b64_len, known, &known_len) == 0 && known_len == key_length &&

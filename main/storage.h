@@ -26,6 +26,7 @@ int storage_set_wifi(const char* ssid, const wifi_network* network, int move, wi
 int storage_set_device_config(cJSON* config);
 // A setting such as "log.file_kb" into the configuration, which takes value
 int storage_set_config(const char* name, cJSON* value);
-// The session records, in .local/state/tab5-ssh/sessions.json on the SD card: how many, none without it
-size_t storage_get_sessions(session_record* records, size_t capacity);
+// The session records, in .local/state/tab5-ssh/sessions.json on the SD card: how many, none without it. A file not read
+// whole is moved to sessions.json.bad; whole while there is no such file
+size_t storage_get_sessions(session_record* records, size_t capacity, bool* whole);
 int storage_set_sessions(const session_record* records, size_t count);

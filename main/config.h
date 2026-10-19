@@ -18,13 +18,16 @@ int config_set_wifi(cJSON* config, const char* ssid, const wifi_network* network
 // An SSID of 1-32 bytes; no password, 8-63 characters or 64 hex digits
 bool config_wifi_valid(const wifi_network* network);
 
-// The session records of sessions.json, numbered 1 to capacity, each number once; others are skipped. How many
+// How many session records sessions.json has, numbered 1 to capacity, each number once, with tmux names of letters,
+// digits, _ and - (they go into shell commands); others are skipped
 size_t config_sessions(const cJSON* list, session_record* records, size_t capacity);
 cJSON* config_sessions_json(const session_record* records, size_t count);
 
 // One allocation: free(hosts)
 ssh_host* config_ssh_hosts(const char* text);
 
+// Whether a line of known_hosts is for host `name`, whatever its key
+bool known_hosts_lists(const char* text, const char* name);
 host_state known_hosts_check(const char* text, const char* name, const uint8_t* key, size_t key_length);
 // key in SSH wire form; a line with options before the key type never matches, as the options would go unenforced
 bool authorized_keys_check(const char* text, const uint8_t* key, size_t key_length);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "storage.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,14 +106,20 @@ char* storage_get_private_key(const char* identity_file) {
     return text;
 }
 
-#define SESSIONS SD "/.local/state/tab5-ssh/sessions.json"
+#define SESSIONS     SD "/.local/state/tab5-ssh/sessions.json"
+#define SESSIONS_BAD SESSIONS ".bad"
 
-size_t storage_get_sessions(session_record* records, size_t capacity) {
+size_t storage_get_sessions(session_record* records, size_t capacity, bool* whole) {
+    struct stat st;
     char* text = storage_read_file_text(SESSIONS);
     cJSON* list = text != NULL ? cJSON_Parse(text) : NULL;
     if (text != NULL && list == NULL) ESP_LOGW(TAG, SESSIONS " is not JSON");
-    free(text);
     size_t count = config_sessions(list, records, capacity);
+    bool taken = text != NULL ? cJSON_IsArray(list) && (size_t)cJSON_GetArraySize(list) == count : stat(SESSIONS, &st) != 0 && errno == ENOENT;
+    // Kept for a person, as the next save would leave a whole file
+    if (!taken && rename(SESSIONS, SESSIONS_BAD) == 0) ESP_LOGW(TAG, SESSIONS " not read whole: moved to " SESSIONS_BAD);
+    *whole = taken && stat(SESSIONS_BAD, &st) != 0;
+    free(text);
     cJSON_Delete(list);
     return count;
 }

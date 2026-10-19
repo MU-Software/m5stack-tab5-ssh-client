@@ -101,16 +101,25 @@ static int login(const char* known_hosts, const char* private_key, const char* p
 static const char *known_hosts, *private_key;
 static ssh_session other, probe;
 
-// On connection s of its own: the exit status, -1 when it did not end within 5 s, -2 without a connection
-static int exec_on(ssh_session* s, const char* command) {
+// On connection s of its own, a pty as `terminal` says: the exit status, -1 when it did not end within 5 s, -2 without a
+// connection; its output in got
+static int exec_as(const global_state* terminal, ssh_session* s, const char* command, char* got, size_t size) {
     *s = (ssh_session){.host = &host, .known_hosts = known_hosts, .private_key = private_key, .command = command};
-    if (ssh_open(&state, s) != WS_SUCCESS) return -2;
-    char buf[512];
+    if (ssh_open(terminal, s) != WS_SUCCESS) return -2;
+    size_t n = 0;
     int r = WS_WANT_READ, status = -1;
-    for (long start = now_ms(); r != WS_CHANNEL_CLOSED && now_ms() - start < 5000;)
-        if ((r = ssh_read(s, buf, sizeof buf)) == WS_WANT_READ) usleep(1000);
+    for (long start = now_ms(); r != WS_CHANNEL_CLOSED && now_ms() - start < 5000;) {
+        if ((r = ssh_read(s, got + n, size - 1 - n)) == WS_WANT_READ) usleep(1000);
+        if (r > 0 && (n += (size_t)r) == size - 1) n = 0;
+    }
+    got[n] = 0;
     ssh_close(s, &status);
     return r == WS_CHANNEL_CLOSED ? status : -1;
+}
+
+static int exec_on(ssh_session* s, const char* command) {
+    char got[512];
+    return exec_as(&state, s, command, got, sizeof got);
 }
 
 static int exec_status(const char* command) {
@@ -189,6 +198,64 @@ static void tmux_sessions(void) {
     int killed = kill_session("tab5-test01-keep01");
     check(killed == 0 && kill_session("tab5-test01-keep01") == 1, "kill ends a session, then finds none");
     exec_status("tmux kill-server");
+}
+
+static const global_state no_terminfo = {.terminal_type = "nosuchterm", .terminal_size = {.columns = 80, .rows = 24}};
+
+// tmux_sync_command run for prefix tab5-test01-: its status, its output in got and whether it is whole
+static int sync_on(const global_state* terminal, const char* keep, int age_s, char* got, size_t size, bool* whole) {
+    char command[900];
+    if (!tmux_sync_command(command, sizeof command, "tab5-test01-", keep, age_s)) return -3;
+    int status = exec_as(terminal, &other, command, got, size);
+    *whole = status == 0 && tmux_sync_whole(got, "tab5-test01-");
+    return status;
+}
+
+// The sync's listing and orphans against a real tmux
+static void tmux_syncs(void) {
+    char got[1024], command[1400];
+    bool whole;
+    if (exec_status("tmux -V") != 0) return;
+    check(tmux_sync_whole("motd\r\ntab5-test01-aaaaaa\r\ntab5-test01-.\r\n\r\n", "tab5-test01-") &&
+              !tmux_sync_whole("tab5-test01-aaaaaa\r\n", "tab5-test01-") && !tmux_sync_whole("tab5-test01-.x\r\n", "tab5-test01-") &&
+              !tmux_sync_whole("tab5-test01-.\r\nmore\r\n", "tab5-test01-") && !tmux_sync_whole("", "tab5-test01-"),
+          "sync: whole only when its last line is the prefix and a dot");
+    check(tmux_sync_lists("x\r\ntab5-test01-aaaaaa\r\n", "tab5-test01-aaaaaa") && !tmux_sync_lists("tab5-test01-aaaaaab\r\n", "tab5-test01-aaaaaa") &&
+              !tmux_sync_lists("tab5-test01-aaaaa\r\n", "tab5-test01-aaaaaa"),
+          "sync: names listed whole lines only");
+    exec_status("tmux kill-server; sleep 0.3");
+    check(sync_on(&state, " tab5-test01-gone01 ", 0, got, sizeof got, &whole) == 0 && whole && !tmux_sync_lists(got, "tab5-test01-gone01"),
+          "sync: no server running is a whole, empty listing");
+    exec_status("rm -f /tmp/tmux-$(id -u)/default");
+    check(sync_on(&state, " tab5-test01-gone01 ", 0, got, sizeof got, &whole) == 0 && whole, "sync: no socket, no server: whole and empty");
+    check(create_session("tab5-test01-keep02") == 0 && create_session("tab5-other1-keep03") == 0 && create_session("tab5-test01-old001") == 0 &&
+              create_session("other-eeeeee") == 0,
+          "sync: sessions made");
+    check(sync_on(&state, " tab5-test01-keep02 tab5-test01-gone01 tab5-other1-keep03 ", 300, got, sizeof got, &whole) == 0 && whole &&
+              tmux_sync_lists(got, "tab5-test01-keep02") && tmux_sync_lists(got, "tab5-other1-keep03") &&
+              !tmux_sync_lists(got, "tab5-test01-gone01") && !tmux_sync_lists(got, "tab5-test01-old001"),
+          "sync: the kept names the host has, any prefix, only those");
+    check(exec_status("tmux has-session -t =tab5-test01-old001") == 0, "sync: an orphan younger than age_s stays");
+    check(sync_on(&state, " tab5-test01-keep02 ", -1, got, sizeof got, &whole) == 0 && whole &&
+              exec_status("tmux has-session -t =tab5-test01-old001") == 0,
+          "sync: a negative age kills none");
+    check(sync_on(&no_terminfo, " tab5-test01-keep02 ", 0, got, sizeof got, &whole) == 0 && whole && tmux_sync_lists(got, "tab5-test01-keep02"),
+          "sync: a terminal the host has no terminfo for");
+    check(exec_status("tmux has-session -t =tab5-test01-old001") == 1 && exec_status("tmux has-session -t =tab5-test01-keep02") == 0 &&
+              exec_status("tmux has-session -t =tab5-other1-keep03") == 0 && exec_status("tmux has-session -t =other-eeeeee") == 0,
+          "sync: this device's unkept orphans killed, others left");
+    check(tmux_command(command, sizeof command, "tab5-test01-keep02", "tab5-test01-", " tab5-test01-keep02 ", 0, true) &&
+              exec_as(&no_terminfo, &other, command, got, sizeof got) == 0 && exec_status("tmux has-session -t =tab5-test01-keep02") == 0,
+          "a terminal without terminfo fails the attach, not the session");
+    check(create_session("tab5-test01-old002") == 0 && tmux_command(command, sizeof command, "tab5-test01-gone02", "tab5-test01-", " ", -1, true) &&
+              exec_status(command) == TMUX_GONE && exec_status("tmux has-session -t =tab5-test01-old002") == 0,
+          "a connection with a negative age kills none");
+    exec_status("chmod 777 /tmp/tmux-$(id -u)");
+    check(sync_on(&state, " tab5-test01-keep02 ", 0, got, sizeof got, &whole) == 4 && !whole, "sync: an unsafe socket directory: 4");
+    exec_status("chmod 700 /tmp/tmux-$(id -u)");
+    exec_status("rm -f /tmp/tmux-$(id -u)/default");
+    check(sync_on(&state, " tab5-test01-keep02 ", 0, got, sizeof got, &whole) == 4 && !whole, "sync: a server whose socket went: 4");
+    exec_status("pkill -u $(id -u) tmux; sleep 0.2");
 }
 
 int main(int argc, char** argv) {
@@ -274,5 +341,6 @@ int main(int argc, char** argv) {
 
     known_hosts = known, private_key = key;
     tmux_sessions();
+    tmux_syncs();
     return failures != 0;
 }

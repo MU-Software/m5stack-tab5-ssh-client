@@ -176,6 +176,11 @@ int main(void) {
     check(strcmp(sessions("[{\"number\": 1, \"host\": \"a\", \"tmux\": \"t\"}, {\"number\": 2, \"host\": \"b\", \"tmux\": \"u\"}]", 1),
                  "[{\"number\":1,\"host\":\"a\",\"tmux\":\"t\"}]") == 0,
           "sessions.json: no more than the capacity");
+    check(strcmp(sessions("[{\"number\": 1, \"host\": \"a\", \"tmux\": \"t;rm -rf ~\"}, {\"number\": 2, \"host\": \"b\", \"tmux\": \"tab5-0A_z-9\"}, "
+                          "{\"number\": 3, \"host\": \"c\", \"tmux\": \"a b\"}, {\"number\": 4, \"host\": \"d\", \"tmux\": \"x'y\"}]",
+                          4),
+                 "[{\"number\":2,\"host\":\"b\",\"tmux\":\"tab5-0A_z-9\"}]") == 0,
+          "sessions.json: tmux names of letters, digits, _ and - only");
     check(!sessions("{}", 4)[0] && !sessions("[]", 4)[0] && !sessions("[1, \"a\"]", 4)[0] && !sessions("nope", 4)[0],
           "sessions.json: none from anything else");
 
@@ -196,6 +201,9 @@ int main(void) {
     check(known_hosts_check(known, "[example.org]:2222", a, a_len) == HOST_CHANGED, "known_hosts: [host]:port");
     check(known_hosts_check(known, "new.org", a, a_len) == HOST_UNKNOWN, "known_hosts: unknown host");
     check(known_hosts_check(known, "ca.org", b, b_len) == HOST_UNKNOWN, "known_hosts: markers skipped");
+    check(known_hosts_lists(known, "example.org") && known_hosts_lists(known, "x.wild.org") && known_hosts_lists(known, "[example.org]:2222") &&
+              !known_hosts_lists(known, "new.org") && !known_hosts_lists(known, "ca.org") && !known_hosts_lists(known, "comment"),
+          "known_hosts: hosts listed with any key, markers and comments skipped");
 
     static const char authorized[] = "# ssh-ed25519 " KEY_A "\n"
                                      "restrict ssh-ed25519 " KEY_A " options\n"

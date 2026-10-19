@@ -30,7 +30,7 @@ static const struct {
     {"lte on|off [save]|status|probe dead on|off", BOTH},
     {"net status|check HOST PORT [wifi|lte]|dns dead wifi|lte|off", BOTH},
     {"modem status|read|at COMMAND", BOTH},
-    {"session list|create HOST|open N|connect N|disconnect N|delete N", BOTH},
+    {"session list|sync|create HOST|open N|connect N|disconnect N|delete N", BOTH},
 };
 
 void control_help(control_transport transport, char* out, size_t size) {

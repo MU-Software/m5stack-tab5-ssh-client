@@ -60,12 +60,15 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
   the shown session's at once, others' while a screen is open. Cancelled, a session being created is not.
 - Sessions: up to 4, each a tmux session on a host (`tab5-MMMMMM-RRRRRR`: the MAC's last three bytes, then random), kept
   in `.local/state/tab5-ssh/sessions.json` on the SD card; tmux on the host is required. After a restart all are
-  disconnected; nothing connects by itself. create makes the tmux session and the record, then disconnects; open connects
+  disconnected; none connects by itself. create makes the tmux session and the record, then disconnects; open connects
   if needed and shows; connect and disconnect leave the screen alone (disconnect also hides); delete
   hides, disconnects and kills the tmux session (the record goes even when the host cannot be reached, and the log says
   so). A dropped or moved connection reconnects; a detach in tmux (prefix d) or a refused login disconnects; a tmux
-  session gone from the host deletes its record at the next connect. Each connection also kills this Tab5's tmux
-  sessions on that host that no record names, unattached and older than a minute. From tmux 3.2 the client declares
+  session gone from the host deletes its record at the next connect or sync. A sync logs in with the key alone, asking
+  nothing, to each Host `known_hosts` lists: at start, when the sessions screen opens (at most once a minute) and on
+  `session sync`; a Host refused or without a key or tmux is left until a restart, and any doubt keeps the records. Each
+  connection and sync also kills this Tab5's tmux sessions on that host that no record names, unattached and older than
+  five minutes; none while `sessions.json.bad` (a `sessions.json` not read whole, moved aside) is there. From tmux 3.2 the client declares
   truecolor, strikethrough, overline, underline styles and colours, and kitty images as Unicode placeholders (`-T`); from
   tmux 3.3 the session's windows allow passthrough, for kitty images; its `mouse` is on, for touch.
 - The screen shows a session or one of the screens: opening a screen takes the shown session off, showing a session
@@ -73,8 +76,8 @@ beside it for `known_hosts`; the log shows its fingerprint. An image sent this w
   has 보기, 연결 or 끊기, and 삭제 (confirmed); a host's 연결 in its list makes one (confirmed). Each also has a tab on the
   top bar, which shows it (`●` shown, `×` disconnected, `…` connecting, `?` waiting for an answer, `!` a failure to
   tell, shown in a dialog once a screen is open). Control command
-  `session list|create HOST|open N|connect N|disconnect N|delete N` waits up to 90 s for what it starts, or until it asks
-  on the screen.
+  `session list|sync|create HOST|open N|connect N|disconnect N|delete N` waits up to 90 s for what it starts, or until it
+  asks on the screen; sync does not wait, its log tells the end.
 - Network: Wi-Fi while it reaches the internet (the C6 checks), else LTE through a Stamp CAT-M (Tab5 TX G6, RX G46), kept
   connected in the background. Each path is checked and resolves names through itself; a host only the other path's DNS
   knows goes over that one. Sessions ride out a short Wi-Fi drop and move once when the path changes. LTE that stops

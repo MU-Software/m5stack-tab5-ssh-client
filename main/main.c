@@ -118,6 +118,16 @@ static SemaphoreHandle_t input_lock, sessions_lock;
 static char tmux_prefix[16];
 // Sessions connected: while any is, logs may be quieter
 static atomic_int connected;
+// This device's tmux sessions no record keeps are killed once this old: a connection on LTE can take over a minute after
+// it listed those to keep. None are while a record may be lost, which would make its tmux session an orphan.
+#define ORPHAN_AGE_S 300
+static bool records_whole;
+// The records put right against the hosts' tmux sessions by a task of its own: wanted at boot, when the sessions list
+// opens and by `session sync`; `started` is the main loop's
+static struct {
+    atomic_bool wanted, running;
+    int64_t started;
+} host_sync;
 // A failure of no session to tell on the screen under its title, NULL for none
 static const char* lone_alert;
 static char lone_title[48];
@@ -349,6 +359,25 @@ static session_end drain(session* s) {
     return SESSION_DROPPED;
 }
 
+// c to h over route with the known hosts and private_key (NULL for none), which is freed
+static int log_in(ssh_session* c, const ssh_host* h, network_route* route, char* private_key, const char* password, const char* command) {
+    char* known_hosts = storage_get_known_hosts();
+    *c = (ssh_session){.host = h,
+                       .known_hosts = known_hosts,
+                       .private_key = private_key,
+                       .password = password,
+                       .command = command,
+                       .address = route->address,
+                       .prepare = network_bind,
+                       .context = route,
+                       .timeout_ms = network_timeout_ms(route->use.path)};
+    int rc = ssh_open(&state, c);
+    if (private_key != NULL) wc_ForceZero(private_key, strlen(private_key));
+    free(private_key);
+    free(known_hosts);
+    return rc;
+}
+
 // command on h, attached to the terminal or run to its end; the exit status counts only for SESSION_CLOSED, and stays -1
 // when it never connected
 static session_end run(session* s, const ssh_host* h, const char* command, bool attach, int* exit_status) {
@@ -365,22 +394,9 @@ static session_end run(session* s, const ssh_host* h, const char* command, bool 
         snprintf(title, sizeof title, "%.32s@%.60s", h->user, h->hostname);
         if (!ask(s, UI_PASSWORD, title, "비밀번호", "확인", password, sizeof password)) return SESSION_ENDED;
     }
-    char* known_hosts = storage_get_known_hosts();
-    s->connection = (ssh_session){.host = h,
-                                  .known_hosts = known_hosts,
-                                  .private_key = private_key,
-                                  .password = password[0] ? password : NULL,
-                                  .command = command,
-                                  .address = s->route.address,
-                                  .prepare = network_bind,
-                                  .context = &s->route,
-                                  .timeout_ms = network_timeout_ms(s->route.use.path)};
     // Its replies come only while awake; for a bounded time, as a host key question waits for a person
     sleep_hold_until(esp_timer_get_time() + 4LL * network_timeout_ms(s->route.use.path) * 1000);
-    int rc = ssh_open(&state, &s->connection);
-    if (private_key != NULL) wc_ForceZero(private_key, strlen(private_key));
-    free(private_key);
-    free(known_hosts);
+    int rc = log_in(&s->connection, h, &s->route, private_key, password[0] ? password : NULL, command);
     memset(password, 0, sizeof password);
     // Refused: the same keys and host key would only be refused again; anything else may pass another time
     session_end end = s->declined ? SESSION_ENDED : rc == WS_USER_AUTH_E || rc == WS_PUBKEY_REJECTED_E ? SESSION_REFUSED : SESSION_UNREACHED;
@@ -509,7 +525,7 @@ static bool keep_connected(session* s, const ssh_host* h) {
     int retry_ms = 1000, exit_status;
     while (wait_path(s)) {
         kept(keep, sizeof keep);
-        if (!tmux_command(command, sizeof command, s->tmux, tmux_prefix, keep, 60, state.touch.arrows)) return false;
+        if (!tmux_command(command, sizeof command, s->tmux, tmux_prefix, keep, records_whole ? ORPHAN_AGE_S : -1, state.touch.arrows)) return false;
         session_end end = run(s, h, command, true, &exit_status);
         if (end == SESSION_ENDED) break;
         if (end == SESSION_REFUSED && s->connection.host_changed)
@@ -730,12 +746,16 @@ static int session_list(void) {
 static int (*const session_actions[])(int n, bool wait) = {session_open, session_connect, session_disconnect, session_delete};
 static const char* const session_verbs[] = {"open", "connect", "disconnect", "delete"};
 
-// session list|create HOST|open N|connect N|disconnect N|delete N; -1 for none of these
+// session list|sync|create HOST|open N|connect N|disconnect N|delete N; -1 for none of these
 static int session_command(const char* arguments) {
     char verb[12];
     int n;
     if (!atomic_load(&sessions_loaded)) return report(0, true, NULL, "not loaded yet");
     if (strcmp(arguments, "list") == 0) return session_list();
+    if (strcmp(arguments, "sync") == 0) {
+        atomic_store(&host_sync.wanted, true);
+        return report(0, false, NULL, "sync asked: its log tells the end");
+    }
     if (strncmp(arguments, "create ", 7) == 0) {
         const ssh_host* h = host_named(arguments + 7);
         return h != NULL ? session_create(h, true) : report(0, true, NULL, "no Host %s in the SD card's .ssh/config", arguments + 7);
@@ -788,10 +808,109 @@ static void tend_sessions(void) {
     unlock();
 }
 
+// Over a connection of its own that asks nothing, for host h: its orphan tmux sessions killed and the records of tmux
+// sessions it lacks deleted. Only hosts known_hosts lists: a tmux session of ours is only on a host whose key was once
+// taken. Any doubt keeps the records. True when h is not to be visited again: refused, or without a key or tmux.
+static bool sync_host(const ssh_host* h, const char* known_hosts) {
+    char name[264], keep[MAX_SESSIONS * 24 + 2], command[900], out[1024];
+    snprintf(name, sizeof name, h->port == 22 ? "%s" : "[%s]:%u", h->hostname, h->port);
+    if (!h->user[0] || known_hosts == NULL || !known_hosts_lists(known_hosts, name)) return false;
+    network_route route;
+    network_trouble found = network_find(h->hostname, &route);
+    if (found != NETWORK_FINE) {
+        ESP_LOGI(TAG, "sync: %s skipped: %s", h->alias, network_trouble_text(found));
+        return false;
+    }
+    // Those to judge: saved, and no job runs for them now or starts before the judgement
+    struct {
+        session* s;
+        unsigned id;
+    } judged[MAX_SESSIONS];
+    size_t count = 0;
+    lock();
+    kept(keep, sizeof keep);
+    for (size_t i = 0; i < MAX_SESSIONS; i++)
+        if (sessions[i].used && sessions[i].saved && !sessions[i].running && strcmp(sessions[i].alias, h->alias) == 0)
+            judged[count].s = &sessions[i], judged[count++].id = sessions[i].id;
+    unlock();
+    if (!tmux_sync_command(command, sizeof command, tmux_prefix, keep, records_whole ? ORPHAN_AGE_S : -1)) return false;
+    char* private_key = storage_get_private_key(h->identity_file);
+    if (private_key == NULL) {
+        ESP_LOGI(TAG, "sync: %s skipped: no key", h->alias);
+        return true;
+    }
+    ssh_session c;
+    int rc = log_in(&c, h, &route, private_key, NULL, command);
+    if (rc != WS_SUCCESS) {
+        ESP_LOGI(TAG, "sync: %s skipped: %s", h->alias, c.host_changed ? "its host key changed" : wolfSSH_ErrorToName(rc));
+        // Not reached is worth another try
+        return rc != WS_SOCKET_ERROR_E && rc != WS_MEMORY_E;
+    }
+    size_t got = 0;
+    int r = WS_WANT_READ, status;
+    for (TickType_t start = xTaskGetTickCount();
+         (r > 0 || r == WS_WANT_READ) && got < sizeof out - 1 && xTaskGetTickCount() - start < pdMS_TO_TICKS(30000);) {
+        if ((r = ssh_read(&c, out + got, sizeof out - 1 - got)) > 0) got += (size_t)r;
+        if (r > 0 && route.use.path == NETWORK_LTE) lte_received();
+        if (r == WS_WANT_READ) ssh_wait(&c, 100);
+    }
+    out[got] = 0;
+    ssh_close(&c, &status);
+    // wolfSSH keeps status 0 when the host sent none
+    if (r != WS_CHANNEL_CLOSED || status != 0 || !tmux_sync_whole(out, tmux_prefix)) {
+        ESP_LOGW(TAG, "sync: %s skipped: %s, status %d", h->alias, r == WS_CHANNEL_CLOSED ? "no listing" : "did not end", status);
+        return r == WS_CHANNEL_CLOSED && status == 127;
+    }
+    size_t gone = 0;
+    lock();
+    for (size_t i = 0; i < count; i++) {
+        session* s = judged[i].s;
+        if (!s->used || !s->saved || s->running || s->id != judged[i].id || tmux_sync_lists(out, s->tmux)) continue;
+        s->used = s->saved = false;
+        gone++;
+        ESP_LOGI(TAG, "session %d: tmux session %s is gone from %s: deleted", number(s), s->tmux, h->alias);
+    }
+    if (gone > 0) save_records();
+    unlock();
+    ESP_LOGI(TAG, "sync: %s: %u of %u records gone", h->alias, (unsigned)gone, (unsigned)count);
+    return false;
+}
+
+static void run_sync(void* arg) {
+    (void)arg;
+    // Hosts by their place in state.hosts
+    static uint32_t dropped;
+    int64_t start = esp_timer_get_time();
+    char* known_hosts = storage_get_known_hosts();
+    size_t i = 0;
+    for (const ssh_host* h = state.hosts; h != NULL; h = h->next, i++) {
+        if (i < 32 && dropped >> i & 1) continue;
+        sleep_hold(true);
+        if (sync_host(h, known_hosts) && i < 32) dropped |= 1u << i;
+        sleep_hold(false);
+    }
+    free(known_hosts);
+    ESP_LOGI(TAG, "sync: done in %lld s", (esp_timer_get_time() - start) / 1000000);
+    atomic_store(&host_sync.running, false);
+    vTaskDeleteWithCaps(NULL);
+}
+
+// The main loop's: a sync started once one is wanted, a path is there and the sessions leave sockets to spare
+static void tend_sync(void) {
+    if (atomic_load(&host_sync.running) || atomic_load(&connected) >= 3 || !network_wait_for(0) || !atomic_exchange(&host_sync.wanted, false)) return;
+    host_sync.started = esp_timer_get_time();
+    atomic_store(&host_sync.running, true);
+    // It never writes flash
+    if (xTaskCreatePinnedToCoreWithCaps(run_sync, "sync", 24 * 1024, NULL, 4, NULL, 1, MALLOC_CAP_SPIRAM) == pdPASS) return;
+    atomic_store(&host_sync.running, false);
+    ESP_LOGW(TAG, "sync: no memory for its task");
+}
+
 // The records of sessions.json, all disconnected
 static void load_sessions(void) {
     session_record records[MAX_SESSIONS];
-    size_t count = storage_get_sessions(records, MAX_SESSIONS);
+    size_t count = storage_get_sessions(records, MAX_SESSIONS, &records_whole);
+    if (!records_whole) ESP_LOGW(TAG, "no orphan tmux session killed while " SD "/.local/state/tab5-ssh/sessions.json.bad is there");
     for (size_t i = 0; i < count; i++) {
         session* s = &sessions[records[i].number - 1];
         s->used = s->saved = true;
@@ -1458,14 +1577,16 @@ void app_main(void) {
     terminal_show(blank);
     screen_show(blank);
     load_sessions();
+    atomic_store(&host_sync.wanted, true);
     if (screen != ESP_OK) ESP_LOGE(TAG, "no screen");
-    // Whether a screen was open last time round
-    bool lit = true, paged = true;
+    // Whether a screen was open last time round, and the sessions list
+    bool lit = true, paged = true, listed = false;
     for (;;) {
         ui_event e;
         terminal_size size;
         if (atomic_load(&join.step) == JOIN_DONE) joined_wifi();
         tend_sessions();
+        tend_sync();
         memory_log();
         if (screen == ESP_OK && atomic_exchange(&profile_asked, false)) power_profile(lit), lit = true;
         if (screen == ESP_OK && !lit) lit = woken();
@@ -1485,7 +1606,11 @@ void app_main(void) {
             tend_dialogs();
             memset(&e, 0, sizeof e);
             // A screen opened takes the shown session off; a session shown closes it
-            bool open = ui_panel() != NULL;
+            const char* panel = ui_panel();
+            bool open = panel != NULL, listing = open && strcmp(panel, "sessions") == 0;
+            if (listing && !listed && !atomic_load(&host_sync.running) && esp_timer_get_time() - host_sync.started >= 60000000)
+                atomic_store(&host_sync.wanted, true);
+            listed = listing;
             lock();
             const session* on = atomic_load(&shown);
             if (open && !paged)
