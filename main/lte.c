@@ -64,6 +64,10 @@ static bool kept; // this boot
 static lte_view view;
 static portMUX_TYPE view_lock = portMUX_INITIALIZER_UNLOCKED;
 static _Atomic int64_t received_at;
+// A modem whose radio went can stay in a PPP link our side ended for minutes, swallowing AT (10-20: 130 s): till when the task
+// waits for its NO CARRIER instead of asking, and whether it came
+static int64_t end_awaited_until;
+static atomic_bool ended;
 
 static void tell(void) {
     if (changed != NULL) changed();
@@ -100,6 +104,7 @@ static void reader(void* arg) {
             modem_mask(line, logged, sizeof logged);
             ESP_LOGI(TAG, "< %s", logged);
             if (dialing && strncmp(line, "CONNECT", 7) == 0) data_mode = true;
+            if (strcmp(line, "NO CARRIER") == 0 || strcmp(line, "RDY") == 0) atomic_store(&ended, true);
             // Only a modem sends these: noise on a pin without one would not
             if (strcmp(line, "OK") == 0 || strcmp(line, "NO CARRIER") == 0 || strcmp(line, "RDY") == 0 || line[0] == '+' || line[0] == '$') {
                 atomic_store(&heard, true), atomic_store(&answered, true);
@@ -271,13 +276,25 @@ static esp_err_t ready(bool settings) {
 static void disconnect(void) {
     if (!data_mode) return;
     sleep_hold(true);
+    atomic_store(&ended, false);
     esp_netif_action_stop(netif, NULL, 0, NULL);
     if (!(xEventGroupWaitBits(events, DEAD, pdFALSE, pdFALSE, pdMS_TO_TICKS(PPP_END_MS)) & DEAD)) {
         ESP_LOGW(TAG, "PPP did not end");
     } else {
         char line[LINE];
-        for (int64_t deadline = esp_timer_get_time() + 5 * SECOND; receive(line, deadline) && strcmp(line, "NO CARRIER") != 0;) {}
-        if (!at("AT", "", NULL)) ESP_LOGW(TAG, "no answer after PPP");
+        int64_t dead_at = esp_timer_get_time(), before = unanswered;
+        bool was_heard = atomic_load(&heard);
+        for (int64_t deadline = dead_at + 5 * SECOND; !atomic_load(&ended) && receive(line, deadline);) {}
+        // Some come back without a NO CARRIER seen; one still in PPP swallows the AT, which then says nothing about it
+        if (!at("AT", "", NULL)) {
+            unanswered = before, atomic_store(&heard, was_heard || atomic_load(&ended));
+            if (!atomic_load(&ended)) {
+                end_awaited_until = dead_at + 240 * SECOND;
+                // Its UART wakes nothing
+                sleep_hold_until(end_awaited_until);
+                ESP_LOGW(TAG, "no answer after PPP: LTE waits up to 240 s for the modem's NO CARRIER");
+            }
+        }
     }
     sleep_hold(false);
 }
@@ -335,12 +352,14 @@ static void run_command(const char* line) {
     if (strcmp(line, "lte status") == 0 && data_mode && esp_netif_get_ip_info(netif, &ip) == ESP_OK) {
         ESP_LOGI(TAG, "lte status: PPP, ip " IPSTR, IP2STR(&ip.ip));
     } else if (strcmp(line, "lte status") == 0 || strcmp(line, "modem read") == 0) {
-        esp_err_t err = data_mode ? ESP_ERR_INVALID_STATE : ready(line[0] == 'm');
+        esp_err_t err = data_mode || end_awaited_until != 0 ? ESP_ERR_INVALID_STATE : ready(line[0] == 'm');
         ESP_LOGI(TAG, "%s: %s", line, esp_err_to_name(err));
         if (line[0] == 'm') lte_log_snapshot();
     } else if (strncmp(line, "modem at ", 9) == 0) {
         if (data_mode)
             ESP_LOGW(TAG, "modem at: PPP is up, lte off first");
+        else if (end_awaited_until != 0)
+            ESP_LOGW(TAG, "modem at: the modem is still in PPP");
         else if (open_uart() == ESP_OK)
             ESP_LOGI(TAG, "%s: %s", line, at(line + 9, "", NULL) ? "OK" : "no OK");
     } else if (strcmp(line, "lte probe dead on") == 0 || strcmp(line, "lte probe dead off") == 0) {
@@ -452,7 +471,7 @@ static void check_step(link_memory* m) {
         disconnect();
         bool remade = false;
         // Not after an unanswered AT
-        if (on && !data_mode && unanswered == before && ask(MODEM_ADDRESS) >= 0) {
+        if (on && !data_mode && end_awaited_until == 0 && unanswered == before && ask(MODEM_ADDRESS) >= 0) {
             publish();
             remade = m->proven_epoch == v.epoch && modem_address_moved(fresh.values[MODEM_ADDRESS], ppp);
             ESP_LOGW(TAG, "the modem's address now: %s%s", fresh.values[MODEM_ADDRESS], remade ? ", a new bearer" : "");
@@ -506,11 +525,23 @@ static void run(void* arg) {
             log_wait(m.next_dial_at, now);
             wait = m.next_dial_at;
         } else if (!link) {
-            if (now >= m.next_dial_at) {
+            // Past the limit without it, the dial's answering() asks with the terminate frame and AT
+            if (end_awaited_until != 0 && (atomic_load(&ended) || now >= end_awaited_until)) {
+                if (atomic_load(&ended)) {
+                    ESP_LOGI(TAG, "the modem ended PPP %lld s after us", (now - end_awaited_until) / SECOND + 240);
+                    // 3 s quiet after its NO CARRIER
+                    if (m.next_dial_at < now + 3 * SECOND) m.next_dial_at = now + 3 * SECOND;
+                }
+                end_awaited_until = 0;
+            }
+            if (end_awaited_until != 0) {
+                wait = end_awaited_until;
+            } else if (now >= m.next_dial_at) {
                 dial_step(&m);
                 continue;
+            } else {
+                wait = m.next_dial_at;
             }
-            wait = m.next_dial_at;
         } else {
             int64_t check_at = lte_check_at(&v, m.first_failed_at, m.checked_at, suspected, now);
             if (check_at <= now) {
