@@ -52,15 +52,16 @@ static esp_err_t write(uint8_t reg, uint8_t value) {
     return i2c_master_transmit(device, (uint8_t[]){reg, value}, 2, 50);
 }
 
-static void poll(void* bus) {
+static void poll(void* arg) {
+    (void)arg;
     bool attached = false;
     for (;;) {
         uint8_t event = 0xff;
         if (!attached) {
             // Normal mode (register 0x10), with what was queued before flushed (0x02); the LEDs off until there is a use for
-            // them: our colours (0x11) at brightness 0 (0x03)
-            attached = i2c_master_probe(bus, ADDRESS, 50) == ESP_OK && write(0x10, 0) == ESP_OK && write(0x02, 0) == ESP_OK &&
-                       write(0x11, 1) == ESP_OK && write(0x03, 0) == ESP_OK;
+            // them: our colours (0x11) at brightness 0 (0x03). Not i2c_master_probe: in IDF 6.1 it keeps what a read that timed
+            // out left, and its interrupt then stores through a stale buffer (the 10-20 crashes in IDLE0)
+            attached = write(0x10, 0) == ESP_OK && write(0x02, 0) == ESP_OK && write(0x11, 1) == ESP_OK && write(0x03, 0) == ESP_OK;
             if (attached) ESP_LOGI(TAG, "Tab5 keyboard attached");
         } else if (i2c_master_transmit_receive(device, (uint8_t[]){0x20}, 1, &event, 1, 50) != ESP_OK) {
             attached = sym = false;
@@ -99,5 +100,5 @@ esp_err_t keyboard_tab5_start(void) {
     ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(bus, &(i2c_device_config_t){.device_address = ADDRESS, .scl_speed_hz = 100000}, &device), TAG,
                         "device");
     // Stack in PSRAM: a task there must never write flash
-    return xTaskCreatePinnedToCoreWithCaps(poll, "tab5 keyboard", 3072, bus, 5, NULL, 1, MALLOC_CAP_SPIRAM) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+    return xTaskCreatePinnedToCoreWithCaps(poll, "tab5 keyboard", 3072, NULL, 5, NULL, 1, MALLOC_CAP_SPIRAM) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
