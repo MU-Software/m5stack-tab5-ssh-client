@@ -22,6 +22,7 @@
 #include <freertos/event_groups.h>
 #include <freertos/queue.h>
 #include <lwip/inet.h>
+#include <netif/ppp/ppp_opts.h>
 
 #include "c6_protocol.h"
 #include "probe.h"
@@ -37,6 +38,8 @@
 #define CHECK_MS 10000
 // Per server: the path's two, then a public one
 #define DNS_MS 4000
+// lwIP ends a PPP link the modem does not answer 12 s after its first Terminate-Request; 3 s spare
+#define PPP_END_MS ((FSM_DEFMAXTERMREQS * FSM_DEFTIMEOUT + 3) * 1000)
 
 static const char* TAG = "lte";
 static const char* const public_addresses[] = C6_INTERNET_ADDRESSES;
@@ -242,6 +245,12 @@ static esp_err_t keep_settings(void) {
     return ESP_OK;
 }
 
+static void publish(void) {
+    taskENTER_CRITICAL(&guard);
+    shown = fresh;
+    taskEXIT_CRITICAL(&guard);
+}
+
 // Answering and ready to dial. After the checks, so that a slow read cannot hold them: the network each time, the settings
 // when asked for, and once a boot with no back-off in sight, the settings read and kept
 static esp_err_t ready(bool settings) {
@@ -255,32 +264,35 @@ static esp_err_t ready(bool settings) {
         kept = true;
         if (keep_settings() != ESP_OK) err = ESP_ERR_TIMEOUT;
     }
-    taskENTER_CRITICAL(&guard);
-    shown = fresh;
-    taskEXIT_CRITICAL(&guard);
+    publish();
     return err;
 }
 
 static void disconnect(void) {
-    char line[LINE];
     if (!data_mode) return;
+    sleep_hold(true);
     esp_netif_action_stop(netif, NULL, 0, NULL);
-    if (!(xEventGroupWaitBits(events, DEAD, pdFALSE, pdFALSE, pdMS_TO_TICKS(10000)) & DEAD)) {
+    if (!(xEventGroupWaitBits(events, DEAD, pdFALSE, pdFALSE, pdMS_TO_TICKS(PPP_END_MS)) & DEAD)) {
         ESP_LOGW(TAG, "PPP did not end");
-        return;
+    } else {
+        char line[LINE];
+        for (int64_t deadline = esp_timer_get_time() + 5 * SECOND; receive(line, deadline) && strcmp(line, "NO CARRIER") != 0;) {}
+        if (!at("AT", "", NULL)) ESP_LOGW(TAG, "no answer after PPP");
     }
-    for (int64_t deadline = esp_timer_get_time() + 5 * SECOND; receive(line, deadline) && strcmp(line, "NO CARRIER") != 0;) {}
-    if (!at("AT", "", NULL)) ESP_LOGW(TAG, "no answer after PPP");
+    sleep_hold(false);
 }
 
-static esp_err_t dial(void) {
+// dialed: once ATD went
+static esp_err_t dial(bool* dialed) {
     char line[LINE];
     esp_err_t err = ready(false);
     if (err != ESP_OK) return err;
     // So that no late result of the checks reads as the dial's
     vTaskDelay(pdMS_TO_TICKS(1000));
+    if (!on) return ESP_ERR_INVALID_STATE;
     xEventGroupClearBits(events, GOT_IP | DEAD);
     dialing = true;
+    *dialed = true;
     send("ATD*99#");
     bool connected = false;
     int64_t deadline = esp_timer_get_time() + 30 * SECOND;
@@ -398,13 +410,16 @@ typedef struct {
 } link_memory;
 
 static void dial_step(link_memory* m) {
+    bool dialed = false;
     set_state(LTE_DIALING);
     sleep_hold(true);
-    esp_err_t err = dial();
+    esp_err_t err = dial(&dialed);
     sleep_hold(false);
-    int64_t now = m->dial.last_dial_at = esp_timer_get_time();
+    int64_t now = esp_timer_get_time();
+    if (dialed) m->dial.last_dial_at = now;
     m->first_failed_at = 0;
-    if (err == ESP_OK) return;
+    // lte off meanwhile: the next round turns it off
+    if (err == ESP_OK || !on) return;
     lte_outcome outcome = err == ESP_ERR_NOT_FOUND ? (answered ? LTE_SILENT : LTE_NEVER_ANSWERED) : err == ESP_FAIL ? LTE_REFUSED : LTE_NOT_READY;
     m->next_dial_at = lte_dial_at(outcome, 0, &m->dial, now);
     set_state(outcome == LTE_NEVER_ANSWERED ? LTE_NO_MODEM : outcome == LTE_NOT_READY ? LTE_REGISTERING : LTE_WAITING);
@@ -413,13 +428,12 @@ static void dial_step(link_memory* m) {
 
 static void check_step(link_memory* m) {
     char address[16] = "";
-    suspected = false;
     int rc = check_link(address);
     int64_t now = esp_timer_get_time();
     lte_view v;
     // What sessions received during the check counts too
     lte_view_now(&v);
-    if (rc != EINTR) m->checked_at = now;
+    if (rc != EINTR) m->checked_at = now, suspected = false;
     if (rc == 0) {
         m->first_failed_at = 0;
         m->proven_epoch = v.epoch;
@@ -433,12 +447,20 @@ static void check_step(link_memory* m) {
         ESP_LOGW(TAG, "internet %s: %s, as %lld s ago: the bearer is dead, PPP %s ended", address, strerror(rc), (now - m->first_failed_at) / SECOND,
                  ppp);
         set_internet(NETWORK_BAD, now);
+        sleep_hold(true);
+        int64_t before = unanswered;
         disconnect();
         bool remade = false;
-        if (!data_mode && ask(MODEM_ADDRESS) >= 0) {
+        // Not after an unanswered AT
+        if (on && !data_mode && unanswered == before && ask(MODEM_ADDRESS) >= 0) {
+            publish();
             remade = m->proven_epoch == v.epoch && modem_address_moved(fresh.values[MODEM_ADDRESS], ppp);
             ESP_LOGW(TAG, "the modem's address now: %s%s", fresh.values[MODEM_ADDRESS], remade ? ", a new bearer" : "");
         }
+        sleep_hold(false);
+        // lte off meanwhile: no death counted
+        if (!on) return;
+        now = esp_timer_get_time();
         m->next_dial_at = lte_dial_at(remade ? LTE_BEARER_REMADE : LTE_BEARER_DEAD, now - v.up_at, &m->dial, now);
         m->first_failed_at = 0;
         set_state(LTE_WAITING);
@@ -466,23 +488,24 @@ static void run(void* arg) {
         int64_t now = esp_timer_get_time(), wait = NETWORK_NEVER;
         lte_view v;
         lte_view_now(&v);
+        bool link = up();
         if (atomic_exchange(&turned_on, false) && on) m.next_dial_at = lte_dial_at(LTE_ASKED, 0, &m.dial, now);
         if (m.next_dial_at == NETWORK_NEVER && atomic_load(&heard)) {
             ESP_LOGI(TAG, "the modem spoke: LTE again");
             m.next_dial_at = now;
         }
         if (!on) {
-            disconnect();
             set_state(LTE_OFF);
-        } else if (up() && v.state != LTE_UP) {
+            disconnect();
+        } else if (link && v.state != LTE_UP) {
             // lte off and on again before this task saw the off: the link stayed
             set_state(LTE_UP);
-        } else if (v.state == LTE_UP && !up()) {
+        } else if (v.state == LTE_UP && !link) {
             m.next_dial_at = lte_dial_at(LTE_UP_ENDED, now - v.up_at, &m.dial, now);
             set_state(LTE_WAITING);
             log_wait(m.next_dial_at, now);
             wait = m.next_dial_at;
-        } else if (!up()) {
+        } else if (!link) {
             if (now >= m.next_dial_at) {
                 dial_step(&m);
                 continue;
@@ -508,7 +531,9 @@ static void on_event(void* arg, esp_event_base_t base, int32_t id, void* data) {
         ESP_LOGI(TAG, "ip " IPSTR, IP2STR(&((ip_event_got_ip_t*)data)->ip_info.ip));
         xEventGroupSetBits(events, GOT_IP);
         taskENTER_CRITICAL(&view_lock);
-        view.state = LTE_UP, view.internet = NETWORK_UNKNOWN, view.epoch++, view.up_at = esp_timer_get_time();
+        // Not over an lte off that came during the dial
+        if (on) view.state = LTE_UP;
+        view.internet = NETWORK_UNKNOWN, view.epoch++, view.up_at = esp_timer_get_time();
         taskEXIT_CRITICAL(&view_lock);
     } else {
         // The modem's NO CARRIER and everything after it are lines again
@@ -576,7 +601,7 @@ int64_t lte_suspect(void) {
     lte_view v;
     lte_view_now(&v);
     int64_t now = esp_timer_get_time();
-    if (lte_check_at(&v, 0, v.up_at, true, now) > now) return 0;
+    if (v.internet == NETWORK_BAD || lte_check_at(&v, 0, v.up_at, true, now) > now) return 0;
     suspected = true;
     if (task != NULL) xTaskNotifyGive(task);
     // Three addresses and three DNS servers

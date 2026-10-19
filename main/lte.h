@@ -18,7 +18,8 @@ void lte_view_now(lte_view* out);
 esp_netif_t* lte_netif(void);
 // For this boot; on also ends a wait, though no dial follows the last within 60 s
 void lte_turn(bool on);
-// Something failed over LTE or Wi-Fi: checked unless found good within 2 min. When the verdict is due, 0 for no check
+// Something failed over LTE or Wi-Fi: checked unless found good within 2 min or dead. When the verdict is due, 0 for no check;
+// after a failed check the next waits 30 s, so it may come later
 int64_t lte_suspect(void);
 // An LTE session received bytes: the link lives
 void lte_received(void);
