@@ -25,7 +25,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 6.1.0
+    version: 6.1.1
 direct_dependencies:
 - espressif/esp_hosted
 manifest_hash: 74c441e403077180ebd15cd9c993d9cd431372ff5687eb5faff074809f1db3d4

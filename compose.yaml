@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 services:
   idf:
-    image: m5stack-tab5-ssh-client/idf:6.1
+    image: m5stack-tab5-ssh-client/idf:6.1.1
     build:
       # esp-clang brings clang-tidy for the firmware sources
       dockerfile_inline: |
-        FROM espressif/idf:v6.1
+        FROM espressif/idf:v6.1.1
         RUN /opt/esp/python_env/idf6.1_py3.12_env/bin/python /opt/esp/idf/tools/idf_tools.py install esp-clang
     working_dir: /workspace
     volumes:

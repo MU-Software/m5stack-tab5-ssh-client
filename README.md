@@ -7,7 +7,7 @@ capitals. Sym with 1…0, - and + on the Tab5 keyboard: F1–F12. The Tab5 keybo
 
 ## Build and flash
 
-Needs Docker (`espressif/idf:v6.1`) and [uv](https://docs.astral.sh/uv/).
+Needs Docker (`espressif/idf:v6.1.1`) and [uv](https://docs.astral.sh/uv/).
 
 ```sh
 git submodule update --init
