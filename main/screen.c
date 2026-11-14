@@ -145,7 +145,8 @@ static shr_status present(void* user, const shr_surface* surface, uint64_t frame
     return esp_lcd_panel_draw_bitmap(panel, 0, 0, surface->width, surface->height, surface->pixels) == ESP_OK ? SHR_OK : SHR_E_DEVICE;
 }
 
-// Band parts go to the portrait panel through the PPA; offsets of 2 mod 4 can hang it (esp-idf#19096), hence 16
+// Band parts go to the portrait panel through the PPA. A part placed or sized off a multiple of 4 can hang it while the
+// panel reads the frame buffer, even on IDF 6.1.1 (esp-idf#19096); 16 is what has run in use, 4 only in tests
 static bool rotate(const shr_surface* dst, const shr_draw_cmd* cmds, size_t count) {
     for (size_t i = 0; i < count; i++)
         if (cmds[i].kind != SHR_CMD_ROTATE || cmds[i].rotation != SHR_ROTATE_90_CCW || (cmds[i].dst.x0 | cmds[i].dst.y0) % 16 != 0 ||
