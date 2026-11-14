@@ -359,7 +359,7 @@ static void listen_for_clients(void* arg) {
             vTaskDelay(pdMS_TO_TICKS(1000));
         } else if (atomic_exchange(&busy, true)) {
             close(fd);
-        } else if (xTaskCreatePinnedToCore(serve, "remote", 16 * 1024, (void*)(intptr_t)fd, 5, NULL, 1) != pdPASS) {
+        } else if (xTaskCreatePinnedToCore(serve, "remote", 8192, (void*)(intptr_t)fd, 5, NULL, 1) != pdPASS) {
             ESP_LOGW(TAG, "no room for a client");
             close(fd);
             atomic_store(&busy, false);
