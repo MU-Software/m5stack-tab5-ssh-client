@@ -1,2 +1,2 @@
 dependencies:
-  espressif/esp_hosted: "==3.0.9"
+  espressif/esp_hosted: "==3.0.10"

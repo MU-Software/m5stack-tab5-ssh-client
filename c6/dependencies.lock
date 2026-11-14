@@ -1,6 +1,6 @@
 dependencies:
   espressif/esp_hosted:
-    component_hash: d72bce4d4a9fd6d4b610f3437735f58c70cfe40abfc969b53396dbb2e1d4c49b
+    component_hash: c88052665d8df3c7185cb5e34327d77674599006bbbbe4bfdb43c44f9a2a73a3
     dependencies:
     - name: idf
       require: private
@@ -21,13 +21,13 @@ dependencies:
     - esp32h4
     - esp32h21
     - esp32p4
-    version: 3.0.9
+    version: 3.0.10
   idf:
     source:
       type: idf
     version: 6.1.0
 direct_dependencies:
 - espressif/esp_hosted
-manifest_hash: c8df67d15d554d4dac3f0646cdddf902bc6c74095142c342196158fdea4d6c60
+manifest_hash: 74c441e403077180ebd15cd9c993d9cd431372ff5687eb5faff074809f1db3d4
 target: esp32c6
 version: 3.0.0

@@ -1,3 +1,3 @@
 dependencies:
-  espressif/esp_hosted: "==3.0.9"
-  espressif/m5stack_tab5_noglib: "==1.3.1"
+  espressif/esp_hosted: "==3.0.10"
+  espressif/m5stack_tab5_noglib: "==1.3.2"

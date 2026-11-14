@@ -334,8 +334,8 @@ esp_err_t c6_update(const uint8_t* image, size_t size) {
     eh_host_sys_get_cp_fw_version(&v);
     ESP_LOGI(TAG, "firmware %lu.%lu.%lu, writing %u bytes", v.major1, v.minor1, v.patch1, (unsigned)size);
     ESP_RETURN_ON_ERROR(esp_hosted_slave_ota_begin(), TAG, "begin");
-    for (size_t off = 0; off < size; off += 1500) {
-        esp_err_t err = esp_hosted_slave_ota_write(image + off, MIN(size - off, 1500));
+    for (size_t off = 0; off < size; off += EH_HOST_CP_OTA_CHUNK_MAX) {
+        esp_err_t err = esp_hosted_slave_ota_write(image + off, MIN(size - off, EH_HOST_CP_OTA_CHUNK_MAX));
         if (err != ESP_OK) {
             esp_hosted_slave_ota_end();
             return err;
