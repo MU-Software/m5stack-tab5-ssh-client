@@ -5,16 +5,15 @@ description = "SSH client for M5Stack Tab5"
 requires-python = ">=3.13"
 license = "GPL-3.0-or-later"
 dependencies = [
-    "esp-idf-monitor==1.9.0",
-    "esp-idf-nvs-partition-gen==0.2.0",
-    "esptool==5.3.1",
+    "esp-idf-monitor==1.11.0",
+    "esptool==5.6.0",
     "jsonschema==4.26.0",
     "pyserial==3.5",
-    "typer==0.27.3",
+    "typer==0.29.1",
 ]
 
 [dependency-groups]
-dev = ["pre-commit==4.3.0"]
+dev = ["pre-commit==4.7.0"]
 
 [tool.ruff]
 line-length = 120
@@ -30,10 +29,6 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
 
 [tool.mypy]
 strict = true
-
-[[tool.mypy.overrides]]
-module = ["esp_idf_nvs_partition_gen.*"]
-ignore_missing_imports = true
 
 [tool.bandit]
 exclude_dirs = ["third_party", ".venv", "build"]

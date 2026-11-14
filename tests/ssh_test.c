@@ -138,7 +138,7 @@ static int attach_until(const char* name, const char* keep, int age_s, const cha
         if ((r = ssh_read(&other, buf, sizeof buf)) == WS_WANT_READ) usleep(1000);
     snprintf(probe_command, sizeof probe_command,
              "[ \"$(tmux show -t =%s: -v mouse)\" = on ] && [ \"$(tmux show -t =%s: -v @tab5_arrows)\" = 1 ] && "
-             "tmux list-keys -T root WheelUpPane | grep -q tab5_arrows",
+             "tmux list-keys -T root | grep -q 'WheelUpPane .*tab5_arrows'",
              name, name);
     bool held = (r >= 0 || r == WS_WANT_READ) && exec_on(&probe, probe_command) == 0;
     bool ended = exec_on(&probe, ending) == 0;

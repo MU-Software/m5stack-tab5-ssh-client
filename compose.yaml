@@ -20,7 +20,7 @@ services:
   sshd:
     build:
       dockerfile_inline: |
-        FROM alpine:3.22
+        FROM alpine:3.24
         RUN apk add --no-cache bash openssh-server tmux && adduser -D -s /bin/bash tester && echo tester:tab5-test-password | chpasswd \
             && ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key \
             && printf 'HostKey /etc/ssh/ssh_host_ed25519_key\nPasswordAuthentication yes\nRekeyLimit 32K\n' >> /etc/ssh/sshd_config

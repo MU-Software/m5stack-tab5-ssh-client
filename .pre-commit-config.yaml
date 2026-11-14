@@ -26,23 +26,23 @@ repos:
         exclude_types: [markdown]
 
   - repo: https://github.com/pre-commit/mirrors-clang-format
-    rev: v21.1.8
+    rev: v23.1.5
     hooks:
       - id: clang-format
         types_or: [c, c++]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.17.0
+    rev: v0.17.4
     hooks:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.4.0
+    rev: v2.4.1
     hooks:
       - id: mypy
-        additional_dependencies: [typer==0.27.3, esptool==5.3.1, jsonschema==4.26.0, types-jsonschema]
+        additional_dependencies: [typer==0.29.1, esptool==5.6.0, jsonschema==4.26.0, types-jsonschema]
 
   - repo: https://github.com/PyCQA/bandit
     rev: 1.9.4
@@ -52,7 +52,7 @@ repos:
         additional_dependencies: ["bandit[toml]"]
 
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.11.6
+    rev: 0.13.7
     hooks:
       - id: uv-lock
 
