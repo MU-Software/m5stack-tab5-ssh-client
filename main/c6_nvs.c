@@ -87,7 +87,7 @@ static size_t put_name(uint8_t* out, size_t at, const char* name) {
     return at + 1 + out[at];
 }
 
-// The next word at *at into out, left alone when there is none or it does not fit
+// out and *at left alone when there is none or it does not fit
 static bool word(const char** at, char* out, size_t size) {
     const char* start = *at + strspn(*at, " ");
     size_t n = strcspn(start, " ");
@@ -105,7 +105,7 @@ static bool exchange(job* j, size_t length) {
     return err == 0;
 }
 
-// Text as it is, but for backslashes and control characters (\xHH)
+// Backslashes and control characters escaped (\xHH)
 static void write_text(const job* j, const uint8_t* text, size_t length) {
     char out[256] = "";
     size_t n = 0;
@@ -145,7 +145,7 @@ static void write_integer(const job* j, uint8_t type, const uint8_t* bytes) {
         say(j, "%" PRIu64, n);
 }
 
-// One value as text, a line of its own, as "NAMESPACE KEY TYPE VALUE" when labelled
+// A line of its own, "NAMESPACE KEY TYPE VALUE" when labelled
 static bool value(job* j, const char* space, const char* key, bool labelled) {
     uint32_t offset = 0, size = 0;
     uint8_t type = 0;
@@ -229,7 +229,7 @@ static int hex_digit(char c) {
     return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
 }
 
-// A value as set and dump write it: a string escaped as dump writes it when escaped, else as it is
+// A string as set takes it, or with escaped as dump writes it
 static const char* decode(uint8_t type, const char* text, bool escaped, uint8_t* out, size_t room, size_t* length) {
     *length = 0;
     if (is_integer(type)) {
@@ -280,7 +280,6 @@ static void wipe(void* memory, size_t size) {
         *p = 0;
 }
 
-// "NAMESPACE KEY TYPE VALUE", its value decoded
 static const char* parse_line(const char* line, char* space, char* key, uint8_t* type, uint8_t* value, size_t room, size_t* length) {
     char type_text[NAME_LENGTH + 1];
     const char* at = line;
@@ -292,7 +291,7 @@ static const char* parse_line(const char* line, char* space, char* key, uint8_t*
     return decode(*type, at[0] == ' ' ? at + 1 : at, true, value, room, length);
 }
 
-// The next line, NULL past the last, counted in *number; a dump's own status line is skipped
+// NULL past the last; a dump's status line skipped
 static char* next_line(char** at, const char* end, unsigned* number) {
     for (char* line; *at < end;) {
         line = *at;
@@ -304,7 +303,7 @@ static char* next_line(char** at, const char* end, unsigned* number) {
     return NULL;
 }
 
-// Twice the room, the old copy wiped
+// The old copy wiped
 static char* grow(char* text, size_t size, size_t* capacity) {
     size_t more = *capacity == 0 ? 4096 : *capacity * 2;
     char* bigger = more <= LOAD_MAX ? malloc(more) : NULL;
@@ -332,7 +331,7 @@ static void write_value(job* j, const char* space, const char* key, uint8_t type
     }
 }
 
-// The dump format from the input, checked whole before anything is erased: then the namespace, or all, holds it alone
+// Checked whole before anything is erased; then the namespace, or all, holds the input alone
 static void load(job* j, const char* only) {
     const c6_nvs_io* io = j->io;
     char *text = NULL, *at, space[NAME_LENGTH + 1], key[NAME_LENGTH + 1];

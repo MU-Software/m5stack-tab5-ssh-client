@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# esptool and the monitor run on the host: the IDF container cannot see USB serial devices.
+# esptool and the monitor on the host: the container cannot see USB serial devices
 
 BAUD ?= 921600
 

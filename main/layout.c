@@ -69,7 +69,6 @@ static bool size(parser* p, const cJSON* item, layout_node* n) {
     return true;
 }
 
-// `key` as a string into `out`, which keeps its value when the key is absent
 static bool string(parser* p, const cJSON* item, const char* key, const char** out) {
     const cJSON* v = field(item, key);
     if (v != NULL && !cJSON_IsString(v)) return fail(p, "%s: not a string", key);

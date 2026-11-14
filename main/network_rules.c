@@ -31,7 +31,6 @@ network_choice network_choose(const wifi_view* w, const lte_view* l, network_pat
     bool planned = w->enabled && w->planned && now - w->lost_at < 25 * NETWORK_SECOND;
     bool good = wifi_good(w);
     bool lte_good = l->state == LTE_UP && l->internet != NETWORK_BAD;
-    // Two failures within 10 min, the last of them recent, and the internet back for less than 30 s
     bool flapping = w->failed_before != 0 && w->failed_at - w->failed_before < 10 * MINUTE && now - w->failed_at < 10 * MINUTE &&
                     now - w->good_since < 30 * NETWORK_SECOND;
     bool first_try = w->enabled && now - w->started_at < 20 * NETWORK_SECOND &&

@@ -22,7 +22,6 @@ static uint8_t* pending;
 static size_t pending_size, pending_got, pending_name_length;
 static uint8_t pending_name[2 * NVS_KEY_NAME_MAX_SIZE + 1];
 
-// [length][name] at *at; an empty one only when empty is allowed
 static bool take_name(const uint8_t* body, size_t size, size_t* at, char name[NVS_KEY_NAME_MAX_SIZE], bool empty) {
     if (*at >= size || body[*at] >= NVS_KEY_NAME_MAX_SIZE || (body[*at] == 0 && !empty) || *at + 1 + body[*at] > size) return false;
     memcpy(name, body + *at + 1, body[*at]);
@@ -180,7 +179,7 @@ static esp_err_t get_value(nvs_handle_t nvs, const char* key, uint32_t offset, u
     return err;
 }
 
-// Every namespace's entries; the namespaces themselves stay, unseen
+// The namespaces themselves stay, unseen
 static esp_err_t clear(void) {
     nvs_iterator_t it = NULL;
     nvs_entry_info_t info;
@@ -198,7 +197,7 @@ static esp_err_t clear(void) {
     return err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err == ESP_OK ? ESP_FAIL : err;
 }
 
-// [type][size, 4 bytes][offset, 4 bytes][piece] after the names at at; written once the last piece came
+// body[at]: the type, after the names
 static esp_err_t write_piece(const uint8_t* body, size_t size, size_t at, bool* complete) {
     *complete = false;
     if (at + 9 > size) return ESP_ERR_INVALID_ARG;

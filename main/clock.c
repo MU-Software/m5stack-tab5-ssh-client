@@ -15,9 +15,9 @@
 #include <freertos/FreeRTOS.h>
 
 #define RX8130 0x32
-#define TIME   0x10 // seconds to years, BCD, years from 2000; held in UTC here
+#define TIME   0x10 // seconds to years, BCD, years from 2000; UTC
 #define FLAG   0x1D
-#define VLF    0x02 // the backup supply ran low: the time is lost
+#define VLF    0x02 // backup supply ran low: the time is lost
 #define CTRL0  0x1E
 #define STOP   0x40
 
@@ -34,7 +34,7 @@ static uint8_t to_bcd(int v) {
     return (uint8_t)((v / 10) << 4 | v % 10);
 }
 
-// Days since 1970-01-01 of a civil date (Howard Hinnant's days_from_civil)
+// Since 1970-01-01 (Howard Hinnant's days_from_civil)
 static int64_t days(int year, int month, int day) {
     year -= month <= 2;
     int64_t era = (year >= 0 ? year : year - 399) / 400;
@@ -50,7 +50,7 @@ static esp_err_t rtc_read(uint8_t reg, uint8_t* out, size_t size) {
     return i2c_master_transmit_receive(rtc, &reg, 1, out, size, 100);
 }
 
-// A clock nobody set since the factory reads a date years off without losing power, hence the bounds
+// An RTC unset since the factory reads years off without losing power, hence the bounds
 static void from_rtc(void) {
     uint8_t flag = 0, t[7];
     static const char build[] = __DATE__; // "Mmm dd yyyy"
@@ -99,7 +99,7 @@ static void synced(struct timeval* tv) {
 }
 
 esp_err_t clock_start(void) {
-    // Stack in PSRAM: a task there must never write flash
+    // PSRAM stack: it must never write flash
     if (i2c_master_bus_add_device(bsp_i2c_get_handle(), &(i2c_device_config_t){.device_address = RX8130, .scl_speed_hz = 400000}, &rtc) != ESP_OK ||
         xTaskCreatePinnedToCoreWithCaps(to_rtc, "clock", 3072, NULL, 3, &saver, 1, MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "no RTC");

@@ -11,7 +11,7 @@ static void check(int ok, const char* what) {
     failures += !ok;
 }
 
-// Response id 0x1234 with QR and RD, flags then RA and RCODE, one question and `an` answer records
+// Id 0x1234, flags (QR, RD), RA with RCODE, one question, `an` answers
 #define HEADER(flags, rcode, an) 0x12, 0x34, flags, 0x80 | (rcode), 0, 1, 0, an, 0, 0, 0, 0
 #define EXAMPLE_COM              7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0
 #define QUESTION                 EXAMPLE_COM, 0, 1, 0, 1
@@ -61,7 +61,7 @@ int main(void) {
     const uint8_t several[] = {HEADER(0x81, 0, 3), QUESTION, 0xc0, 12, TTL_A(1), 0xc0, 12, TTL_A(2), 0xc0, 12, TTL_A(3)};
     check(parsed("example.com", several, sizeof several, &address) == DNS_FOUND && is(address, 1), "several A: the first");
 
-    // A CNAME to www.example.com, its target a pointer into the question, then the A owned by the target: two jumps
+    // CNAME to www.example.com, its target a pointer into the question, then the target's A: two jumps
     const uint8_t cname[] = {HEADER(0x81, 0, 2), QUESTION, 0xc0, 12, 0, 5, 0, 1, 0, 0, 0, 60, 0, 6, 3, 'w', 'w', 'w', 0xc0, 12, 0xc0, 41, TTL_A(7)};
     check(parsed("example.com", cname, sizeof cname, &address) == DNS_FOUND && is(address, 7), "a CNAME then its A through pointers");
     int found = 0;
@@ -141,7 +141,7 @@ int main(void) {
     check(parsed("example.com", m, sizeof m, &address) == DNS_FAILED, "a pointer past the end");
     m[29] = 0x80, m[30] = 12;
     check(parsed("example.com", m, sizeof m, &address) == DNS_FAILED, "a reserved label type");
-    // www then a pointer back to www: a loop through a label
+    // www, then a pointer back to it
     const uint8_t loop[] = {HEADER(0x81, 0, 1), QUESTION, 3, 'w', 'w', 'w', 0xc0, 29, TTL_A(34)};
     check(parsed("example.com", loop, sizeof loop, &address) == DNS_FAILED, "a pointer loop through a label");
     const uint8_t forward[] = {HEADER(0x81, 0, 1), QUESTION, 0xc0, 31, 0, TTL_A(34)};

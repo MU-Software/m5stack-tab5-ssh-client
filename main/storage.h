@@ -10,23 +10,21 @@
 
 char* storage_read_file_text(const char* path);
 int storage_mount(int with_usb);
-// The SD card's .config/tab5-ssh/config.json, an empty object for want of it
+// An empty object for want of config.json
 cJSON* storage_get_device_config(config_state* state);
 char* storage_get_ssh_config(void);
 char* storage_get_known_hosts(void);
 int storage_add_known_host(const char* line);
 char* storage_get_private_key(const char* identity_file);
-// The changes below save to the SD card, making the file when there is none, never over one that is not JSON.
-// First in the configuration's Wi-Fi list; a NULL password removes it
+// Below: the file made when missing, never saved over one that is not JSON.
+// First in the Wi-Fi list; a NULL password removes it
 int storage_add_wifi(const char* ssid, const char* password);
-// The configuration's Wi-Fi list changed as config_set_wifi does; unless networks is NULL, the list as saved
-// there (one allocation), and nothing saved when it cannot be made
+// As config_set_wifi; unless networks is NULL, *networks the list saved (one allocation), nothing saved when it cannot be made
 int storage_set_wifi(const char* ssid, const wifi_network* network, int move, wifi_network** networks);
-// Replaces the configuration, which takes config, also one that is not JSON
+// Takes config; also over a file that is not JSON
 int storage_set_device_config(cJSON* config);
-// A setting such as "log.file_kb" into the configuration, which takes value
+// name as "log.file_kb"; takes value
 int storage_set_config(const char* name, cJSON* value);
-// The session records, in .local/state/tab5-ssh/sessions.json on the SD card: how many, none without it. A file not read
-// whole is moved to sessions.json.bad; whole while there is no such file
+// How many, none without the file. One not read whole moves to sessions.json.bad; *whole while no .bad file is there
 size_t storage_get_sessions(session_record* records, size_t capacity, bool* whole);
 int storage_set_sessions(const session_record* records, size_t count);

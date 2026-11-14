@@ -125,7 +125,7 @@ size_t terminal_encode_key(GhosttyKeyEvent event, char* out, size_t size) {
     return n;
 }
 
-// libghostty-vt's Zig takes the position's two floats in integer registers, where GCC passes such a struct in float registers
+// libghostty-vt's Zig takes the two floats in integer registers, where GCC passes such a struct in float registers
 void set_position_words(GhosttyMouseEvent event, uint32_t x, uint32_t y) __asm__("ghostty_mouse_event_set_position");
 static void set_position(GhosttyMouseEvent event, float x, float y) {
     uint32_t words[2];
@@ -152,7 +152,7 @@ static bool report(terminal* t, GhosttyMouseAction action, GhosttyMouseButton bu
     return true;
 }
 
-// Under the lock: as Ghostty does for mode 1007 (alternate scroll) on the alternate screen; false elsewhere
+// Under the lock: as Ghostty does for mode 1007 (alternate scroll) on the alternate screen
 static bool arrow_keys(terminal* t, int32_t lines) {
     GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
     GhosttyTerminalModeConfig alternate_scroll = {GHOSTTY_MODE_MOUSE_ALTERNATE_SCROLL, false};

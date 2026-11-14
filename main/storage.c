@@ -21,7 +21,7 @@
 static const char* TAG = "storage";
 static sdmmc_card_t card;
 static bool mounted;
-// The configuration is read, changed and written again by the control commands and the screen
+// The control commands and the screen both read, change and write the configuration
 static SemaphoreHandle_t config_lock;
 
 char* storage_read_file_text(const char* path) {
@@ -66,7 +66,7 @@ int storage_mount(int with_usb) {
 
 #define CONFIG SD "/.config/tab5-ssh/config.json"
 
-// The text holds Wi-Fi passwords, cleared before it is freed
+// Wi-Fi passwords: zeroed before free
 cJSON* storage_get_device_config(config_state* state) {
     char* text = mounted ? storage_read_file_text(CONFIG) : NULL;
     cJSON* config = text != NULL ? cJSON_Parse(text) : NULL;
@@ -138,7 +138,7 @@ int storage_set_sessions(const session_record* records, size_t count) {
     return err ? -1 : 0;
 }
 
-// Indented, as people edit it; the text holds Wi-Fi passwords, cleared before it is freed
+// Indented, as people edit it; Wi-Fi passwords: zeroed before free
 static int save_config(cJSON* config) {
     char* text = cJSON_Print(config);
     cJSON_Delete(config);
@@ -150,7 +150,6 @@ static int save_config(cJSON* config) {
     return err ? -1 : 0;
 }
 
-// Changed in place, NULL when the file is there but not JSON
 static cJSON* changed_config(void) {
     config_state state;
     cJSON* config = storage_get_device_config(&state);

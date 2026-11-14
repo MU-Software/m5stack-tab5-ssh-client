@@ -6,13 +6,11 @@
 
 #include <cJSON.h>
 
-// A screen in cells from JSON. "rows" stacks its children, each sized by "height"; "columns" sets them side by side,
-// each sized by "width". A size is cells (a number), "N%" of the parent or "Nfr", a share of what the others leave
-// (absent: "1fr"); "when": SETTING hides a node while that setting is off. Leaves: "text" (may hold {name}), "button"
-// (an action, labelled by "text"), "terminal", "list" (a list's items, one a row, each as "item" with {field}s, "action"
-// for the chosen one, "buttons" at the end of each row, each "width" cells, whose "text" and "when" name the row's
-// fields, and "stripe": STYLE, whose background the first and every second row after take) and the settings' editors "toggle", "number",
-// "choice" and "field" (also a value of the screens' that is not a setting; "secret": shown as *).
+// JSON, in cells. "rows" stacks children sized by "height", "columns" by "width": cells, "N%" of the parent or "Nfr", a share
+// of what the others leave (absent: "1fr"). "when": SETTING hides a node while it is off. Leaves: "text" ({name}), "button"
+// (an action, labelled by "text"), "terminal", "list" (rows of "item" with {field}s; "action" for the chosen one; "buttons"
+// end each row, "width" cells, their "text" and "when" naming the row's fields; "stripe": STYLE of the first and every
+// second row) and the editors "toggle", "number", "choice" and "field" (also a value that is no setting; "secret": shown as *)
 enum { LAYOUT_MAX_NODES = 256, LAYOUT_MAX_BUTTONS = 6 };
 
 typedef enum {
@@ -34,7 +32,7 @@ typedef struct {
     int32_t column, row, columns, rows;
 } layout_area;
 
-// 0xRRGGBB, -1 for none: a node without a colour takes its parent's, and no background leaves the cells transparent
+// 0xRRGGBB, -1 for none: the parent's colour; no background leaves the cells transparent
 typedef struct {
     int32_t foreground, background;
     bool bold;
@@ -46,7 +44,7 @@ typedef struct {
     const char *text, *action, *name, *item, *when;
     layout_style style;
     layout_align align;
-    // The background of a list's first, third, … rows, -1 for none
+    // A background, -1 for none
     int32_t stripe;
     // per_item: one of a list's buttons, on each of its rows
     bool border, secret, per_item;
@@ -63,15 +61,11 @@ typedef struct {
     layout_node nodes[]; // nodes[0] is the screen
 } layout;
 
-// Whether setting `name` is on
 typedef bool (*layout_shown)(void* user, const char* name);
 
-// A screen's node with the styles of {"styles": {NAME: {"foreground", "background": "#RRGGBB", "bold"}}}, its strings in
-// `screen` and `json`; NULL with the reason in `error`. Free with free().
+// Styles: {"styles": {NAME: {"foreground", "background": "#RRGGBB", "bold"}}}. Strings point into `screen` and `json`; free()
 layout* layout_parse(const cJSON* json, const cJSON* screen, char* error, size_t size);
-// Sets every node's area within `area`
 void layout_place(layout* screen, layout_area area, layout_shown shown, void* user);
-// The innermost node over cell (column, row), NULL outside the screen
+// The innermost node
 const layout_node* layout_at(const layout* screen, int32_t column, int32_t row);
-// The first node of `kind`, NULL if none
 const layout_node* layout_find(const layout* screen, layout_kind kind);

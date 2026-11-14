@@ -19,7 +19,7 @@
 #include "config.h"
 
 #define MODE(op, v) (op), 0, 0, (v) >> 8, (v) & 0xff
-// A fresh pty otherwise keeps sshd's defaults, which on Linux lack IUTF8 (Hangul backspace deletes one byte)
+// sshd's pty defaults lack IUTF8 on Linux: Hangul backspace deletes one byte
 static const byte pty_modes[] = {
     MODE(1, 3),       // VINTR ^C
     MODE(2, 0x1c),    // VQUIT ^backslash
@@ -87,7 +87,7 @@ static int read_key(ssh_session* s, WS_UserAuthData_PublicKey* pk) {
     return WS_SUCCESS;
 }
 
-// wolfSSH calls again once the server refused what was offered; each is offered once
+// wolfSSH calls again after the server refuses an offer
 static int user_auth(byte type, WS_UserAuthData* d, void* ctx) {
     ssh_session* s = ctx;
     if (type == WOLFSSH_USERAUTH_PASSWORD && s->password != NULL) {
@@ -111,7 +111,7 @@ static int pong(WOLFSSH* ssh, void* buf, word32 size, void* ctx) {
     return WS_SUCCESS;
 }
 
-// Bounded: a path that just died must not hold the session for TCP's minutes of retries
+// Bounded: a dead path must not hold the session for TCP's minutes of retries
 static bool connected(int fd, const struct sockaddr* to, socklen_t size, int timeout_ms) {
     int err = 0;
     socklen_t length = sizeof err;
@@ -176,7 +176,7 @@ int ssh_open(const global_state* state, ssh_session* s) {
     wolfSSH_SetUserAuth(s->ctx, user_auth);
     wolfSSH_SetReqSuccess(s->ctx, pong);
     wolfSSH_SetReqFailure(s->ctx, pong);
-    // The 128 KiB default window let ^C take 1-3 s to stop a flood; 32 KiB stops it in ~70 ms
+    // The 128 KiB default let ^C take 1-3 s to stop a flood; this ~70 ms
     wolfSSH_CTX_SetWindowPacketSize(s->ctx, 32768, 32768);
 
     s->ssh = wolfSSH_new(s->ctx);
@@ -220,7 +220,7 @@ int ssh_read(ssh_session* s, void* buffer, size_t length) {
     if (r == WS_EXTDATA) r = wolfSSH_extended_data_read(s->ssh, buffer, (word32)length);
     if (r > 0) return r;
     int e = code(s, r);
-    // stream_read stops reading at EOF, after which sshd sends exit-status, and while keys are exchanged
+    // stream_read stops at EOF, before sshd's exit-status, and during rekeying
     if (e == WS_EOF || e == WS_REKEYING) e = code(s, wolfSSH_worker(s->ssh, NULL));
     switch (e) {
     case WS_SUCCESS:

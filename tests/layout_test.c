@@ -14,20 +14,18 @@ static void check(int ok, const char* what) {
     failures += !ok;
 }
 
-// Every setting is on but "off"
 static bool shown(void* user, const char* name) {
     (void)user;
     return strcmp(name, "off") != 0;
 }
 
-// Screen `name` of `text`, which stays parsed until the next call
+// `text` stays parsed until the next call
 static layout* parse(const char* text, const char* name) {
     cJSON_Delete(json);
     json = cJSON_Parse(text);
     return layout_parse(json, cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(json, "screens"), name), error, sizeof error);
 }
 
-// The screen "s" of {"screens": {"s": NODE}}, laid out in columns x rows
 static layout* screen(const char* node, int32_t columns, int32_t rows) {
     char text[1024];
     snprintf(text, sizeof text, "{\"styles\": {\"bar\": {\"background\": \"#102030\", \"bold\": true}}, \"screens\": {\"s\": %s}}", node);

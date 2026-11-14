@@ -22,7 +22,7 @@ static bool contains(const uint8_t* keys, uint8_t usage) {
     return memchr(keys, usage, HID_KEYBOARD_KEY_MAX) != NULL;
 }
 
-// Boot reports list the keys held, so presses and releases come from the report before
+// Boot reports list the keys held, not presses and releases
 static void report(const hid_keyboard_input_report_boot_t* r) {
     modifiers = r->modifier.val;
     for (int i = 0; i < HID_KEYBOARD_KEY_MAX; i++)
@@ -54,7 +54,7 @@ static void driver_event(hid_host_device_handle_t device, const hid_host_driver_
         params.sub_class != HID_SUBCLASS_BOOT_INTERFACE || params.proto != HID_PROTOCOL_KEYBOARD ||
         hid_host_device_open(device, &(hid_host_device_config_t){.callback = interface_event}) != ESP_OK)
         return;
-    // Sent even though keyboards often time out on it: some only report as boot devices once asked
+    // Keyboards often time out on it, but some report as boot devices only once asked
     hid_class_request_set_protocol(device, HID_REPORT_PROTOCOL_BOOT);
     if (hid_host_device_start(device) == ESP_OK) ESP_LOGI(TAG, "attached");
 }
@@ -68,7 +68,7 @@ static void run_host(void* arg) {
     }
 }
 
-// What bsp_usb_host_start does, without the BSP's IO expander driver, which would reset the C6 (power.c powers the port)
+// bsp_usb_host_start without the BSP's IO expander driver, which would reset the C6; power.c powers the port
 esp_err_t keyboard_usb_start(void) {
     ESP_RETURN_ON_ERROR(usb_host_install(&(usb_host_config_t){.intr_flags = ESP_INTR_FLAG_LOWMED}), TAG, "USB host");
     ESP_RETURN_ON_FALSE(xTaskCreate(run_host, "usb host", 4096, NULL, 10, NULL) == pdPASS, ESP_ERR_NO_MEM, TAG, "USB host task");

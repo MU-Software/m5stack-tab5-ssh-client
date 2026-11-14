@@ -11,7 +11,7 @@ static void check(int ok, const char* what) {
     failures += !ok;
 }
 
-// Each reply line as at() keeps it, the line that starts with the item's prefix or none (NULL: the modem answered ERROR)
+// Replies as at() keeps them: the line with the item's prefix or none (NULL: the modem answered ERROR)
 static modem_snapshot parsed(const char* const replies[MODEM_ITEMS]) {
     modem_snapshot s = {0};
     for (int i = 0; i < MODEM_ITEMS; i++) {

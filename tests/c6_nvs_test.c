@@ -131,7 +131,6 @@ static void write_out(void* context, const char* text, size_t length) {
 static const char* input;
 static size_t input_left;
 
-// A few bytes at a time
 static int read_input(void* context, void* buffer, size_t length) {
     size_t n = input_left < 7 ? input_left : 7;
     (void)context;
@@ -238,7 +237,6 @@ int main(void) {
     expect(" dump other", "c6 nvs ESP_OK\n", 0);
     expect(" erase other", "c6 nvs ESP_ERR_NVS_NOT_FOUND\n", 1);
 
-    // load: the dump format back, checked whole first
     static char dumped[32768], big_line[4200], big_hex[4001];
     expect(" set other k u8 9", "c6 nvs ESP_OK\n", 0);
     run(" dump");

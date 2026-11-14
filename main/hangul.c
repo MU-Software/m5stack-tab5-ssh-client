@@ -3,16 +3,16 @@
 
 #include <string.h>
 
-// QWERTY keys of the initial consonants and vowels, in Unicode order; '_' for vowels typed as two keys
+// QWERTY keys in Unicode order; '_': a vowel typed as two keys
 static const char initials[] = "rRseEfaqQtTdwWczxvg";
 static const char medials[] = "koiOjpuPh___yn___bm_l";
-// The final of each initial consonant, 0 for those that cannot end a syllable
+// Per initial, 0: it cannot end a syllable
 static const uint8_t finals[19] = {1, 2, 4, 7, 0, 8, 16, 17, 0, 19, 20, 21, 22, 0, 23, 24, 25, 26, 27};
-// Pairs typed as two jamo: {first, second, together}; finals: second is an initial
+// {first, second, together}; for finals, second is an initial
 static const uint8_t double_finals[][3] = {{1, 9, 3},  {4, 12, 5},  {4, 18, 6},  {8, 0, 9},   {8, 6, 10}, {8, 7, 11},
                                            {8, 9, 12}, {8, 16, 13}, {8, 17, 14}, {8, 18, 15}, {17, 9, 18}};
 static const uint8_t double_medials[][3] = {{8, 0, 9}, {8, 1, 10}, {8, 20, 11}, {13, 4, 14}, {13, 5, 15}, {13, 20, 16}, {18, 20, 19}};
-// Compatibility jamo of the initial consonants, for one typed alone
+// Compatibility jamo, for an initial typed alone
 static const uint16_t lone[19] = {0x3131, 0x3132, 0x3134, 0x3137, 0x3138, 0x3139, 0x3141, 0x3142, 0x3143, 0x3145,
                                   0x3146, 0x3147, 0x3148, 0x3149, 0x314a, 0x314b, 0x314c, 0x314d, 0x314e};
 

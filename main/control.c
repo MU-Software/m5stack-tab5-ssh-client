@@ -43,7 +43,7 @@ void control_help(control_transport transport, char* out, size_t size) {
     }
 }
 
-// Not a Wi-Fi password, nor a value for NVS: [c6 ]nvs set up to its type
+// Never a Wi-Fi password or an NVS value
 int control_loggable(const char* line) {
     size_t set = strncmp(line, "c6 nvs set ", 11) == 0 ? 10 : strncmp(line, "nvs set ", 8) == 0 ? 7 : 0;
     if (strncmp(line, "wifi connect ", 13) == 0) return 12;

@@ -103,7 +103,7 @@ void settings_text(const setting* s, const setting_value* value, char* out, size
         snprintf(out, size, "%s", value->text);
 }
 
-// "log.file_kb" in {"log": {"file_kb": …}}; NULL when absent, *wrong when something on the way is not an object
+// "log.file_kb" in {"log": {"file_kb": …}}; *wrong: something on the way is not an object
 static const cJSON* lookup(const cJSON* config, const char* name, bool* wrong) {
     char key[32];
     const char* dot = strchr(name, '.');

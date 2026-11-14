@@ -10,16 +10,16 @@ enum { MAX_TEXT = 256, MAX_SCREENS = 8, DIALOG_COLUMNS = 64, DIALOG_LINES = 3 };
 typedef struct {
     layout* screen;
     uint32_t drawn[LAYOUT_MAX_NODES]; // hashes of what each node shows
-    // The node keys go to, a field being edited and whether anything was typed into it
+    // edited: anything typed
     int focus;
     bool editing, edited;
     char edit[128];
-    // For each list: the item chosen, the first shown, and the button chosen on the chosen item (-1 for none)
+    // Per list: first is the first item shown; chosen_button -1 for none
     size_t chosen[LAYOUT_MAX_NODES], first[LAYOUT_MAX_NODES];
     int chosen_button[LAYOUT_MAX_NODES];
 } shown_screen;
 
-// Every dialog, built in as they are opened by function; its styles come from the layout
+// Styles come from the layout file
 static const char box[] =
     "{\"style\": \"dialog\", \"border\": true, \"rows\": ["
     "{\"height\": 1, \"when\": \"dialog.title\", \"style\": \"title\", \"text\": \" {dialog.title}\"},"
@@ -48,17 +48,16 @@ static struct {
 } screens[MAX_SCREENS];
 static size_t screen_count;
 static layout* box_layout;
-// The panel over the terminal and the dialog over both
 static shown_screen main_screen, panel, dialog;
 static char panel_name[32];
 static ui_dialog_kind dialog_kind;
 static unsigned dialog_serial;
 static char dialog_title[96], dialog_lines[DIALOG_LINES][160], dialog_yes[32];
-// A list dialog's list, its items and the value over it; a screen dialog's screen
+// dialog_note: the source value over the list
 static char dialog_list[32], dialog_item[96], dialog_note[32], dialog_screen[32];
 static bool whole;
 static uint32_t laid_out; // hash of the "when"s
-// The node a touch went down on, its list's item for a list's button, and whether it is still over it
+// pressed_item: for a list's button; over: the touch is still on it
 static const layout_node* pressed;
 static size_t pressed_item;
 static bool over;
@@ -73,12 +72,10 @@ shr_status ui_start(shr_context* context, shr_pl_res_bitmap_font* font, int32_t 
     return status;
 }
 
-// Keys and touches go to the dialog while one is open
 static shown_screen* active(void) {
     return dialog.screen != NULL ? &dialog : &panel;
 }
 
-// {dialog.*} are the dialog's, the rest the source's
 static const char* value_of(const char* name) {
     int line;
     if (name == NULL) return NULL;
@@ -130,7 +127,6 @@ static void lay_out(void) {
         t = layout_find(main_screen.screen, LAYOUT_TERMINAL);
     }
     if (panel.screen != NULL) layout_place(panel.screen, t != NULL ? t->area : all, shown, NULL);
-    // In the middle of the screen, as high as its border and the rows shown; a screen nearly as wide as the screen
     if (dialog.screen != NULL) {
         const layout_node* root = &dialog.screen->nodes[0];
         int32_t height = root->border ? 2 : 0, across = dialog_kind == UI_SCREEN ? columns - 4 : DIALOG_COLUMNS < columns ? DIALOG_COLUMNS : columns;
@@ -175,7 +171,6 @@ static bool in(const shown_screen* s, const layout_node* n) {
     return n != NULL && s->screen != NULL && n >= s->screen->nodes && n < s->screen->nodes + s->screen->count;
 }
 
-// Each list from its first item
 static void choose_first(shown_screen* s) {
     for (size_t i = 0; s->screen != NULL && i < s->screen->count; i++)
         s->chosen[i] = s->first[i] = 0, s->chosen_button[i] = -1;
@@ -193,7 +188,6 @@ bool ui_open(const char* name) {
     bool leading = false;
     for (size_t i = 0; screen != NULL && i < screen->count; i++) {
         const layout_node* n = &screen->nodes[i];
-        // A list with an action or an editor first, else a button or a list
         bool leads = n->kind != LAYOUT_BUTTON && (n->kind != LAYOUT_LIST || n->action != NULL);
         if (focusable(n) && visible(n) && (panel.focus < 0 || (!leading && leads))) panel.focus = (int)i, leading = leads;
     }
@@ -204,7 +198,6 @@ const char* ui_panel(void) {
     return panel.screen != NULL ? panel_name : NULL;
 }
 
-// The box's field shows * for a password, and its list is the list dialog's
 static void fit_box(void) {
     for (size_t i = 0; i < box_layout->count; i++) {
         layout_node* n = &box_layout->nodes[i];
@@ -213,7 +206,6 @@ static void fit_box(void) {
     }
 }
 
-// `screen` as the dialog of `kind`: its field or list first, else the button that does nothing
 static unsigned show_dialog(layout* screen, ui_dialog_kind kind) {
     if (screen == NULL) return 0;
     dialog_kind = kind;
@@ -361,7 +353,7 @@ static const char* item_text(const void* context, const char* name) {
     return source->item(source->user, c->list, c->index, name);
 }
 
-// `text` with each {name} replaced by its value, and {name:N} padded to N cells
+// {name:N}: padded to N cells
 static size_t expand(const char* text, lookup value, const void* context, char* out) {
     size_t n = 0;
     while (*text != 0 && n < MAX_TEXT) {
@@ -405,7 +397,6 @@ static void draw_border(const layout_node* n) {
     cell(a->row, a->column, "┌", s), cell(a->row, right, "┐", s), cell(bottom, a->column, "└", s), cell(bottom, right, "┘", s);
 }
 
-// On the middle row of `a`, cut with … to fit
 static void draw_text(const layout_area* a, layout_align align, shr_text_style style, char* text, size_t length) {
     static shr_text_cluster clusters[MAX_TEXT];
     shr_text_extent e = {0};
@@ -425,7 +416,6 @@ static void draw_text(const layout_area* a, layout_align align, shr_text_style s
     shr_pl_lyr_tilemap_set_text(layer, a->row + (a->rows - 1) / 2, a->column + left, text, length, style, NULL, 0, 0, NULL);
 }
 
-// A field's text: its setting's, else the value of its name
 static const char* field_text(const layout_node* n, const setting* s, setting_value* v) {
     const char* text = s == NULL ? value_of(n->name) : NULL;
     if (s == NULL) return text != NULL ? text : "";
@@ -433,7 +423,6 @@ static const char* field_text(const layout_node* n, const setting* s, setting_va
     return v->text;
 }
 
-// What a leaf shows; false for a list, drawn row by row
 static bool content(const shown_screen* screen, const layout_node* n, bool focused, char* out) {
     const setting* s = n->name != NULL ? settings_find(n->name) : NULL;
     setting_value v;
@@ -469,13 +458,11 @@ static bool content(const shown_screen* screen, const layout_node* n, bool focus
     return true;
 }
 
-// Whether button b of `list` is on item `index`: its "when" names one of the item's fields
 static bool on_item(const layout_node* b, const layout_node* list, size_t index) {
     const char* v = b->when != NULL ? source->item(source->user, list->name, index, b->when) : NULL;
     return b->when == NULL || (v != NULL && v[0] != 0);
 }
 
-// Where button k of list n starts on each row: the buttons end the row, each followed by a cell
 static int32_t button_column(const layout* screen, const layout_node* n, int k) {
     int32_t at = n->inner.column + n->inner.columns;
     for (int j = n->children - 1; j >= k; j--)
@@ -483,14 +470,12 @@ static int32_t button_column(const layout* screen, const layout_node* n, int k) 
     return at;
 }
 
-// The first of list n's buttons on item `index`, -1 for none
 static int first_button(const layout* screen, const layout_node* n, size_t index) {
     for (int k = 0; k < n->children; k++)
         if (on_item(&screen->nodes[n->first + k], n, index)) return k;
     return -1;
 }
 
-// Item `index` of list n as its row shows it: its text, returning its length, and each button's label, empty where it is not
 static size_t list_row(const layout* screen, const layout_node* n, size_t index, char* text, char labels[][MAX_TEXT + 4], int buttons) {
     const item_context c = {n->name, index};
     for (int k = 0; k < buttons; k++) {
@@ -510,7 +495,6 @@ static bool draw_list(shown_screen* s, size_t i, bool focused) {
     if (choosing && s->chosen[i] >= count) s->chosen[i] = count > 0 ? count - 1 : 0;
     if (choosing && s->chosen[i] < s->first[i]) s->first[i] = s->chosen[i];
     if (choosing && shown_rows > 0 && s->chosen[i] >= s->first[i] + shown_rows) s->first[i] = s->chosen[i] - shown_rows + 1;
-    // A button the chosen item no longer has; a list whose rows do nothing has one chosen while it can
     if (s->chosen_button[i] >= 0 && (count == 0 || !on_item(&s->screen->nodes[n->first + s->chosen_button[i]], n, s->chosen[i])))
         s->chosen_button[i] = -1;
     if (n->action == NULL && s->chosen_button[i] < 0 && count > 0) s->chosen_button[i] = first_button(s->screen, n, s->chosen[i]);
@@ -529,7 +513,6 @@ static bool draw_list(shown_screen* s, size_t i, bool focused) {
     s->drawn[i] = h;
     int32_t text_columns = buttons > 0 ? button_column(s->screen, n, 0) - n->inner.column : n->inner.columns;
     for (size_t r = 0; r < shown_rows; r++) {
-        // Rows that do nothing show no choice, only their chosen button
         bool item = top + r < count, mark = choosing && item && top + r == s->chosen[i], picks = mark && n->action != NULL;
         bool marked = picks && focused && s->chosen_button[i] < 0;
         size_t length = item ? list_row(s->screen, n, top + r, text, labels, buttons) : 0;
@@ -579,7 +562,6 @@ static bool draw_screen(shown_screen* s) {
     return drew;
 }
 
-// Each row's last cell's background on to the screen's edge
 static void draw_edge(void) {
     if (edge == NULL) return;
     shr_lyr_cmd_begin(edge);
@@ -621,8 +603,7 @@ static ui_event set(const setting* s, setting_value* v) {
     return (ui_event){.kind = UI_SET, .name = s->name, .setting = s, .value = *v};
 }
 
-// What was typed into the panel's field being edited as its value: by Enter, else only when anything was typed; a secret
-// only then. A dialog keeps what was typed for its answer.
+// A secret is set only when typed; a dialog keeps the text for its answer
 static ui_event commit(bool always) {
     shown_screen* s = active();
     const layout_node* n = &s->screen->nodes[s->focus];
@@ -635,12 +616,11 @@ static ui_event commit(bool always) {
     return e;
 }
 
-// A dialog's button pressed
 static ui_event dialog_action(const char* action) {
     return (ui_event){.kind = UI_ACTION, .name = action, .index = dialog_serial};
 }
 
-// A widget used: by a touch at `column`, or by Enter with column -1
+// column -1: by Enter
 static ui_event activate(const layout_node* n, int32_t column) {
     shown_screen* screen = active();
     const setting* s = n->name != NULL ? settings_find(n->name) : NULL;
@@ -688,11 +668,9 @@ ui_event ui_touch(ui_touch_phase phase, int32_t column, int32_t row) {
     if (n != NULL && !(n->kind == LAYOUT_BUTTON || (in(s, n) && focusable(n)))) n = NULL;
     if (n != NULL && n->kind == LAYOUT_LIST) {
         list = n, index = s->first[n - s->screen->nodes] + (size_t)(row - n->inner.row);
-        // Rows past a list's last item are no item
         if (row < n->inner.row || index >= source->count(source->user, n->name)) n = list = NULL;
     }
     if (list != NULL && (k = button_under(s->screen, list, column, index)) >= 0) n = &s->screen->nodes[list->first + k];
-    // A row that does nothing is no button either
     if (list != NULL && k < 0 && list->action == NULL) n = list = NULL;
     if (phase == UI_TOUCH_DOWN) {
         // Outside a dialog a touch does nothing
@@ -708,8 +686,6 @@ ui_event ui_touch(ui_touch_phase phase, int32_t column, int32_t row) {
     return e;
 }
 
-// Focus to the nearest node beside the focused one (dx) on the rows it spans, else above or below it (dy); a list entered
-// from above or below takes its first or last row shown. Nothing there: it stays.
 static void move_toward(shown_screen* s, int dx, int dy) {
     const layout_node* from = &s->screen->nodes[s->focus];
     layout_area a = from->area;
@@ -731,7 +707,7 @@ static void move_toward(shown_screen* s, int dx, int dy) {
                                : a.row - (b->row + b->rows);
         bool level = b->row < a.row + a.rows && a.row < b->row + b->rows;
         if (gap < 0 || (dx != 0 && !level)) continue;
-        // In pixels, the way it moves weighing 13 times (as Android's FocusFinder)
+        // As Android's FocusFinder
         int64_t along = (int64_t)gap * (dx != 0 ? SHR_CELL_WIDTH : SHR_CELL_HEIGHT),
                 across = dx != 0 ? 0 : (int64_t)abs(b->column + b->columns / 2 - (a.column + a.columns / 2)) * SHR_CELL_WIDTH;
         int64_t score = 13 * along * along + across * across;
@@ -755,7 +731,6 @@ ui_event ui_key(ui_key_code key, const char* text) {
     const layout_node* n = &screen->screen->nodes[screen->focus];
     size_t length = strlen(screen->edit);
     if (screen->editing) {
-        // A panel's field becomes a setting's value or a ui_event's text
         const setting* s = settings_find(n->name);
         size_t limit = in_dialog ? sizeof screen->edit : s != NULL ? s->size : sizeof e.value.text;
         if (key == UI_KEY_TEXT && length + strlen(text) < limit) {
@@ -788,7 +763,7 @@ ui_event ui_key(ui_key_code key, const char* text) {
     } else if (key == UI_KEY_UP || key == UI_KEY_DOWN) {
         move_toward(screen, 0, key == UI_KEY_DOWN ? 1 : -1);
     } else if ((key == UI_KEY_LEFT || key == UI_KEY_RIGHT) && n->kind == LAYOUT_LIST && count > 0) {
-        // The next of the chosen item's buttons, or the item itself if it does anything
+        // -1: the item itself, if it does anything
         int *k = &screen->chosen_button[screen->focus], step = key == UI_KEY_LEFT ? n->children : 1;
         for (int tries = 0; tries <= n->children; tries++) {
             *k = (*k + 1 + step) % (n->children + 1) - 1;

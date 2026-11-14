@@ -59,12 +59,11 @@ static global_state state = {
     .modem = &modem,
 };
 
-// Bumped by each change of the terminal's size
 static atomic_uint resizes;
 
 typedef enum { JOB_CREATE, JOB_CONNECT, JOB_DELETE } session_job;
 
-// What a session's task asks on the screen; serial 0 for nothing
+// serial 0: none
 typedef struct {
     ui_dialog_kind kind;
     char title[96], text[160], yes[16], typed[128];
@@ -72,68 +71,56 @@ typedef struct {
     bool granted;
 } session_question;
 
-// Session number n is sessions[n - 1]: a record while used, in sessions.json once saved (its tmux session made). While
-// running it has a task for one job, which ends once the job is done or it is asked to end. The main loop makes its
-// terminal before starting the task, and frees it once the task ended and it is off the screen. Under sessions_lock but for
-// the atomics.
+// saved: in sessions.json, its tmux session made. The main loop makes the terminal before the task starts and frees it once
+// the task ended and it is off the screen. Under sessions_lock but for the atomics.
 typedef struct {
     session_job job;
-    // Its last task, and the last one that ended
+    // id: its last task; finished: the last that ended
     unsigned id;
     atomic_uint finished;
     terminal* terminal;
     _Atomic(session_status) status;
-    // What it waits for and since when, shown while it is
     _Atomic(const char*) waiting;
     atomic_uint waiting_since;
     ssh_session connection;
-    // The path and address of its connection, or what kept it from being found
+    // found: what kept the host from being found
     network_route route;
     network_trouble found;
     bool used, saved, running;
     // Its task waits for the main loop
     bool starting;
-    // Whether the last task that ended failed
+    // By the last task that ended
     atomic_bool failed;
-    // Asked to end; to delete its tmux session and record once it has
+    // deleting: its tmux session and record go once it ended
     atomic_bool end, deleting;
     char tmux[24], alias[sizeof(((ssh_host*)0)->alias)];
     session_question question;
-    // A failure to tell on the screen, NULL for none
     const char* alert;
     // Its task's: the last question was answered no
     bool declined;
 } session;
 static session sessions[MAX_SESSIONS];
-// The one on the screen, NULL for none
 static _Atomic(session*) shown;
-// Under the lock: the one the main loop is to show next
+// Under the lock: the main loop shows it next
 static session* to_show;
 static bool show_asked;
-// On the screen while no session is
 static terminal* blank;
 // keys_read and its Hangul composition serve one task at a time; sessions_lock is recursive
 static SemaphoreHandle_t input_lock, sessions_lock;
-// This device's tmux sessions are named tab5-MMMMMM-RRRRRR: the MAC's last three bytes, then random
+// Marks this device's tmux sessions
 static char tmux_prefix[16];
-// Sessions connected: while any is, logs may be quieter
 static atomic_int connected;
-// This device's tmux sessions no record keeps are killed once this old: a connection on LTE can take over a minute after
-// it listed those to keep. None are while a record may be lost, which would make its tmux session an orphan.
+// LTE can take over a minute after listing those to keep. None killed without records_whole: a lost record would orphan its tmux session
 #define ORPHAN_AGE_S 300
 static bool records_whole;
-// The records put right against the hosts' tmux sessions by a task of its own: wanted at boot, when the sessions list
-// opens and by `session sync`; `started` is the main loop's
+// `started` is the main loop's
 static struct {
     atomic_bool wanted, running;
     int64_t started;
 } host_sync;
-// A failure of no session to tell on the screen under its title, NULL for none
+// Of no session
 static const char* lone_alert;
 static char lone_title[48];
-// Asked from the screen and not yet answered: the modem's values shown, a restart, host `name`'s new session, session
-// `number` (its tmux) deleted, Wi-Fi network `name` joined (open, or with a password typed) or deleted, or a new one
-// picked from a scan or its SSID typed
 typedef enum {
     ASKED_MODEM,
     ASKED_RESTART,
@@ -152,16 +139,14 @@ typedef struct {
     int number;
 } screen_request;
 static screen_request request;
-// The dialog on the screen, the main loop's: what it is for, the asking session and its question's serial, the dialog's
-// serial
+// The main loop's. asked: the question's serial; serial: the dialog's
 static struct {
     enum { DIALOG_NONE, DIALOG_REQUEST, DIALOG_QUESTION, DIALOG_ALERT } what;
     int number;
     unsigned asked, serial;
 } on_screen;
-// Questions wait for an answer only while there is a screen to answer them on
 static atomic_bool screen_up;
-// Set once the records are loaded and SSH can start: commands come before
+// Commands can come before the records load
 static atomic_bool sessions_loaded;
 
 static void lock(void) {
@@ -180,7 +165,7 @@ static bool is_shown(const session* s) {
     return atomic_load(&shown) == s;
 }
 
-// Under the lock: whether s is on the screen or about to be
+// Under the lock
 static bool showing(const session* s) {
     return show_asked ? to_show == s : is_shown(s);
 }
@@ -197,7 +182,6 @@ static const ssh_host* host_named(const char* alias) {
     return h;
 }
 
-// A failure of no session, told on the screen
 static void tell(const char* title, const char* text) {
     lock();
     snprintf(lone_title, sizeof lone_title, "%.47s", title != NULL ? title : "");
@@ -205,7 +189,7 @@ static void tell(const char* title, const char* text) {
     unlock();
 }
 
-// Logged, and with `shown_text` (Korean, NULL for none) told on the screen; n 0 for no session. 1 when it failed, else 0
+// n 0: no session; shown_text: Korean, NULL for none
 static int report(int n, bool failed, const char* shown_text, const char* format, ...) {
     char text[300], prefix[24] = "sessions";
     va_list arguments;
@@ -224,7 +208,6 @@ static int report(int n, bool failed, const char* shown_text, const char* format
     return failed;
 }
 
-// From the keyboards or the USB terminal port, only for the shown session, which then shows the bottom of its scrollback
 static size_t read_input(const session* s, void* buffer, size_t size) {
     size_t n = 0;
     if (!is_shown(s)) return 0;
@@ -235,15 +218,13 @@ static size_t read_input(const session* s, void* buffer, size_t size) {
     return n;
 }
 
-// As screen_waiting, for the screen while s is shown
 static void waiting(session* s, const char* what, TickType_t since) {
     if (what == NULL || what != atomic_load(&s->waiting)) atomic_store(&s->waiting_since, since);
     atomic_store(&s->waiting, what);
     if (is_shown(s)) screen_waiting(what, since);
 }
 
-// Asked on the screen once it can show there, for s's task: false for no, a cancel or the session ending. A prompt's answer
-// goes to `out`, and none typed is a no.
+// From s's task; an empty prompt answer is a no
 static bool ask(session* s, ui_dialog_kind kind, const char* title, const char* text, const char* yes, char* out, size_t size) {
     static unsigned serials;
     if (!atomic_load(&screen_up)) {
@@ -275,7 +256,7 @@ static bool ask(session* s, ui_dialog_kind kind, const char* title, const char* 
     wc_ForceZero(q->typed, sizeof q->typed);
     q->serial = 0;
     unlock();
-    // Unless it is being deleted meanwhile
+    // Unless deleted meanwhile
     atomic_compare_exchange_strong(&s->status, &(session_status){SESSION_ASKING}, was);
     s->declined = !granted;
     return granted;
@@ -294,11 +275,9 @@ int accept_new_host(const ssh_session* connection, const char* name, const char*
     return 1;
 }
 
-// Unreached: no connection was made
 typedef enum { SESSION_CLOSED, SESSION_REFUSED, SESSION_DROPPED, SESSION_MOVED, SESSION_ENDED, SESSION_UNREACHED } session_end;
 
-// Typing that 1 s brings no output pings the host; no answer for another second shows as held until anything arrives.
-// Mouse reports count as typing; those from before the connection are dropped.
+// Mouse reports from before the connection are dropped
 static session_end bridge(session* s) {
     uint8_t in[256], out[1024];
     int pending = 0, off = 0;
@@ -347,7 +326,6 @@ static session_end bridge(session* s) {
     }
 }
 
-// A command's output, dropped, until it ends, for up to 30 s
 static session_end drain(session* s) {
     uint8_t out[256];
     for (TickType_t start = xTaskGetTickCount(); xTaskGetTickCount() - start < pdMS_TO_TICKS(30000);) {
@@ -359,7 +337,7 @@ static session_end drain(session* s) {
     return SESSION_DROPPED;
 }
 
-// c to h over route with the known hosts and private_key (NULL for none), which is freed
+// Takes private_key, NULL for none
 static int log_in(ssh_session* c, const ssh_host* h, network_route* route, char* private_key, const char* password, const char* command) {
     char* known_hosts = storage_get_known_hosts();
     *c = (ssh_session){.host = h,
@@ -378,8 +356,7 @@ static int log_in(ssh_session* c, const ssh_host* h, network_route* route, char*
     return rc;
 }
 
-// command on h, attached to the terminal or run to its end; the exit status counts only for SESSION_CLOSED, and stays -1
-// when it never connected
+// exit_status counts only for SESSION_CLOSED; -1: never connected
 static session_end run(session* s, const ssh_host* h, const char* command, bool attach, int* exit_status) {
     *exit_status = -1;
     if ((s->found = network_find(h->hostname, &s->route)) != NETWORK_FINE) {
@@ -394,11 +371,11 @@ static session_end run(session* s, const ssh_host* h, const char* command, bool 
         snprintf(title, sizeof title, "%.32s@%.60s", h->user, h->hostname);
         if (!ask(s, UI_PASSWORD, title, "비밀번호", "확인", password, sizeof password)) return SESSION_ENDED;
     }
-    // Its replies come only while awake; for a bounded time, as a host key question waits for a person
+    // Replies come only while awake; bounded, as a host key question waits for a person
     sleep_hold_until(esp_timer_get_time() + 4LL * network_timeout_ms(s->route.use.path) * 1000);
     int rc = log_in(&s->connection, h, &s->route, private_key, password[0] ? password : NULL, command);
     memset(password, 0, sizeof password);
-    // Refused: the same keys and host key would only be refused again; anything else may pass another time
+    // Refused: the same keys and host key would be refused again; anything else may pass later
     session_end end = s->declined ? SESSION_ENDED : rc == WS_USER_AUTH_E || rc == WS_PUBKEY_REJECTED_E ? SESSION_REFUSED : SESSION_UNREACHED;
     if (rc != WS_SUCCESS) {
         ESP_LOGE(TAG, "session %d: ssh %s@%s:%u: %s", number(s), h->user, h->hostname, h->port, wolfSSH_ErrorToName(rc));
@@ -448,7 +425,6 @@ static void forget(session* s) {
     unlock();
 }
 
-// " a b ": the tmux sessions of every session, which a connection leaves
 static void kept(char* out, size_t size) {
     size_t n = (size_t)snprintf(out, size, " ");
     lock();
@@ -457,8 +433,6 @@ static void kept(char* out, size_t size) {
     unlock();
 }
 
-// Until there is a path, what LTE is doing; Enter tries LTE at once, the other keys are dropped. False when the session
-// is to end.
 static bool wait_path(session* s) {
     static const char* const states[] = {
         [LTE_OFF] = "no network: LTE off, Enter turns it on",
@@ -481,7 +455,6 @@ static bool wait_path(session* s) {
     return !atomic_load(&s->end);
 }
 
-// command on h over a connection of its own: its exit status, -1 when it did not run, after up to 30 s without a path
 static int once(session* s, const ssh_host* h, const char* command) {
     int exit_status;
     for (int waited = 0; !network_wait_for(200); waited += 200)
@@ -506,7 +479,6 @@ static bool create_tmux(session* s, const ssh_host* h) {
                    status < 0 ? "could not be reached or refused" : "did not start the tmux session");
 }
 
-// Its record goes in any case
 static bool kill_tmux(session* s, const ssh_host* h) {
     char command[64];
     int status = h != NULL && tmux_kill_command(command, sizeof command, s->tmux) ? once(s, h, command) : -1;
@@ -517,9 +489,6 @@ static bool kill_tmux(session* s, const ssh_host* h) {
                    h == NULL ? "is not in .ssh/config" : "could not be reached or refused");
 }
 
-// Attached to its tmux session, again after each drop or move: at once after a move, else after 1 s doubling to 30 s,
-// from 1 s again once it connected. Disconnected when asked, when tmux detaches it, or when the host refused it or has
-// no tmux; when its tmux session is gone its record goes too. False on a failure.
 static bool keep_connected(session* s, const ssh_host* h) {
     char keep[MAX_SESSIONS * 24 + 2], command[1400];
     int retry_ms = 1000, exit_status;
@@ -542,7 +511,6 @@ static bool keep_connected(session* s, const ssh_host* h) {
         waiting(s, "reconnecting", xTaskGetTickCount());
         if (exit_status != -1) retry_ms = 1000;
         if (end == SESSION_MOVED) continue;
-        // Why: the host down, its name, or no internet on its path
         network_trouble trouble =
             end == SESSION_UNREACHED && s->found != NETWORK_FINE ? s->found : network_after_drop(h, &s->route, end == SESSION_DROPPED);
         const char* why = network_trouble_text(trouble);
@@ -592,7 +560,7 @@ static void run_session(void* arg) {
     vTaskDeleteWithCaps(NULL);
 }
 
-// Under the lock: job for s, whose task the main loop starts
+// Under the lock; the main loop starts the task
 static void start_job(session* s, session_job job) {
     static unsigned started;
     s->job = job, s->id = ++started, s->running = s->starting = true, s->declined = false;
@@ -601,8 +569,7 @@ static void start_job(session* s, session_job job) {
     atomic_store(&s->status, job == JOB_DELETE ? SESSION_DELETING : SESSION_CONNECTING);
 }
 
-// Under the lock, the main loop's: the jobs asked for, each with a terminal it keeps while it is still there. Ghostty
-// needs a deeper stack to make one than a command's task has.
+// Under the lock, the main loop's. Ghostty needs a deeper stack to make a terminal than a command's task has
 static void start_tasks(void) {
     char name[24];
     for (size_t i = 0; i < MAX_SESSIONS; i++) {
@@ -611,7 +578,7 @@ static void start_tasks(void) {
         s->starting = false;
         if (s->terminal == NULL) s->terminal = terminal_new(&state.terminal_size);
         snprintf(name, sizeof name, "session %d", number(s));
-        // Ghostty's measured stack is 27-33 KiB, as fast in PSRAM; such a task never writes flash
+        // Ghostty measured 27-33 KiB, as fast in PSRAM; the task never writes flash
         if (s->terminal != NULL && xTaskCreatePinnedToCoreWithCaps(run_session, name, 48 * 1024, s, 5, NULL, 1, MALLOC_CAP_SPIRAM) == pdPASS)
             continue;
         if (s->job == JOB_CREATE) forget(s);
@@ -620,8 +587,6 @@ static void start_tasks(void) {
     }
 }
 
-// For a command that waits: until task `id` of s ends, asks on the screen or, with `connect`, connects or retries, for up
-// to 90 s. Its exit status.
 static int wait_for(session* s, unsigned id, bool connect) {
     for (int waited = 0; waited < 90000; waited += 100) {
         if (atomic_load(&s->finished) == id) return atomic_load(&s->failed);
@@ -638,12 +603,12 @@ static int wait_for(session* s, unsigned id, bool connect) {
     return 1;
 }
 
-// Under the lock: session n while used
+// Under the lock
 static session* numbered(int n) {
     return n >= 1 && n <= MAX_SESSIONS && sessions[n - 1].used ? &sessions[n - 1] : NULL;
 }
 
-// The commands: from the screen without `wait`, from USB and SSH with it; each returns its exit status
+// wait: from USB and SSH, not from the screen
 static int session_create(const ssh_host* h, bool wait) {
     session* s = NULL;
     lock();
@@ -668,7 +633,6 @@ static int session_create(const ssh_host* h, bool wait) {
     return wait ? wait_for(s, id, false) : 0;
 }
 
-// Connected if it is not, and with `show` shown
 static int connect_session(int n, bool wait, bool show) {
     lock();
     session* s = numbered(n);
@@ -708,7 +672,6 @@ static int session_disconnect(int n, bool wait) {
     return wait ? wait_for(s, id, false) : 0;
 }
 
-// Hidden, disconnected, and gone with its tmux session
 static int session_delete(int n, bool wait) {
     lock();
     session* s = numbered(n);
@@ -746,7 +709,6 @@ static int session_list(void) {
 static int (*const session_actions[])(int n, bool wait) = {session_open, session_connect, session_disconnect, session_delete};
 static const char* const session_verbs[] = {"open", "connect", "disconnect", "delete"};
 
-// session list|sync|create HOST|open N|connect N|disconnect N|delete N; -1 for none of these
 static int session_command(const char* arguments) {
     char verb[12];
     int n;
@@ -766,7 +728,7 @@ static int session_command(const char* arguments) {
     return -1;
 }
 
-// The main loop's: the session on the screen from now on, NULL for none
+// The main loop's
 static void show(session* s) {
     if (is_shown(s)) return;
     atomic_store(&shown, s);
@@ -778,12 +740,9 @@ static void show(session* s) {
     screen_waiting(atomic_load(&s->waiting), (TickType_t)atomic_load(&s->waiting_since));
 }
 
-// Starts the jobs asked for, shows what was asked, takes an ended session off the screen, frees the terminals of ended
-// ones off it, and tells the screens
 static void tend_sessions(void) {
     lock();
     start_tasks();
-    // Once its task made its terminal
     if (show_asked && (to_show == NULL || to_show->terminal != NULL || !to_show->running)) {
         show(to_show != NULL && to_show->terminal != NULL ? to_show : NULL);
         show_asked = false;
@@ -808,9 +767,8 @@ static void tend_sessions(void) {
     unlock();
 }
 
-// Over a connection of its own that asks nothing, for host h: its orphan tmux sessions killed and the records of tmux
-// sessions it lacks deleted. Only hosts known_hosts lists: a tmux session of ours is only on a host whose key was once
-// taken. Any doubt keeps the records. True when h is not to be visited again: refused, or without a key or tmux.
+// Asks nothing, and ours are only on hosts whose key was once taken: only those known_hosts lists. Any doubt keeps the records.
+// True: h is not to be visited again
 static bool sync_host(const ssh_host* h, const char* known_hosts) {
     char name[264], keep[MAX_SESSIONS * 24 + 2], command[900], out[1024];
     snprintf(name, sizeof name, h->port == 22 ? "%s" : "[%s]:%u", h->hostname, h->port);
@@ -821,7 +779,7 @@ static bool sync_host(const ssh_host* h, const char* known_hosts) {
         ESP_LOGI(TAG, "sync: %s skipped: %s", h->alias, network_trouble_text(found));
         return false;
     }
-    // Those to judge: saved, and no job runs for them now or starts before the judgement
+    // No job may run for them now or start before the judgement
     struct {
         session* s;
         unsigned id;
@@ -895,7 +853,7 @@ static void run_sync(void* arg) {
     vTaskDeleteWithCaps(NULL);
 }
 
-// The main loop's: a sync started once one is wanted, a path is there and the sessions leave sockets to spare
+// The main loop's; only while the sessions leave sockets to spare
 static void tend_sync(void) {
     if (atomic_load(&host_sync.running) || atomic_load(&connected) >= 3 || !network_wait_for(0) || !atomic_exchange(&host_sync.wanted, false)) return;
     host_sync.started = esp_timer_get_time();
@@ -906,7 +864,6 @@ static void tend_sync(void) {
     ESP_LOGW(TAG, "sync: no memory for its task");
 }
 
-// The records of sessions.json, all disconnected
 static void load_sessions(void) {
     session_record records[MAX_SESSIONS];
     size_t count = storage_get_sessions(records, MAX_SESSIONS, &records_whole);
@@ -925,7 +882,7 @@ static void refused(const char* name) {
     ESP_LOGE(TAG, "the configuration's %s is invalid", name);
 }
 
-// Before the screen and the network start: the bars, the networks and the host to check them against
+// Before the screen and the network start
 static void load_config(void) {
     static const char* const problems[] = {
         [CONFIG_MISSING] = "no " SD "/.config/tab5-ssh/config.json",
@@ -949,7 +906,7 @@ static void load_config(void) {
     static const char* const told[] = {
         [CONFIG_LOADED] = "",
         [CONFIG_MISSING] = "SD 카드에 .config/tab5-ssh/config.json 없음\n기본값으로 실행 · 설정을 바꾸면 만듦",
-        // Its fonts are on the card: only ASCII shows
+        // The fonts are on the card: ASCII only
         [CONFIG_NO_CARD] = "No SD card\nRunning on the defaults, saving nothing",
         [CONFIG_INVALID] = "config.json이 올바른 JSON이 아님\n기본값으로 실행 · 고칠 때까지 저장 안 됨",
     };
@@ -960,14 +917,13 @@ static void load_config(void) {
     lone_alert = boot[0] != 0 ? boot : NULL;
 }
 
-// Before a join, which turns Wi-Fi on, as wifi on save does
+// Before a join, which turns Wi-Fi on
 static void keep_wifi_on(void) {
     if (state.wifi_enabled) return;
     state.wifi_enabled = true;
     if (storage_set_config("network.wifi.enabled", cJSON_CreateTrue()) != 0) ESP_LOGW(TAG, "network.wifi.enabled not saved");
 }
 
-// wifi connect SSID [PASSWORD], "SSID" when it has spaces; saved once joined
 static void wifi_connect_command(const char* arguments) {
     wifi_network* network = calloc(1, sizeof *network);
     if (network == NULL) return;
@@ -992,13 +948,13 @@ static void wifi_connect_command(const char* arguments) {
         free(network);
         return;
     }
-    // Prepended and never freed: the network task may be walking the list
+    // Never freed: the network task may be walking the list
     network->next = state.wifi;
     state.wifi = network;
     wifi_list_changed();
 }
 
-// A join from the screen takes seconds: on its own task, and saved by the main loop once joined
+// Takes seconds, so on its own task; the main loop saves it once joined
 typedef enum { JOIN_IDLE, JOIN_RUNNING, JOIN_DONE } join_step;
 static struct {
     wifi_network network;
@@ -1026,8 +982,7 @@ static void start_join(const wifi_network* network) {
     tell(network->ssid, "연결 못 함");
 }
 
-// Network ssid of the configuration in use changed, and the list the network task joins from with it; the old list is
-// kept, as that task may be walking it
+// The old list is kept: the network task may be walking it
 static bool save_wifi(const char* ssid, const wifi_network* network, int move) {
     wifi_network* networks;
     bool saved = storage_set_wifi(ssid, network, move, &networks) == 0;
@@ -1064,8 +1019,6 @@ static const wifi_network* saved_named(const char* ssid) {
     return NULL;
 }
 
-// From the screen, one at a time: the modem's values, a restart, host `name`'s new session, session n deleted, or Wi-Fi
-// network `name`'s step
 static void request_dialog(asked_for what, const char* name, int n) {
     lock();
     const session* s = what == ASKED_DELETE ? numbered(n) : NULL;
@@ -1077,7 +1030,7 @@ static void request_dialog(asked_for what, const char* name, int n) {
     unlock();
 }
 
-// What was asked from the screen, answered yes, with what was typed or the item picked (-1 for none)
+// Answered yes; picked -1 for none
 static void requested(const screen_request* r, const char* typed, int picked) {
     wifi_network network = {0};
     if (r->what == ASKED_RESTART) {
@@ -1120,12 +1073,12 @@ static void requested(const screen_request* r, const char* typed, int picked) {
     wc_ForceZero(&network, sizeof network);
 }
 
-// Under the lock: s has a question not answered yet
+// Under the lock
 static bool asking(const session* s) {
     return s->question.serial != 0 && s->question.answered != s->question.serial;
 }
 
-// A dialog's button: the main loop's, for the dialog still on the screen
+// The main loop's
 static void answer(const ui_event* e) {
     char typed[sizeof(((session_question*)0)->typed)];
     bool yes = strcmp(e->name, "dialog ok") == 0, asked = false;
@@ -1148,8 +1101,7 @@ static void answer(const ui_event* e) {
     wc_ForceZero(typed, sizeof typed);
 }
 
-// The main loop's, after its events: once no dialog is up, a request from the screen, else the shown session's question;
-// while a screen is open also other sessions' questions and the failures. A question its task stopped asking closes.
+// The main loop's, after its events
 static void tend_dialogs(void) {
     session_question q = {.kind = UI_ALERT, .yes = "확인"};
     lock();
@@ -1221,8 +1173,6 @@ static void tend_dialogs(void) {
     answer(&(ui_event){.kind = UI_ACTION, .name = "dialog cancel", .index = on_screen.serial});
 }
 
-// The network screen's Wi-Fi: a saved network joined, moved up, joined with a new password or deleted, and a new one
-// picked from a scan or typed; each saved once joined
 static bool wifi_screen(const ui_event* e) {
     const char* action = e->kind == UI_ACTION && strncmp(e->name, "wifi ", 5) == 0 ? e->name + 5 : "";
     const wifi_network* saved = saved_at(e->index);
@@ -1241,7 +1191,6 @@ static bool wifi_screen(const ui_event* e) {
     return true;
 }
 
-// From the screen or the set command
 static void change(const setting* s, const setting_value* value) {
     char text[80];
     settings_text(s, value, text, sizeof text);
@@ -1257,7 +1206,6 @@ static void change(const setting* s, const setting_value* value) {
     if (strcmp(s->name, "timezone") == 0) clock_timezone(state.timezone);
 }
 
-// set NAME VALUE, the value as the configuration file keeps it, text also without its quotes
 static void set_command(const char* arguments) {
     const char* value = strchr(arguments, ' ');
     char name[32];
@@ -1273,7 +1221,7 @@ static void set_command(const char* arguments) {
     cJSON_Delete(item);
 }
 
-// modem status|read|at COMMAND; all but status run on the LTE task, which logs what came
+// All but status run on the LTE task, which logs what came
 static void modem_control(const char* arguments) {
     char line[80];
     snprintf(line, sizeof line, "modem %s", arguments);
@@ -1324,7 +1272,7 @@ static int command(const char* line) {
         power_report();
         return 0;
     }
-    // Without save they last the boot
+    // Without save: this boot only
     if (strcmp(line, "wifi on save") == 0 || strcmp(line, "wifi off save") == 0) {
         change(settings_find("network.wifi.enabled"), &(setting_value){.number = line[6] == 'n'});
         return 0;
@@ -1334,7 +1282,7 @@ static int command(const char* line) {
         return 0;
     }
     if (strncmp(line, "wifi forget ", 12) == 0) {
-        // Emptied, not unlinked, for the same reason
+        // Emptied, not unlinked: the network task may be walking the list
         for (wifi_network* w = state.wifi; w != NULL; w = w->next)
             if (strcmp(w->ssid, line + 12) == 0) w->ssid[0] = 0;
         ESP_LOGI(TAG, "wifi forget %s: %s", line + 12, storage_add_wifi(line + 12, NULL) == 0 ? "done" : "not saved");
@@ -1344,8 +1292,7 @@ static int command(const char* line) {
     return network_command(line) ? 0 : -1;
 }
 
-// Light sleep in steps, each followed by DWELL_MS awake: lwIP's timers and the sessions' keepalives run in the time
-// caught up, and esp_hosted reads what the C6 queued meanwhile
+// DWELL_MS awake after each step: lwIP's timers and keepalives catch up, and esp_hosted reads what the C6 queued
 #define STEP_MS  5000
 #define DWELL_MS 100
 
@@ -1356,7 +1303,6 @@ static struct {
 } sleeping;
 static const char* const wakes[] = {"failed", "busy", "timer", "keyboard", "USB", "Wi-Fi", "other"};
 
-// Once asked, or without a key or a touch for the idle time
 static bool idle(void) {
     int64_t input = MAX(MAX(keys_pressed_at(), screen_touched_at()), sleeping.lit_at);
     atomic_store(&wake_asked, false);
@@ -1370,8 +1316,6 @@ static bool idle(void) {
     return true;
 }
 
-// With the screen off: a key or `wake` turns it on, the key going no further; while no computer uses USB-C the Tab5 sleeps
-// in steps, USB-A unpowered unless kept
 static bool woken(void) {
     key_event e;
     char c;
@@ -1390,7 +1334,7 @@ static bool woken(void) {
         sleeping.asleep_us += esp_timer_get_time() - start;
         sleeping.wakes[wake]++;
         ESP_LOGD(TAG, "woken: %s", wakes[wake]);
-        // A computer on USB-C needs the Tab5 awake to set it up; a connection coming in over Wi-Fi needs a few round trips
+        // A computer on USB-C needs it awake to set it up; an incoming Wi-Fi connection, a few round trips
         sleeping.awake_until = esp_timer_get_time() + (wake == SLEEP_USB || wake == SLEEP_WIFI ? 3000 : DWELL_MS) * 1000;
         if (wake != SLEEP_KEYBOARD) return false;
     }
@@ -1407,7 +1351,7 @@ static bool woken(void) {
     return true;
 }
 
-// The screen, what it shows read again: the network every 2 s (it asks the C6), the battery every 5 s
+// network_describe asks the C6
 static void draw(void) {
     static int64_t described = -2000000, measured = -5000000;
     int64_t now = esp_timer_get_time();
@@ -1423,8 +1367,7 @@ static void draw(void) {
     screen_draw();
 }
 
-// The battery's draw step by step, each the INA226's average over 8.5 s before the step ends. Only on battery: USB-C power
-// cuts the pack off.
+// Each step: the INA226's 8.5 s average before it ends. Only on battery: USB-C power cuts the pack off
 static void power_profile(bool lit) {
     static const char* const steps[] = {"keyboard LEDs at 100%", "screen on", "backlight off", "panel asleep", "USB-A off", "light sleep"};
     if (!lit) screen_sleep(false), draw();
@@ -1462,7 +1405,7 @@ static void power_profile(bool lit) {
     ESP_LOGI(TAG, "power profile: done");
 }
 
-// From the screen's task, whose stack in internal RAM lets it write NVS
+// From the screen's task: its internal RAM stack lets it write NVS
 static void apply(const ui_event* e) {
     char verb[12];
     int n;
@@ -1471,7 +1414,7 @@ static void apply(const ui_event* e) {
         return;
     }
     if (e->kind == UI_ACTION && (strcmp(e->name, "wifi toggle") == 0 || strcmp(e->name, "lte toggle") == 0)) {
-        // A second press soon after is taken for a slip: turning the modem off and on again risks a back-off
+        // A second press soon after is a slip: the modem off and on again risks a back-off
         static int64_t toggled[2] = {INT64_MIN / 2, INT64_MIN / 2};
         bool wifi = e->name[0] == 'w', on = wifi ? state.wifi_enabled : state.lte_enabled;
         if (esp_timer_get_time() - toggled[wifi] < 3000000) return;
@@ -1487,7 +1430,6 @@ static void apply(const ui_event* e) {
         if (h != NULL) request_dialog(ASKED_SESSION, h->alias, 0);
         return;
     }
-    // A session's row
     if (e->kind == UI_ACTION && sscanf(e->name, "session %11s", verb) == 1 &&
         (strcmp(verb, "open") == 0 || strcmp(verb, "toggle") == 0 || strcmp(verb, "delete") == 0)) {
         lock();
@@ -1500,7 +1442,6 @@ static void apply(const ui_event* e) {
         if (strcmp(verb, "delete") == 0) request_dialog(ASKED_DELETE, "", n);
         return;
     }
-    // A session's tab shows it; the shown one's does nothing
     if (e->kind == UI_ACTION && sscanf(e->name, "session %d", &n) == 1) {
         if (!(n >= 1 && n <= MAX_SESSIONS && is_shown(&sessions[n - 1])) && session_open(n, false) == 0) screen_open(NULL);
         return;
@@ -1517,8 +1458,7 @@ static void apply(const ui_event* e) {
     change(e->setting, &e->value);
 }
 
-// JSON trees, such as the layout the screen keeps, are hundreds of small blocks: in internal RAM they would take the room the
-// C6's SDIO buffers need
+// JSON trees are hundreds of small blocks: in internal RAM they would take the room the C6's SDIO buffers need
 static void* psram_malloc(size_t size) {
     return heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
 }
@@ -1528,7 +1468,7 @@ static void ran(void* arg) {
     update_ran();
 }
 
-// Kept once it has run 10 s: an image that crashes while starting rolls back at the next restart
+// An image that crashes while starting rolls back at the next restart
 static void keep_image_later(void) {
     esp_timer_handle_t keep;
     if (esp_timer_create(&(esp_timer_create_args_t){.callback = ran, .name = "keep image"}, &keep) != ESP_OK ||
@@ -1559,15 +1499,14 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     if (clock_start() != ESP_OK) ESP_LOGE(TAG, "no SNTP");
     load_config();
-    // Before the screen, which takes 2.7 s to start: the C6 restarts and Wi-Fi joins meanwhile. Also without a host, for the
-    // control commands
+    // Before the screen's 2.7 s start: the C6 restarts and Wi-Fi joins meanwhile. Also without a host, for control commands
     if (network_start(&state) != ESP_OK) ESP_LOGE(TAG, "no network");
     esp_err_t screen = screen_start(&state);
     if (screen == ESP_OK) screen_resized(&state.terminal_size);
     atomic_store(&screen_up, screen == ESP_OK);
     keep_image_later();
     if (remote_start(&state, command) != ESP_OK) ESP_LOGE(TAG, "no remote control");
-    // Held for good: the sessions' own Init and Cleanup then never tear wolfCrypt down under one another
+    // Held for good: the sessions' Init and Cleanup never tear wolfCrypt down under one another
     if (wolfSSH_Init() != WS_SUCCESS) ESP_LOGE(TAG, "no wolfSSH");
     uint8_t mac[6] = {0};
     esp_efuse_mac_get_default(mac);
@@ -1579,7 +1518,7 @@ void app_main(void) {
     load_sessions();
     atomic_store(&host_sync.wanted, true);
     if (screen != ESP_OK) ESP_LOGE(TAG, "no screen");
-    // Whether a screen was open last time round, and the sessions list
+    // paged, listed: a panel, the sessions list, open last round
     bool lit = true, paged = true, listed = false;
     for (;;) {
         ui_event e;
@@ -1590,7 +1529,6 @@ void app_main(void) {
         memory_log();
         if (screen == ESP_OK && atomic_exchange(&profile_asked, false)) power_profile(lit), lit = true;
         if (screen == ESP_OK && !lit) lit = woken();
-        // With no session shown a screen is open, the sessions screen unless another is, and what is typed goes nowhere
         if (lit && atomic_load(&shown) == NULL) {
             char dropped[64];
             if (screen == ESP_OK && !screen_panel_open()) screen_open("sessions");

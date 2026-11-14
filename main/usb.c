@@ -30,7 +30,7 @@
 #define STORAGE_BOOT 0x53444f4eu
 
 static const char* TAG = "usb";
-// Survives esp_restart(): the full-speed controller has 4 IN endpoints, too few for two CDC ports and mass storage at once
+// The full-speed controller's 4 IN endpoints are too few for two CDC ports and mass storage at once
 static __NOINIT_ATTR uint32_t boot_mode;
 static int storage_boot;
 static tinyusb_cdcacm_itf_t control_port;
@@ -66,7 +66,7 @@ size_t usb_terminal_read(void* buffer, size_t size) {
     return tinyusb_cdcacm_read(TINYUSB_CDC_ACM_0, buffer, size, &n) == ESP_OK ? n : 0;
 }
 
-// Only to an open port: a closed one fills up and holds every write for a second
+// A closed port fills up and holds every write for a second
 void usb_terminal_write(const void* buffer, size_t size) {
     if (tud_cdc_n_connected(TINYUSB_CDC_ACM_0)) put(TINYUSB_CDC_ACM_0, buffer, size);
 }
@@ -121,7 +121,7 @@ static void command(char* line) {
         put(control_port, reply, (size_t)n);
         if (err == ESP_OK) update_restart(UPDATE_USB);
     } else if (control_nvs(line) > 0) {
-        // The reply alone carries values: the log goes to the SD card and to SSH
+        // Values in the reply only, never the log: it goes to the SD card and SSH
         bool c6 = line[0] == 'c';
         c6_nvs_io io = {.name = c6 ? "c6 nvs" : "nvs",
                         .protocol = c6 ? c6_protocol() : C6_PROTOCOL,
@@ -169,7 +169,7 @@ static void attach(tinyusb_event_t* event, void* arg) {
     if (event->id == TINYUSB_EVENT_ATTACHED) update_works(UPDATE_USB);
 }
 
-// The selection outlives a restart: an image without TinyUSB would otherwise find the USB-C pads taken
+// The PHY selection outlives a restart: an image without TinyUSB would find the USB-C pads taken
 static void give_pads_back(void) {
     usb_wrap_ll_phy_select(&USB_WRAP, 1);
 }
@@ -179,7 +179,7 @@ esp_err_t usb_start(int (*command)(const char* line)) {
     storage_boot = boot_mode == STORAGE_BOOT;
     boot_mode = 0;
     control_port = storage_boot ? TINYUSB_CDC_ACM_0 : TINYUSB_CDC_ACM_1;
-    // The USB-C pads are FSLS PHY 0, USB-Serial/JTAG's unless the OTG controller is mapped onto it
+    // The USB-C pads are FSLS PHY 0, USB-Serial/JTAG's unless OTG is mapped onto it
     usb_wrap_ll_phy_select(&USB_WRAP, 0);
     ESP_RETURN_ON_ERROR(esp_register_shutdown_handler(give_pads_back), TAG, "shutdown handler");
     // The MAC as USB-Serial/JTAG reports it, so a board keeps its name in both modes

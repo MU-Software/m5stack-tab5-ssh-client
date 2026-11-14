@@ -45,7 +45,6 @@ static char* read_text(const char* path) {
     return text;
 }
 
-// The schema's property for a setting's name, with its type, range or choices
 static int schema_matches(const cJSON* schema, const setting* s) {
     char path[64];
     const cJSON* p = schema;
@@ -66,7 +65,6 @@ static int schema_matches(const cJSON* schema, const setting* s) {
     return cJSON_GetArraySize(choices) == n;
 }
 
-// Every setting of a and b the same
 static int same(const global_state* a, const global_state* b) {
     setting_value x, y;
     for (size_t i = 0; settings_at(i) != NULL; i++) {

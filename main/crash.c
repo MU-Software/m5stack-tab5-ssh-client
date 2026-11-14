@@ -31,7 +31,6 @@ static RTC_NOINIT_ATTR report kept;
 static report last;
 // Read at boot: flash may be out of reach in the panic handler
 static char elf[9];
-// The linker's names for where code lies
 extern char _iram_text_start[], _iram_text_end[], _text_start[], _text_end[]; // NOLINT(bugprone-reserved-identifier)
 
 static bool code(uint32_t address) {
@@ -52,7 +51,7 @@ void __wrap_esp_panic_handler(panic_info_t* info) {
     strlcpy(kept.description, info->description != NULL ? info->description : "", sizeof kept.description);
     strlcpy(kept.abort, g_panic_abort && g_panic_abort_details != NULL ? g_panic_abort_details : "", sizeof kept.abort);
     memcpy(kept.elf, elf, sizeof kept.elf);
-    // Return addresses among the words of the stack: no frame pointers to walk
+    // Return addresses among the stack's words: no frame pointers to walk
     const uint32_t* stack = (const uint32_t*)kept.sp;
     for (int i = 0, n = 0; f != NULL && n < CANDIDATES && i < STACK_WORDS && esp_ptr_byte_accessible(stack + i); i++)
         if (code(stack[i]) && stack[i] != kept.ra) kept.code[n++] = stack[i];
@@ -63,7 +62,7 @@ void __wrap_esp_panic_handler(panic_info_t* info) {
 
 static void log_report(void) {
     char addresses[11 * (2 + CANDIDATES)] = "";
-    // Return addresses less one: the line of the call, not of what follows it (after a call that never returns, another function)
+    // Less one: the call's line, not the next (after a call that never returns, another function's)
     size_t n = (size_t)snprintf(addresses, sizeof addresses, "0x%08" PRIx32 " 0x%08" PRIx32, last.mepc, last.ra - 1);
     for (int i = 0; i < CANDIDATES && last.code[i] != 0 && n < sizeof addresses; i++)
         n += (size_t)snprintf(addresses + n, sizeof addresses - n, " 0x%08" PRIx32, last.code[i] - 1);

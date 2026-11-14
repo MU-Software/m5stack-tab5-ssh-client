@@ -6,11 +6,11 @@
 
 #include <esp_err.h>
 
-// command: the app's control commands, -1 for none of them
+// command returns -1 for a line that is not the app's
 esp_err_t usb_start(int (*command)(const char* line));
-// A computer uses the USB-C port
+// A computer on USB-C
 bool usb_attached(void);
-// After the "sd on" command: CDC 0 is the control port and the SD card is mass storage, for one boot
+// For one boot after "sd on": the SD card as mass storage, control on CDC 0
 int usb_storage_boot(void);
 // Not usb_read/usb_write: the P4's ROM linker script defines those and silently wins
 size_t usb_terminal_read(void* buffer, size_t size);

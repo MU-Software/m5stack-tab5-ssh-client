@@ -6,7 +6,6 @@
 
 static int failures;
 
-// Points "x,y" while down and "up" for the lift, a drag from 24 px; what came of them: "tap x,y" and the lines scrolled
 static void check_step(const char* name, int32_t step, const char* steps, const char* expected) {
     gesture g = {.slop = 24, .step = step};
     char got[256] = "", copy[256];

@@ -29,7 +29,7 @@
 static const char* TAG = "c6";
 static void* bus;
 static volatile unsigned protocol;
-// The C6 was reset this boot, so its SDIO counters start from zero
+// Reset this boot: the C6's SDIO counters start at zero
 static bool reset_done;
 static c6_wifi_status wifi_status;
 static unsigned wifi_reports;
@@ -37,7 +37,7 @@ static void (*wifi_listener)(void);
 static portMUX_TYPE wifi_lock = portMUX_INITIALIZER_UNLOCKED;
 static void (*lease_listener)(const c6_lease* lease);
 static void (*internet_listener)(uint8_t sequence, const c6_reach_answer* answer);
-// Set by the restart that follows a C6 that did not come up, so one that stays silent is reset only once
+// Set for the restart after a silent C6, so it is reset only once
 static RTC_NOINIT_ATTR uint32_t restarted;
 // One P4_NVS at a time; the answer goes to nvs_answer while it is set
 static StaticSemaphore_t nvs_lock_memory, nvs_answered_memory;
@@ -148,8 +148,7 @@ int eh_host_port_sdio_read_reg(void* ctx, uint32_t reg, uint8_t* data, uint16_t 
 int eh_host_port_sdio_write_reg(void* ctx, uint32_t reg, uint8_t* data, uint16_t size, bool lock_required);
 int eh_host_port_reset_slave(void);
 
-// A C6 that ran on through this chip's restart still counts the SDIO transfers of the boot before; one that does not answer
-// the reset of its counters is reset and booted again
+// A C6 that ran on through this chip's restart still counts the last boot's SDIO transfers; one silent to the counter reset is reset
 int __wrap_eh_host_port_sdio_card_init(void* ctx, bool show_config) {
     int err = __real_eh_host_port_sdio_card_init(ctx, show_config);
     uint8_t answer = 0, reset = 1 << C6_SDIO_RESET;
@@ -199,7 +198,7 @@ esp_err_t c6_ask_lease(void) {
     return esp_event_post(EH_HOST_EVENT, EH_HOST_EVENT_NW_SPLIT_STATUS, &status, sizeof status, pdMS_TO_TICKS(100));
 }
 
-// The C6 keeps its power and Wi-Fi through restarts of this chip (power.c powers it)
+// The C6 keeps power and Wi-Fi through this chip's restarts (power.c)
 esp_err_t c6_start(void) {
     char version[24] = "unknown";
     nvs_lock = xSemaphoreCreateMutexStatic(&nvs_lock_memory);
@@ -268,7 +267,7 @@ esp_err_t c6_nvs(const uint8_t* request, size_t request_length, uint8_t* answer,
     return err;
 }
 
-// message's kind first, its sequence second (set here); the body of the answer of kind with that sequence into answer
+// Sets message[1], the sequence; answer: the body of kind's answer with it
 static esp_err_t ask(uint8_t* message, size_t size, uint8_t kind, int timeout_ms, uint8_t answer[sizeof ask_answer]) {
     static uint8_t sequence;
     xSemaphoreTake(ask_lock, portMAX_DELAY);

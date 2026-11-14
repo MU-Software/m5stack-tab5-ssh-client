@@ -89,7 +89,6 @@ static int by_name(const void* a, const void* b) {
     return strcmp(a, b);
 }
 
-// Oldest first, as the names sort, while over keep_mb or, for dated files, older than keep_days
 static void prune(void) {
     static char names[FILES][24];
     char path[96], cutoff[11] = "";
@@ -121,7 +120,6 @@ static void prune(void) {
     }
 }
 
-// Today's last file, or the next one once it is full
 static void open_file(const char* date) {
     char path[96];
     struct stat st;
@@ -133,7 +131,7 @@ static void open_file(const char* date) {
         bool exists = stat(path, &st) == 0;
         if (exists && st.st_size >= (long)settings.file_kb * 1024) continue;
         snprintf(path, sizeof path, DIRECTORY "/%s-%02d.log", date, i + 1);
-        if (stat(path, &st) == 0) continue; // a later one exists: today's last is further on
+        if (stat(path, &st) == 0) continue;
         snprintf(path, sizeof path, DIRECTORY "/%s", name);
         if ((file = fopen(path, "a")) == NULL) break;
         setvbuf(file, buffer, _IOFBF, 8192);
@@ -171,7 +169,7 @@ static void writer(void* arg) {
                 file = NULL;
                 break;
             }
-        // A power cut loses at most the last 2 s
+        // Bounds what a power cut loses
         if (file != NULL && esp_timer_get_time() - synced >= 2000000) {
             fflush(file);
             fsync(fileno(file));
@@ -184,7 +182,7 @@ esp_err_t logs_start(void) {
     if ((ring = heap_caps_malloc(RING, MALLOC_CAP_SPIRAM)) == NULL || (buffer = heap_caps_malloc(8192, MALLOC_CAP_SPIRAM)) == NULL)
         return ESP_ERR_NO_MEM;
     console = esp_log_set_vprintf(hook);
-    // Stack in PSRAM: a task there must never write flash
+    // PSRAM stack: it writes the SD card, never flash
     return xTaskCreatePinnedToCoreWithCaps(writer, "logs", 4096, NULL, 4, NULL, 1, MALLOC_CAP_SPIRAM) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 

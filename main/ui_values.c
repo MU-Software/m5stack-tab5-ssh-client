@@ -16,7 +16,7 @@
 
 static const global_state* state;
 static const network_info* net;
-// One value at a time: the UI copies each before asking for the next
+// The UI copies each value before asking for the next
 static char text[96];
 
 static const char* const lte_states[] = {
@@ -28,7 +28,7 @@ static const char* const lte_states[] = {
     [LTE_UP] = "연결됨",
 };
 
-// A 2S Li-ion pack under a light load, by cell voltage
+// 2S Li-ion under a light load
 static int percent(int mv) {
     static const int cell[] = {3300, 3500, 3600, 3700, 3800, 3900, 4000, 4100, 4200}, level[] = {0, 5, 10, 30, 55, 70, 82, 92, 100};
     int v = mv / 2;
@@ -43,7 +43,6 @@ static const char* const session_states[] = {
     [SESSION_RECONNECTING] = "다시 연결 중", [SESSION_ASKING] = "입력 기다림", [SESSION_DELETING] = "삭제 중",
 };
 
-// A session's tab: ● for the shown one, and a mark for one that is not connected or has a failure to tell
 static const char* tab(int number) {
     static const char* const marks[] = {
         [SESSION_DISCONNECTED] = " ×", [SESSION_CONNECTING] = " …", [SESSION_CONNECTED] = "",
@@ -70,7 +69,6 @@ static const char* network(void) {
     return text;
 }
 
-// {modem.NAME}, and {modem.NAME.age} for when it was read
 static const char* modem_shown(const char* name) {
     char shown[32], scratch[96];
     // Read again only off PPP

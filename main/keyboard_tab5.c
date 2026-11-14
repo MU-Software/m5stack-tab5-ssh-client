@@ -18,8 +18,8 @@
 
 static const char* TAG = "keyboard";
 
-// HID usages of each key alone and with Sym (SHIFT: typed with Shift), as the accessory's own firmware maps them
-// (m5stack/M5Tab5-Keyboard-Internal-FW, user_keyboard_handle.c), but Aa as CapsLock and Sym with 1…0 - + as F1–F12
+// HID usages alone and with Sym (SHIFT: with Shift), as m5stack/M5Tab5-Keyboard-Internal-FW (user_keyboard_handle.c) maps
+// them, but Aa as CapsLock and Sym with 1…0 - + as F1–F12
 // clang-format off
 static const uint8_t layers[5][14][2] = {
     {{0x29, 0x29}, {0x1e, 0x3a}, {0x1f, 0x3b}, {0x20, 0x3c}, {0x21, 0x3d}, {0x22, 0x3e}, {0x23, 0x3f}, {0x24, 0x40}, {0x25, 0x41}, {0x26, 0x42}, {0x27, 0x43}, {0x2d, 0x44}, {0xae, 0x45}, {0x4c, 0x4c}},
@@ -34,7 +34,6 @@ static i2c_master_dev_handle_t device;
 static uint8_t modifiers, down[5][14];
 static bool sym;
 
-// An event of normal mode: bit 7 pressed, bits 6:4 row, bits 3:0 column
 static void handle(uint8_t event) {
     bool pressed = event & 0x80;
     uint8_t key = event & 0x7f, row = key >> 4, col = key & 0x0f;
@@ -58,9 +57,8 @@ static void poll(void* arg) {
     for (;;) {
         uint8_t event = 0xff;
         if (!attached) {
-            // Normal mode (register 0x10), with what was queued before flushed (0x02); the LEDs off until there is a use for
-            // them: our colours (0x11) at brightness 0 (0x03). Not i2c_master_probe: in IDF 6.1 it keeps what a read that timed
-            // out left, and its interrupt then stores through a stale buffer (the 10-20 crashes in IDLE0)
+            // 0x10 normal mode, 0x02 flush the queue, 0x11 our colours, 0x03 brightness. Not i2c_master_probe: in IDF 6.1 it
+            // keeps what a timed-out read left, and its interrupt then stores through a stale buffer (the 10-20 crashes in IDLE0)
             attached = write(0x10, 0) == ESP_OK && write(0x02, 0) == ESP_OK && write(0x11, 1) == ESP_OK && write(0x03, 0) == ESP_OK;
             if (attached) ESP_LOGI(TAG, "Tab5 keyboard attached");
         } else if (i2c_master_transmit_receive(device, (uint8_t[]){0x20}, 1, &event, 1, 50) != ESP_OK) {
@@ -99,6 +97,6 @@ esp_err_t keyboard_tab5_start(void) {
                         TAG, "I2C");
     ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(bus, &(i2c_device_config_t){.device_address = ADDRESS, .scl_speed_hz = 100000}, &device), TAG,
                         "device");
-    // Stack in PSRAM: a task there must never write flash
+    // PSRAM stack: it must never write flash
     return xTaskCreatePinnedToCoreWithCaps(poll, "tab5 keyboard", 3072, NULL, 5, NULL, 1, MALLOC_CAP_SPIRAM) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }

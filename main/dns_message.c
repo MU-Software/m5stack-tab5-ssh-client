@@ -9,7 +9,7 @@ static unsigned u16(const uint8_t* p) {
     return p[0] << 8 | p[1];
 }
 
-// name as wire labels into out: their length, 0 when it does not fit or a label is empty or too long
+// Wire labels: their length, 0 when out is short or a label empty or too long
 static size_t encode(const char* name, uint8_t* out, size_t size) {
     size_t n = strlen(name), start = 0;
     if (n > 0 && name[n - 1] == '.') n--;
@@ -27,8 +27,7 @@ static size_t encode(const char* name, uint8_t* out, size_t size) {
     return n + 2;
 }
 
-// The name at *at, pointers followed, as wire labels into out[255], *at past it: its length, 0 when malformed. Each pointer
-// must go back before the labels read so far
+// Into out[255], pointers followed, *at past the name: its length, 0 when malformed. Pointers only go back, so none loops
 static size_t name_at(const uint8_t* m, size_t length, size_t* at, uint8_t* out) {
     size_t p = *at, start = p, end = 0, n = 0;
     for (int jumps = 0; p < length;) {

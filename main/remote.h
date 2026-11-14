@@ -6,7 +6,5 @@
 
 #include "state.h"
 
-// The control commands over SSH on port 22 while state->remote says so, for the keys in the SD card's
-// .ssh/authorized_keys; nothing listens without that file. The host key is the SD card's
-// .config/tab5-ssh/ssh_host_ed25519_key, made on first use. command: the app's control commands, -1 for none of them
+// Listens while state->remote says so and .ssh/authorized_keys exists. command: the app's control commands, -1 for none of them
 esp_err_t remote_start(const global_state* state, int (*command)(const char* line));

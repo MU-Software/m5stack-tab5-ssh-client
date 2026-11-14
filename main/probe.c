@@ -32,7 +32,6 @@ static bool addressed(esp_netif_t* netif) {
     return netif != NULL && esp_netif_is_netif_up(netif) && esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0;
 }
 
-// Begun and ended awake, with no light sleep between
 static bool awake_since(unsigned sequence) {
     return sequence % 2 == 0 && sleep_sequence() == sequence;
 }
@@ -60,7 +59,6 @@ int probe_connect(esp_netif_t* netif, uint32_t address, uint16_t port, int timeo
     return rc;
 }
 
-// The path's servers, then the public one
 static size_t servers(esp_netif_t* netif, uint32_t list[3], size_t* path_count) {
     size_t n = 0;
     for (esp_netif_dns_type_t t = ESP_NETIF_DNS_MAIN; t <= ESP_NETIF_DNS_BACKUP; t++) {
@@ -98,7 +96,7 @@ probe_lookup probe_resolve(esp_netif_t* netif, const char* name, int try_ms, uin
             struct sockaddr_in to = {.sin_family = AF_INET, .sin_port = htons(53), .sin_addr.s_addr = list[i]};
             if (sendto(fd, query, size, 0, (struct sockaddr*)&to, sizeof to) < 0) continue;
             for (int64_t end = esp_timer_get_time() + try_ms * 1000LL, left; result == PROBE_NO_ANSWER && (left = end - esp_timer_get_time()) > 0;) {
-                // In whole milliseconds, at least one: lwIP waits for ever on 0
+                // Rounded up: lwIP waits for ever on 0
                 int64_t ms = (left + 999) / 1000;
                 struct timeval wait = {.tv_sec = (time_t)(ms / 1000), .tv_usec = (suseconds_t)(ms % 1000 * 1000)};
                 struct sockaddr_in from;
@@ -106,7 +104,7 @@ probe_lookup probe_resolve(esp_netif_t* netif, const char* name, int try_ms, uin
                 setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof wait);
                 int got = recvfrom(fd, message, sizeof message, 0, (struct sockaddr*)&from, &from_size);
                 if (got < 0) break;
-                // From one of the servers asked so far, a late one included
+                // Any server asked so far, a late one too
                 size_t k = 0;
                 while (k <= i && list[k] != from.sin_addr.s_addr)
                     k++;

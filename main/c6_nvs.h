@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// The nvs and c6 nvs commands: values go to write alone, never to a log
+// Values go to write alone, never to a log
 typedef struct {
     // "nvs" or "c6 nvs", which starts the last line
     const char* name;

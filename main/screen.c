@@ -48,7 +48,7 @@ static esp_lcd_panel_handle_t panel;
 static esp_lcd_panel_io_handle_t io;
 static esp_lcd_dsi_bus_handle_t bus;
 static esp_lcd_dpi_panel_config_t dpi;
-// After waking: the backlight comes on once the new frame buffer is drawn
+// Backlight on once the new frame buffer is drawn
 static bool light_pending;
 static shr_surface framebuffer;
 static shr_framebuffer_driver software, driver;
@@ -57,11 +57,10 @@ static uint8_t band[BSP_LCD_V_RES * 2 * 16] __attribute__((aligned(CONFIG_CACHE_
 static shr_context* context;
 static shr_lyr *beneath, *grid, *pictures, *guesses, *cursor, *cursor_text, *composing;
 static shr_pl_res_bitmap_font* font;
-// The terminal's cells and where they start
+// Cells; origin in pixels
 static int32_t rows_count, columns, origin_x, origin_y;
 static terminal_size size;
 static bool resized;
-// The UI's events for screen_event, and what other tasks ask of it or learn from it
 static ui_event events[8];
 static size_t event_count;
 static _Atomic(const char*) open_request;
@@ -70,13 +69,10 @@ static _Atomic int64_t touched_at;
 static TickType_t fonts_again;
 static bool see_through; // the grid lets z < 0 images show under its default background
 static GhosttyRenderStateImageIterator placements;
-// The terminal drawn, and how many times another was shown: the first draw after drawing the cells of the one before
-// draws all of them
 static terminal* shown_terminal;
 static unsigned shows, drawn_shows;
 
-// A kitty image as drawn: its source rect scaled to width x height; its id and generation are those of the terminal
-// shown at `show`
+// The source rect scaled to width x height; id and generation of the terminal shown at `show`
 typedef struct {
     uint32_t id, source_x, source_y, source_width, source_height, width, height;
     unsigned show;
@@ -99,7 +95,6 @@ static GhosttyRenderStateRowIterator rows;
 static GhosttyRenderStateRowCells cells;
 static GhosttyRenderStateCursor shown_cursor;
 
-// A cell as drawn: its cluster, its style and the lines over it
 typedef struct {
     char text[64];
     size_t length;
@@ -110,9 +105,8 @@ typedef struct {
     bool strikethrough, overline;
 } look;
 
-// Keys sent to the host, shown before its echo as mosh does: printable ASCII at the end of the line only. A stretch of
-// typing ends with any other key or a wrong guess, and the next one is shown only once the host echoed one of its keys,
-// which keeps passwords hidden.
+// Typed keys shown before the host's echo, as mosh does: printable ASCII at a line's end only. A stretch shows only once the
+// host echoed one of its keys, which keeps passwords hidden; any other key or a wrong guess ends it.
 static StreamBufferHandle_t typed;
 static atomic_bool typing_over;
 static struct {
@@ -123,11 +117,9 @@ static struct {
     bool echoed;
 } guess;
 
-// What the session waits for, from when
 static _Atomic(const char*) waiting;
 static atomic_uint waiting_since;
 
-// The lines of a row, runs of equal neighbours joined
 static struct {
     shr_text_line items[3 * 256];
     size_t count;
@@ -251,8 +243,8 @@ static shr_status open_package(void* user, const char* name, shr_asset_source* o
     return SHR_OK;
 }
 
-// As in Shiroko's Tab5 example: memory used every frame in internal RAM while it fits in 64 KiB, the rest of it, all other
-// memory and DMA memory (whole cache lines) in PSRAM; internal RAM stays with Wi-Fi, PPP and the C6's SDIO buffers
+// As in Shiroko's Tab5 example: memory used every frame internal within the budget, the rest in PSRAM; internal RAM stays
+// with Wi-Fi, PPP and the C6's SDIO buffers
 #define HOT_BUDGET (64 << 10)
 static size_t hot_used;
 
@@ -281,7 +273,6 @@ static shr_status check(shr_status status, const char* what) {
     return status;
 }
 
-// The layout from the SD card, else the one built in
 static void load_layout(void) {
     char error[160];
     char* text = storage_read_file_text(SD "/.config/tab5-ssh/ui.json");
@@ -299,7 +290,6 @@ static layout_area terminal_area(void) {
     return ui_terminal(&a) && a.columns >= 2 && a.rows >= 1 ? a : (layout_area){0, 0, COLUMNS, ROWS};
 }
 
-// The terminal's layers where the layout puts it
 static void place_terminal(void) {
     layout_area a = terminal_area();
     columns = a.columns, rows_count = a.rows, origin_x = a.column * SHR_CELL_WIDTH, origin_y = a.row * SHR_CELL_HEIGHT;
@@ -471,7 +461,7 @@ static void want(placed e) {
     wanted[i] = e;
 }
 
-// Under the terminal's lock, after the update: its kitty images and their places in this frame
+// Under the terminal's lock, after the update
 static void find_pictures(GhosttyRenderState render, GhosttyKittyGraphics graphics) {
     static const GhosttyRenderStateImageData keys[] = {GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL,
                                                        GHOSTTY_RENDER_STATE_IMAGE_DATA_KITTY_KIND,
@@ -547,14 +537,12 @@ static shr_color rgb(GhosttyColorRgb c) {
     return SHR_RGB(c.r, c.g, c.b);
 }
 
-// fg alpha: 255 full, 128 dim, 0 none
 static shr_color drawn(GhosttyColorRgb c, const GhosttyStyle* style) {
     return (rgb(c) & 0xffffffu) | ((style->flags & GHOSTTY_STYLE_FLAG_INVISIBLE) ? 0
                                    : (style->flags & GHOSTTY_STYLE_FLAG_FAINT)   ? 0x80000000u
                                                                                  : 0xff000000u);
 }
 
-// False for the tail of a wide cell
 static bool read_cell(const GhosttyRenderStateColors* colors, look* out) {
     GhosttyCell raw;
     GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
@@ -628,7 +616,6 @@ static void draw_row(uint16_t y, const GhosttyRenderStateColors* colors) {
     shr_pl_lyr_tilemap_set_lines(grid, y, lines.items, lines.count, NULL);
 }
 
-// Points `cells` at row y of the render state, for ghostty_render_state_row_cells_select
 static bool select_row(GhosttyRenderState render, int32_t y) {
     ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, (void*)&rows);
     for (int32_t i = 0; i <= y; i++)
@@ -636,7 +623,6 @@ static bool select_row(GhosttyRenderState render, int32_t y) {
     return ghostty_render_state_row_get(rows, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, (void*)&cells) == GHOSTTY_SUCCESS;
 }
 
-// The text of the cell (x, y), or "" when it has none
 static void cell_text(GhosttyRenderState render, const GhosttyRenderStateColors* colors, int32_t x, int32_t y, look* out) {
     if (!select_row(render, y) || ghostty_render_state_row_cells_select(cells, (uint16_t)x) != GHOSTTY_SUCCESS || !read_cell(colors, out))
         out->length = 0;
@@ -678,7 +664,6 @@ static void take_keys(GhosttyRenderState render, const GhosttyRenderStateCursor*
         }
 }
 
-// Echoed guesses leave; a wrong one ends the stretch
 static void check_guesses(GhosttyRenderState render, const GhosttyRenderStateCursor* c, const GhosttyRenderStateColors* colors) {
     look l;
     if (guess.count > 0 && (!c->viewport_has_value || c->viewport_y != guess.row)) forget_guesses(guess.echoed);
@@ -696,8 +681,7 @@ static void check_guesses(GhosttyRenderState render, const GhosttyRenderStateCur
     }
 }
 
-// Underlined over the cells after the cursor, which moves to their end; nothing within 50 ms of a key, so a quick echo
-// changes nothing
+// Not within echo.delay_ms of a key, so a quick echo changes nothing
 static bool draw_guesses(const GhosttyRenderStateColors* colors) {
     static char drawn_text[256];
     static size_t drawn_count;
@@ -742,7 +726,6 @@ void screen_waiting(const char* what, TickType_t since) {
     atomic_store(&waiting, what);
 }
 
-// A block shows the cell under it in the cell's background colour
 static void draw_cursor(GhosttyRenderState render, const GhosttyRenderStateCursor* c, const GhosttyRenderStateColors* colors) {
     look l = {.span = 1};
     bool on = c->visible && c->viewport_has_value, block = c->visual_style == GHOSTTY_CURSOR_STYLE_BLOCK;
@@ -781,7 +764,7 @@ static void draw_cursor(GhosttyRenderState render, const GhosttyRenderStateCurso
     shr_pl_lyr_tilemap_set_lines(cursor_text, 0, lines.items, lines.count, NULL);
 }
 
-// The Korean syllable being typed, over the cursor's cell
+// The Korean syllable being typed
 static void draw_composing(const GhosttyRenderStateCursor* c, const GhosttyRenderStateColors* colors) {
     static uint32_t shown_text;
     static int32_t shown_x, shown_y;
@@ -801,12 +784,10 @@ static void push(ui_event e) {
     if (e.kind != UI_NONE && event_count < sizeof events / sizeof events[0]) events[event_count++] = e;
 }
 
-// When the dialog shown opened
 static int64_t dialog_since;
 
-// x runs up the portrait panel's height, y along its width. A touch going down on the terminal while no panel is open
-// stays the terminal's: taps click, drags scroll, but not under a dialog. A dialog takes no touch going down in its first
-// 300 ms: a second tap meant for the one before.
+// x runs up the portrait panel's height, y along its width. A new dialog takes no touch going down at first: a second tap
+// meant for the one before
 static void poll_touch(void) {
     static bool down, on_terminal, ignored;
     static int32_t column, row;
@@ -842,8 +823,7 @@ static void poll_touch(void) {
     push(ui_touch(phase, column, row));
 }
 
-// Keys go to an open panel or dialog, else the terminal. A held Enter or Escape repeats nothing (a toggle would flip back),
-// and a dialog takes no key pressed before it opened.
+// A held Enter or Escape repeats nothing: a toggle would flip back
 static void take_ui_keys(void) {
     static const struct {
         uint8_t usage;
@@ -871,7 +851,6 @@ static void take_ui_keys(void) {
     keys_divert(taking);
 }
 
-// The UI over the terminal, which moves and resizes with the layout
 static void draw_ui(void) {
     static unsigned dialog_seen;
     if (atomic_exchange(&open_asked, false)) ui_open(atomic_load(&open_request));
@@ -923,8 +902,8 @@ esp_err_t screen_backlight(bool on) {
     return on ? bsp_display_backlight_on() : bsp_display_backlight_off();
 }
 
-// Asleep, no DMA reads the frame buffer from PSRAM, which light sleep cuts off: the stream goes with it, and waking makes a new
-// one and draws it whole. Delays as in the panel's init commands.
+// Asleep, no DMA reads the frame buffer from PSRAM, which light sleep cuts off: the stream goes, and waking makes a new one.
+// Delays as in the panel's init commands.
 esp_err_t screen_sleep(bool asleep) {
     void* pixels;
     if (asleep) {
@@ -964,7 +943,7 @@ void screen_show(terminal* t) {
 }
 
 void screen_draw(void) {
-    // A font that failed to load is tried again a second later, not only after Shiroko's three quick retries
+    // A failed font again a second later, beyond Shiroko's three quick retries
     if (fonts_again != 0 && (int32_t)(xTaskGetTickCount() - fonts_again) >= 0) {
         fonts_again = 0;
         shr_asset_ready(context);

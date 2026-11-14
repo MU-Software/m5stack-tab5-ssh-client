@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Shiroko's own CMake build, fed by the host build (make shiroko-host): generated sources, uthash/xxhash and zstd
+# Fed by make shiroko-host: generated sources, uthash/xxhash and zstd
 idf_component_register(LDFRAGMENTS linker.lf)
 set(top ${CMAKE_CURRENT_LIST_DIR}/../..)
 set(host ${top}/build/shiroko-host)
@@ -8,7 +8,7 @@ file(GLOB zstd ${host}/vcpkg_installed/*/share/zstd-source/zstd.h)
 if(NOT utlist OR NOT zstd OR NOT EXISTS ${host}/generated/shr_gen_builtin_package.c)
   message(FATAL_ERROR "No Shiroko host build in ${host}: run make shiroko-host")
 endif()
-# The built-in package is baked at the host's cell size
+# The built-in package is baked at this cell size
 load_cache(${host} READ_WITH_PREFIX host_ SHIROKO_CELL_WIDTH SHIROKO_CELL_HEIGHT)
 set(SHIROKO_CELL_WIDTH ${host_SHIROKO_CELL_WIDTH} CACHE STRING "" FORCE)
 set(SHIROKO_CELL_HEIGHT ${host_SHIROKO_CELL_HEIGHT} CACHE STRING "" FORCE)

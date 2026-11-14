@@ -5,9 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Kept by the firmware: CURCCFG and CBATCHK are AUTO_SAVE switches that send nothing to the network; CEDRXS=0,4 costs
-// nothing while eDRX is off (research X2). CNMP, CMNB, CBANDCFG and CPSMS writes can mean a new attach, a back-off risk.
-// The rest are reads; CPSI and CEREG prefixes without the space, as the dial's checks have always matched them
+// CURCCFG and CBATCHK writes are AUTO_SAVE switches sending nothing to the network; CEDRXS=0,4 costs nothing while eDRX is off
+// (research X2). CNMP, CMNB, CBANDCFG and CPSMS writes can mean a new attach, a back-off risk. CPSI and CEREG prefixes lack the
+// space, as the dial's checks always matched them
 const modem_command modem_commands[MODEM_ITEMS] = {
     [MODEM_QUALCOMM_URC] = {"qualcomm_urc", "AT+CURCCFG?", "+CURCCFG: \"QUALCOMM\",", "AT+CURCCFG=\"QUALCOMM\",1"},
     [MODEM_BATTERY_CHECK] = {"battery_check", "AT+CBATCHK?", "+CBATCHK: ", "AT+CBATCHK=1"},
@@ -26,7 +26,7 @@ const modem_command modem_commands[MODEM_ITEMS] = {
     [MODEM_SIGNAL] = {"signal", "AT+CSQ", "+CSQ: ", NULL},
     [MODEM_OPERATOR] = {"operator", "AT+COPS?", "+COPS: ", NULL},
     [MODEM_SIM] = {"sim", "AT+CPIN?", "+CPIN: ", NULL},
-    // The reply is the ICCID alone, which starts with 89 (telecom)
+    // The ICCID alone, starting 89 (telecom)
     [MODEM_ICCID] = {"iccid", "AT+CCID", "89", NULL},
     // "<alpha>","<number>",<type> for each number the SIM keeps, often none for a data SIM
     [MODEM_NUMBER] = {"number", "AT+CNUM", "+CNUM: ", NULL},
@@ -34,7 +34,7 @@ const modem_command modem_commands[MODEM_ITEMS] = {
     [MODEM_ADDRESS] = {"address", "AT+CGPADDR", "+CGPADDR: 1,", NULL},
 };
 
-// Where the number of a +CNUM line or value starts, NULL for an empty one or another line
+// NULL for an empty number or another line
 static const char* number_at(const char* line) {
     if (strncmp(line, "+CNUM: ", 7) == 0) line += 7;
     const char* number = line[0] == '"' ? strstr(line + 1, "\",\"") : NULL;
@@ -74,7 +74,6 @@ void modem_value(const char* line, const char* prefix, char* value, size_t size)
         modem_mask(rest, value, size);
 }
 
-// The NV item's 32 hex digits, NULL without them
 static const char* backoff_digits(const char* value) {
     for (const char* p = value; *p; p++) {
         size_t n = strspn(p, "0123456789abcdefABCDEF");
@@ -84,7 +83,7 @@ static const char* backoff_digits(const char* value) {
     return NULL;
 }
 
-// The item's first 16 hex digits are the T3346 back-off and timer 20 left
+// The first 16 hex digits: T3346 back-off and timer 20 left
 bool modem_backoff_clear(const char* value) {
     const char* digits = backoff_digits(value);
     return digits != NULL && strspn(digits, "0") >= 16;
@@ -96,7 +95,7 @@ bool modem_address_moved(const char* value, const char* ppp) {
     return sscanf(value, "%u.%u.%u.%u%c", &a, &b, &c, &d, &rest) == 4 && (a | b | c | d) != 0 && strcmp(value, ppp) != 0;
 }
 
-// Field n (from 0) of a comma-separated reply, without quotes; "?" when there is none
+// n from 0, quotes dropped; "?" for none
 static const char* field(const char* value, int n, char* out, size_t size) {
     for (; n > 0 && value != NULL; n--)
         value = strchr(value, ',') != NULL ? strchr(value, ',') + 1 : NULL;
@@ -107,7 +106,7 @@ static const char* field(const char* value, int n, char* out, size_t size) {
     return out;
 }
 
-// "0001" (quotes optional) as the eDRX cycle in seconds, NULL for anything else
+// "0001", quotes optional: the eDRX cycle in seconds
 static const char* cycle(const char* bits) {
     static const char* const seconds[] = {"5.12",   "10.24",  "20.48",  "40.96",  "61.44",   "81.92",   "102.4",   "122.88",
                                           "143.36", "163.84", "327.68", "655.36", "1310.72", "2621.44", "5242.88", "10485.76"};
@@ -119,8 +118,7 @@ static const char* cycle(const char* bits) {
     return seconds[strtol(digits, NULL, 2)];
 }
 
-// +CEDRXRDP: <AcT-type>,<requested>,<network-provided>,<paging time window>, or 0 while eDRX is unused; the
-// network-provided cycle, NULL without one
+// <AcT-type>,<requested>,<network-provided>,<paging time window>, or 0 while eDRX is unused: the network-provided cycle
 static const char* granted(const char* value) {
     const char* second = strchr(value, ',');
     const char* third = second != NULL ? strchr(second + 1, ',') : NULL;
@@ -206,7 +204,7 @@ modem_item modem_text(const modem_snapshot* s, const char* name, char* out, size
         snprintf(out, size, "%s · %s · TAC %s · 셀 %s", field(system, 0, a, sizeof a), field(system, 6, b, sizeof b), field(system, 3, c, sizeof c),
                  field(system, 4, d, sizeof d));
     } else if (strcmp(name, "signal") == 0) {
-        // SINR = 2 * RSSNR - 20 (AT manual, AT+CPSI)
+        // SINR: AT manual, AT+CPSI
         char* end;
         long rssnr = strtol(field(system, 13, d, sizeof d), &end, 10);
         if (*end == 0) snprintf(d, sizeof d, "%ld", 2 * rssnr - 20);

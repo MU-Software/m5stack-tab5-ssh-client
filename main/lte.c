@@ -36,15 +36,14 @@
 #define GOT_IP   BIT0
 #define DEAD     BIT1
 #define CHECK_MS 10000
-// Per server: the path's two, then a public one
+// Per DNS server
 #define DNS_MS 4000
-// lwIP ends a PPP link the modem does not answer 12 s after its first Terminate-Request; 3 s spare
+// lwIP ends a PPP link the modem leaves unanswered after its Terminate-Requests
 #define PPP_END_MS ((FSM_DEFMAXTERMREQS * FSM_DEFTIMEOUT + 3) * 1000)
 
 static const char* TAG = "lte";
 static const char* const public_addresses[] = C6_INTERNET_ADDRESSES;
-// An LCP Terminate-Request with every control byte escaped: a modem left in PPP by an earlier boot answers NO CARRIER,
-// one in command mode ignores it
+// LCP Terminate-Request, control bytes escaped: a modem left in PPP by an earlier boot answers NO CARRIER, one in command mode ignores it
 static const uint8_t terminate[] = {0x7e, 0xff, 0x7d, 0x23, 0xc0, 0x21, 0x7d, 0x25, 0x7d, 0x21, 0x7d, 0x20, 0x7d, 0x24, 0x3d, 0xc7, 0x7e};
 static void (*changed)(void);
 static TaskHandle_t task;
@@ -52,20 +51,19 @@ static QueueHandle_t lines, commands;
 static EventGroupHandle_t events;
 static esp_netif_t* netif;
 static atomic_bool dialing, data_mode, on, turned_on, suspected, dead_probe;
-// When the modem last left a command unanswered: asking a quiet modem again keeps it quiet longer
+// Last unanswered command: asking a quiet modem again keeps it quiet longer
 static int64_t unanswered = -90 * SECOND;
 static atomic_bool answered; // this boot
-// The modem spoke unasked, e.g. NO CARRIER once a PPP link of an earlier boot timed out: it can be asked again at once
+// The modem spoke unasked (e.g. NO CARRIER as an earlier boot's PPP timed out): ask again at once
 static atomic_bool heard;
-// Read by the task, copied out under guard
+// fresh: the task's alone; shown: under guard
 EXT_RAM_BSS_ATTR static modem_snapshot fresh, shown;
 static portMUX_TYPE guard = portMUX_INITIALIZER_UNLOCKED;
 static bool kept; // this boot
 static lte_view view;
 static portMUX_TYPE view_lock = portMUX_INITIALIZER_UNLOCKED;
 static _Atomic int64_t received_at;
-// A modem whose radio went can stay in a PPP link our side ended for minutes, swallowing AT (10-20: 130 s): till when the task
-// waits for its NO CARRIER instead of asking, and whether it came
+// A modem whose radio went may stay minutes in PPP after we end it, swallowing AT (10-20: 130 s): till then, wait for its NO CARRIER
 static int64_t end_awaited_until;
 static atomic_bool ended;
 
@@ -105,7 +103,7 @@ static void reader(void* arg) {
             ESP_LOGI(TAG, "< %s", logged);
             if (dialing && strncmp(line, "CONNECT", 7) == 0) data_mode = true;
             if (strcmp(line, "NO CARRIER") == 0 || strcmp(line, "RDY") == 0) atomic_store(&ended, true);
-            // Only a modem sends these: noise on a pin without one would not
+            // Only a modem sends these, not noise on an empty pin
             if (strcmp(line, "OK") == 0 || strcmp(line, "NO CARRIER") == 0 || strcmp(line, "RDY") == 0 || line[0] == '+' || line[0] == '$') {
                 atomic_store(&heard, true), atomic_store(&answered, true);
                 if (task != NULL) xTaskNotifyGive(task);
@@ -127,7 +125,6 @@ static void send(const char* command) {
     uart_write_bytes(UART, "\r", 1);
 }
 
-// The final result OK, with the line starting with prefix in reply
 static bool at(const char* command, const char* prefix, char* reply) {
     char line[LINE];
     if (reply != NULL) reply[0] = 0;
@@ -141,7 +138,7 @@ static bool at(const char* command, const char* prefix, char* reply) {
     return false;
 }
 
-// The item into fresh: 1 for OK, 0 for ERROR (the value then empty), -1 when left unanswered (the value kept)
+// 1 OK, 0 ERROR (value emptied), -1 unanswered (value kept)
 static int ask(modem_item item) {
     char reply[LINE];
     int64_t before = unanswered;
@@ -164,7 +161,7 @@ static esp_err_t backoff_clear(void) {
     return ESP_OK;
 }
 
-// Present, registered, and with the default bearer up, as the research bench required before every dial
+// As the research bench required before every dial
 static esp_err_t check(void) {
     int stat = -1;
     esp_err_t err = backoff_clear();
@@ -194,7 +191,7 @@ static esp_err_t open_uart(void) {
     ESP_RETURN_ON_ERROR(uart_set_pin(UART, TX, RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE), TAG, "pins");
     // Without a module, silence rather than framing errors
     ESP_RETURN_ON_ERROR(gpio_pullup_en(RX), TAG, "pull-up");
-    // Stack in PSRAM: a task there must never write flash
+    // PSRAM stack: it must never write flash
     ESP_RETURN_ON_FALSE(xTaskCreatePinnedToCoreWithCaps(reader, "lte reader", 4096, NULL, 6, NULL, 1, MALLOC_CAP_SPIRAM) == pdPASS, ESP_ERR_NO_MEM,
                         TAG, "reader");
     open = true;
@@ -225,14 +222,12 @@ static esp_err_t answering(void) {
     return ESP_OK;
 }
 
-// Items first..last - 1, stopping at one left unanswered; false then
 static bool read_items(modem_item first, modem_item last) {
     for (int i = first; i < (int)last; i++)
         if (ask((modem_item)i) < 0) return false;
     return true;
 }
 
-// Each write the settings call for, then the settings read again; a write left unanswered ends it
 static esp_err_t keep_settings(void) {
     bool sent[MODEM_ITEMS] = {false}, any = false;
     for (int i = 0; i < MODEM_REVISION; i++) {
@@ -256,8 +251,7 @@ static void publish(void) {
     taskEXIT_CRITICAL(&guard);
 }
 
-// Answering and ready to dial. After the checks, so that a slow read cannot hold them: the network each time, the settings
-// when asked for, and once a boot with no back-off in sight, the settings read and kept
+// Reads after the checks, so a slow one cannot hold them; settings kept once a boot, only with no back-off in sight
 static esp_err_t ready(bool settings) {
     esp_err_t err = answering();
     if (err != ESP_OK) return err;
@@ -285,7 +279,7 @@ static void disconnect(void) {
         int64_t dead_at = esp_timer_get_time(), before = unanswered;
         bool was_heard = atomic_load(&heard);
         for (int64_t deadline = dead_at + 5 * SECOND; !atomic_load(&ended) && receive(line, deadline);) {}
-        // Some come back without a NO CARRIER seen; one still in PPP swallows the AT, which then says nothing about it
+        // Some return without a NO CARRIER; one still in PPP swallows the AT, which then counts for nothing
         if (!at("AT", "", NULL)) {
             unanswered = before, atomic_store(&heard, was_heard || atomic_load(&ended));
             if (!atomic_load(&ended)) {
@@ -304,7 +298,7 @@ static esp_err_t dial(bool* dialed) {
     char line[LINE];
     esp_err_t err = ready(false);
     if (err != ESP_OK) return err;
-    // So that no late result of the checks reads as the dial's
+    // So no late reply to the checks reads as the dial's
     vTaskDelay(pdMS_TO_TICKS(1000));
     if (!on) return ESP_ERR_INVALID_STATE;
     xEventGroupClearBits(events, GOT_IP | DEAD);
@@ -345,7 +339,7 @@ void lte_log_snapshot(void) {
     free(s);
 }
 
-// Queued by lte_command; modem at sends anything (the owner's), every reply line logged by the reader
+// modem at sends anything (the owner's); the reader logs each reply line
 static void run_command(const char* line) {
     esp_netif_ip_info_t ip;
     sleep_hold(true);
@@ -375,7 +369,7 @@ static void run_commands(void) {
         run_command(line);
 }
 
-// 0 for an answer; EINTR when it does not count: a sleep inside, PPP gone meanwhile, no socket free. Commands run between its steps
+// 0: answered; EINTR: no verdict (a sleep inside, PPP gone meanwhile, no free socket)
 static int check_link(char address[16]) {
     lte_view before, after;
     uint32_t found;
@@ -420,11 +414,10 @@ static void log_wait(int64_t next_dial, int64_t now) {
         ESP_LOGI(TAG, "LTE again in %lld s", (next_dial - now) / SECOND);
 }
 
-// What the task keeps between its rounds
 typedef struct {
     lte_dial_memory dial;
     int64_t next_dial_at, first_failed_at, checked_at;
-    // The last link a check found good: only one proven can have had its bearer remade
+    // Last epoch a check found good: only a proven link can have its bearer remade
     unsigned proven_epoch;
 } link_memory;
 
@@ -470,7 +463,6 @@ static void check_step(link_memory* m) {
         int64_t before = unanswered;
         disconnect();
         bool remade = false;
-        // Not after an unanswered AT
         if (on && !data_mode && end_awaited_until == 0 && unanswered == before && ask(MODEM_ADDRESS) >= 0) {
             publish();
             remade = m->proven_epoch == v.epoch && modem_address_moved(fresh.values[MODEM_ADDRESS], ppp);
@@ -485,20 +477,19 @@ static void check_step(link_memory* m) {
         set_state(LTE_WAITING);
         log_wait(m->next_dial_at, now);
     } else if (rc != EINTR) {
-        // Checking: no verdict yet, but a new result for whoever waits for one
+        // No verdict yet, but a new result for whoever waits
         set_internet(NETWORK_UNKNOWN, now);
-        // The first failure counts from 60 s into the link, and again once bytes came since
         if (m->first_failed_at == 0 || m->first_failed_at - v.up_at < 60 * SECOND || v.received_at >= m->first_failed_at) m->first_failed_at = now;
         ESP_LOGW(TAG, "internet %s: %s", address, strerror(rc));
     } else {
-        // No socket free stays so for a while: not again at once
+        // No free socket lasts a while: not again at once
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
     }
 }
 
-// The research's rules: checks read-only before each dial, no dial within 60 s of the last, a lost link waits 120 s doubling to
-// 960 s. LTE never gives up (owner, 10-15); only a modem that never answered this boot waits until it speaks, as no Stamp may sit
-// on G6 (one left in PPP by an earlier boot says NO CARRIER once that link times out). Network events never end a wait
+// The checks before a dial only read. LTE never gives up (owner, 10-15), but a modem silent all boot waits until it speaks:
+// G6 may have no Stamp (one left in PPP by an earlier boot says NO CARRIER once that link times out). Network events never
+// end a wait
 static void run(void* arg) {
     (void)arg;
     link_memory m = {.dial = {.last_dial_at = -60 * SECOND, .last_death_at = -120 * 60 * SECOND}};
@@ -525,11 +516,10 @@ static void run(void* arg) {
             log_wait(m.next_dial_at, now);
             wait = m.next_dial_at;
         } else if (!link) {
-            // Past the limit without it, the dial's answering() asks with the terminate frame and AT
+            // Past the limit, the dial's answering() tries the terminate frame and AT
             if (end_awaited_until != 0 && (atomic_load(&ended) || now >= end_awaited_until)) {
                 if (atomic_load(&ended)) {
                     ESP_LOGI(TAG, "the modem ended PPP %lld s after us", (now - end_awaited_until) / SECOND + 240);
-                    // 3 s quiet after its NO CARRIER
                     if (m.next_dial_at < now + 3 * SECOND) m.next_dial_at = now + 3 * SECOND;
                 }
                 end_awaited_until = 0;
@@ -567,7 +557,7 @@ static void on_event(void* arg, esp_event_base_t base, int32_t id, void* data) {
         view.internet = NETWORK_UNKNOWN, view.epoch++, view.up_at = esp_timer_get_time();
         taskEXIT_CRITICAL(&view_lock);
     } else {
-        // The modem's NO CARRIER and everything after it are lines again
+        // Its NO CARRIER and all after it are lines again
         data_mode = false;
         xEventGroupSetBits(events, DEAD);
     }
@@ -602,7 +592,7 @@ esp_err_t lte_start(const global_state* global, void (*listener)(void)) {
     ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_PPP_GOT_IP, on_event, NULL), TAG, "events");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(NETIF_PPP_STATUS, NETIF_PPP_PHASE_DEAD, on_event, NULL), TAG, "events");
     view.state = on ? LTE_DIALING : LTE_OFF;
-    // Stack in PSRAM: a task there must never write flash
+    // PSRAM stack: it must never write flash
     return xTaskCreatePinnedToCoreWithCaps(run, "lte", 6144, NULL, 5, &task, 1, MALLOC_CAP_SPIRAM) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 

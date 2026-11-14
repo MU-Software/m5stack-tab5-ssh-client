@@ -47,7 +47,7 @@ static void on_event(void* arg, esp_event_base_t base, int32_t id, void* data) {
     changed();
 }
 
-// Each path's view at each change, and every second for the times in the rules
+// Every second too, for the rules' times
 static void manage(void* arg) {
     (void)arg;
     network_path current = NETWORK_NONE;
@@ -71,7 +71,7 @@ static void manage(void* arg) {
         }
         // A lease or redial keeps its DNS servers on its interface: only setting the default hands them to lwIP, for SNTP
         if (c.path != NETWORK_NONE && (atomic_exchange(&got_ip, false) || c.path != current)) esp_netif_set_default_netif(netif_of(c.path));
-        // Wi-Fi off, dropped or without the internet: LTE checked, ready for what comes to it
+        // Wi-Fi lost: LTE checked, ready to take over
         if (wifi_was_good && !wifi_good(&w)) lte_suspect();
         wifi_was_good = wifi_good(&w);
         current = c.path;
@@ -84,7 +84,7 @@ esp_err_t network_start(const global_state* global) {
     if (paths == NULL) return ESP_ERR_NO_MEM;
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL);
     esp_event_handler_register(IP_EVENT, IP_EVENT_PPP_GOT_IP, on_event, NULL);
-    // Before the paths, whose changes it hears; stack in PSRAM: a task there must never write flash
+    // Before the paths, whose changes it hears; PSRAM stack: it must never write flash
     if (xTaskCreatePinnedToCoreWithCaps(manage, "network", 4096, NULL, 5, &task, 1, MALLOC_CAP_SPIRAM) != pdPASS) return ESP_ERR_NO_MEM;
     esp_err_t err = lte_start(global, changed);
     if (err != ESP_OK) ESP_LOGE(TAG, "no LTE: %s", esp_err_to_name(err));
@@ -144,7 +144,7 @@ static network_health verdict(network_path p, int64_t due) {
 network_trouble network_find(const char* host, network_route* route) {
     network_choice c;
     wifi_view w;
-    // While Wi-Fi rejoins, its DNS cannot answer: no name lookup to pin a host elsewhere meanwhile
+    // A rejoining Wi-Fi's DNS cannot answer: no lookup meanwhile to pin a host elsewhere
     for (int i = 0; i < 100; i++) {
         network_now(&c);
         wifi_view_now(&w);
@@ -157,7 +157,7 @@ network_trouble network_find(const char* host, network_route* route) {
     uint32_t here = 0, there = 0;
     network_lookup on_chosen = lookup(c.path, host, &here), on_other = NETWORK_NO_ANSWER;
     network_health reaches = health(c.path);
-    // Its DNS silent: the path itself may have lost the internet; if not, its DNS is asked once more (a new link's may be slow)
+    // DNS silent: the path may have lost the internet; if not, ask again (a new link's DNS may be slow)
     if (on_chosen == NETWORK_NO_ANSWER) {
         reaches = verdict(c.path, suspect(c.path));
         if (reaches == NETWORK_GOOD) on_chosen = lookup(c.path, host, &here);
@@ -180,7 +180,7 @@ network_trouble network_after_drop(const ssh_host* host, const network_route* us
     network_route r = *used;
     // A new path is worth trying at once
     if (network_moved(&used->use)) return NETWORK_FINE;
-    // After a connection that ran: whether the host answers now, as a server that restarts drops its sessions
+    // A server that restarts drops its sessions: whether the host answers now
     network_trouble trouble = ran ? network_find(host->hostname, &r) : NETWORK_FINE;
     if (trouble != NETWORK_FINE) return trouble;
     int rc = ran ? probe_connect(netif_of(r.use.path), r.address, host->port, network_timeout_ms(r.use.path)) : ETIMEDOUT;
@@ -199,8 +199,8 @@ int network_bind(int fd, void* route) {
 }
 
 void network_keepalive(int fd, network_path path) {
-    // LTE: a probe every 6 s keeps the radio from idling (5-8 s gave the fewest stalls), and a link is dead only after
-    // 120 s (30-90 s declared live links dead); Wi-Fi: dead 12-17 s after a drop, past the 10 s a rejoin may take
+    // LTE: probes keep the radio from idling (5-8 s apart gave the fewest stalls); dead only after 2 min: 30-90 s declared live links dead.
+    // Wi-Fi: past the 10 s a rejoin may take
     bool lte = path == NETWORK_LTE;
     int idle = lte ? 6 : 5, interval = lte ? 6 : 2, count = lte ? 20 : 6;
     setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &(int){1}, sizeof(int));
@@ -247,7 +247,6 @@ static void status(void) {
              l.epoch);
 }
 
-// net check HOST PORT [wifi|lte]: the path's DNS, then a TCP connection, through that path
 static void check(const char* host, uint16_t port, const char* path) {
     network_choice c;
     network_now(&c);

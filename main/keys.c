@@ -15,7 +15,7 @@ typedef struct {
     char text, shifted;
 } key_info;
 
-// US layout, beside letters, digits and F1-F12
+// US layout
 static const key_info others[] = {
     [0x28] = {GHOSTTY_KEY_ENTER},
     [0x29] = {GHOSTTY_KEY_ESCAPE},

@@ -7,7 +7,7 @@
 #include <esp_err.h>
 #include <ghostty/vt.h>
 
-// A key of HID usage page 7; modifiers as in a boot report. Usage 0 released: every key.
+// HID usage page 7, boot report modifiers; usage 0 released: every key
 typedef struct {
     uint8_t usage, modifiers;
     GhosttyKeyAction action;
@@ -15,16 +15,15 @@ typedef struct {
 } key_event;
 
 esp_err_t keys_start(void);
-// From any task; a press repeats until its release or another press
+// From any task
 void keys_push(const key_event* event);
-// esp_timer time of the last press, 0 before one
+// esp_timer time, 0 before any press
 int64_t keys_pressed_at(void);
-// From the SSH task: the next key as bytes for the channel, 0 when none is waiting. LANG1 or a short CapsLock switches
-// between English and Korean (Dubeolsik), a long CapsLock locks capitals.
+// From the SSH task
 size_t keys_read(char* out, size_t size);
-// The Korean syllable or jamo being typed, 0 for none
+// Unicode, 0 for none
 uint32_t keys_preedit(void);
 // While on, keys_read leaves the keys to keys_take
 void keys_divert(bool on);
-// The next key pressed or repeated, with its ASCII character (Shift and CapsLock applied, 0 for none)
+// Presses and repeats; text: ASCII with Shift and CapsLock, 0 for none
 bool keys_take(key_event* out, char* text);

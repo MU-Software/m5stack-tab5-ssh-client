@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The UI on this computer: an SDL3 window over Shiroko's software driver as the Tab5 draws it before rotating, the
-// mouse as touch, made-up values and a stand-in terminal. The layout is read again whenever its file changes.
-// --input runs touches and keys first ("tap:COLUMN,ROW", "key:tab|backtab|up|down|left|right|enter|escape|backspace",
-// "text:UTF-8", "dialog:alert|confirm|prompt"), --shot saves the screen as BMP after a second and quits.
+// The UI in an SDL3 window as the Tab5 draws it before rotating: mouse as touch, made-up values, a stand-in terminal.
+// --input steps: tap:COLUMN,ROW key:tab|backtab|up|down|left|right|enter|escape|backspace text:UTF-8 dialog:alert|confirm|prompt
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,7 +38,7 @@ static ssh_host hosts[] = {
 };
 static char networks[16][33] = {"MU_GL_XE3000", "YGYguest", "iPhone 15"};
 static size_t network_count = 3;
-// As the research module answered; read_at only needs to be non-zero
+// As the research module answered; read_at: any non-zero
 static const modem_snapshot modem = {
     .values =
         {
@@ -107,7 +105,6 @@ static shr_status open_package(void* user, const char* package, shr_asset_source
     return shr_asset_source_file(path, out);
 }
 
-// visible[]'s index of the index-th network not saved, -1 past the last
 static int unsaved(size_t index) {
     for (size_t i = 0; i < sizeof visible / sizeof visible[0]; i++) {
         bool saved = false;
@@ -237,7 +234,6 @@ static void get(void* user, const setting* s, setting_value* out) {
 
 static const ui_source source = {text, count, item, get, NULL};
 
-// Lines of a shell where the layout puts the terminal, and the last event
 static void draw_terminal(void) {
     layout_area a;
     bool on = ui_terminal(&a) && a.columns > 0 && a.rows > 0;
@@ -257,7 +253,7 @@ static void draw_terminal(void) {
 static char asked[48];
 #define PASSWORD "비밀번호를 입력하세요.\n비밀번호가 없는 개방형 네트워크는 비운 채로 저장해주세요."
 
-// As main.c's network screen's Wi-Fi, without joining: a pick saved and a delete done once confirmed
+// As main.c's Wi-Fi screen, without joining
 static void wifi_screen(const ui_event* e) {
     size_t i = e->index;
     if (strcmp(e->name, "wifi add") == 0)
@@ -294,7 +290,7 @@ static session_info* numbered(int number) {
     return NULL;
 }
 
-// As main.c's sessions, without connections: done at once, a host and a delete confirmed first
+// As main.c's sessions, without connections
 static void sessions(const ui_event* e) {
     char verb[16];
     int number = 0;
@@ -426,7 +422,7 @@ static void key(const SDL_KeyboardEvent* k) {
         }
 }
 
-// As main.c's main loop: a screen opened takes the shown session off, and with none shown the sessions screen opens
+// As main.c's main loop
 static void tend(void) {
     static bool paged = true;
     bool seen = false, open = ui_panel() != NULL;
@@ -490,7 +486,6 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i + 1 < sizeof hosts / sizeof hosts[0]; i++)
         hosts[i].next = &hosts[i + 1];
     state.hosts = hosts;
-    // A disconnected session and a second one that waits for a password
     state.sessions[0] = (session_info){.number = 1, .alias = hosts[0].alias, .status = SESSION_DISCONNECTED};
     state.sessions[1] = (session_info){.number = 2, .alias = hosts[1].alias, .status = SESSION_ASKING};
     state.session_count = 2;

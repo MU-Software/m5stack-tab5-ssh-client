@@ -28,7 +28,7 @@ static void reply(sshd_session* s, const char* text) {
     sshd_write(s, text, strlen(text), 5000);
 }
 
-// What remote.c does with a command, in miniature
+// remote.c's run, in miniature
 static int run(sshd_session* s) {
     char line[64];
     unsigned long n;
@@ -83,7 +83,6 @@ static void* serve(void* arg) {
     return NULL;
 }
 
-// The exit status of the last command; out gets what it printed
 static int client(const char* key, const char* command, const char* input, char* out, size_t size) {
     char line[4096];
     snprintf(line, sizeof line, "%s -i %s < %s %s@127.0.0.1 %s", ssh, key, input != NULL ? input : "/dev/null", login, command);

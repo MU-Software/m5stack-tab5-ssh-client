@@ -115,7 +115,6 @@ static wifi_view joined(void) {
         .enabled = true, .c6_heard = true, .c6_state = C6_WIFI_CONNECTED, .link = true, .epoch = 1, .started_at = S(1), .linked_at = S(5)};
 }
 
-// One break, not two: a Wi-Fi session through a short drop with the same lease, and through a move to another network
 static void sessions(void) {
     wifi_view w = joined();
     w.internet = NETWORK_GOOD;
@@ -159,7 +158,7 @@ static void sessions(void) {
     check(!network_session_moves(&use, &rejoining), "a session pinned to Wi-Fi rides out its rejoin while LTE is chosen");
 }
 
-// The internet lost and found again on the same link counts as flapping too
+// Internet losses on one link count as flapping too
 static void verdicts(void) {
     wifi_view w = joined();
     lte_view l = {.state = LTE_UP, .epoch = 1, .up_at = S(30)};

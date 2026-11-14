@@ -17,8 +17,7 @@
 #define OVER_NETWORK 0x4e455457u
 
 static const char* TAG = "update";
-// Survives esp_restart(): the path a new image came over, which must work again for it to be kept. A network update
-// with USB plugged in still waits for the network, the path it has to keep working.
+// The path a new image came over, which must work again to keep it: a network update waits for the network even with USB in
 static __NOINIT_ATTR uint32_t installed_over;
 static update_path proof;
 static esp_timer_handle_t rollback;

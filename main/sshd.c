@@ -49,14 +49,14 @@ int sshd_new_host_key(char* pem, size_t size) {
     ed25519_key key;
     byte der[128];
     int n = -1;
-    // wolfCrypt_Init makes the DRBG's mutex where there is no static one, as on FreeRTOS: without it InitRng panics
+    // wolfCrypt_Init makes the DRBG mutex, not static on FreeRTOS: InitRng panics without it
     if (wolfSSH_Init() != WS_SUCCESS) return -1;
     if (wc_InitRng(&rng) != 0) {
         wolfSSH_Cleanup();
         return -1;
     }
     if (wc_ed25519_init(&key) == 0) {
-        // The private key alone: wolfSSL's [1] public key part lacks the BIT STRING's first byte, which OpenSSL refuses
+        // Private key only: wolfSSL's [1] public key lacks the BIT STRING's first byte, which OpenSSL refuses
         if (wc_ed25519_make_key(&rng, ED25519_KEY_SIZE, &key) == 0 && (n = wc_Ed25519PrivateKeyToDer(&key, der, sizeof der)) > 0)
             n = wc_DerToPem(der, (word32)n, (byte*)pem, (word32)size - 1, PKCS8_PRIVATEKEY_TYPE);
         wc_ed25519_free(&key);
@@ -85,7 +85,7 @@ int sshd_public_key(const char* pem, uint8_t out[SSHD_PUBLIC_KEY_SIZE]) {
     return rc == 0 && length == ED25519_PUB_KEY_SIZE ? 0 : -1;
 }
 
-// Public keys only. wolfSSH checks the signature once this has said yes to the key, on the query without one as well.
+// wolfSSH checks the signature once this says yes to the key, on the query without one too.
 // WOLFSSH_USERAUTH_SUCCESS is 0: every other path must say FAILURE.
 static int user_auth(byte type, WS_UserAuthData* d, void* ctx) {
     sshd_session* s = ctx;
@@ -105,7 +105,7 @@ static int auth_types(WOLFSSH* ssh, void* ctx) {
 }
 
 WOLFSSH_CTX* sshd_new(const char* host_key) {
-    // Never cleaned up: ssh.c's Init and Cleanup around each session then leave wolfCrypt up under a server session
+    // Never cleaned up, so ssh.c's Init and Cleanup per session leave wolfCrypt up under a server session
     if (wolfSSH_Init() != WS_SUCCESS) return NULL;
     WOLFSSH_CTX* ctx = wolfSSH_CTX_new(WOLFSSH_ENDPOINT_SERVER, NULL);
     if (ctx == NULL) return NULL;
@@ -152,7 +152,7 @@ int sshd_accept(WOLFSSH_CTX* ctx, sshd_session* s, int fd, int timeout_ms) {
         if (left <= 0 || !ready(fd, e == WS_WANT_WRITE ? POLLOUT : POLLIN, (int)left)) goto done;
     }
     rc = WS_SUCCESS;
-    // A shell or anything else runs nothing: the caller answers an empty command
+    // Not exec: an empty command, which the caller answers
     const char* command = wolfSSH_GetSessionCommand(s->ssh);
     word32 n = wolfSSH_GetSessionCommandSz(s->ssh);
     if (wolfSSH_GetSessionType(s->ssh) == WOLFSSH_SESSION_EXEC && command != NULL && n < sizeof s->command) {
@@ -168,7 +168,7 @@ int sshd_read(sshd_session* s, void* buffer, size_t length) {
     int r = wolfSSH_stream_read(s->ssh, buffer, (word32)length);
     if (r > 0) return r;
     int e = code(s, r);
-    // stream_read stops at the client's EOF and while keys are exchanged: the worker carries on, and sees the client leave
+    // stream_read stops at the client's EOF and during rekeying; the worker carries on and sees the client leave
     if (e == WS_EOF || e == WS_REKEYING) {
         int w = code(s, wolfSSH_worker(s->ssh, NULL));
         if (!transient(w)) return w;
@@ -193,7 +193,7 @@ int sshd_write(sshd_session* s, const void* buffer, size_t length, int timeout_m
         if (e == WS_WANT_WRITE) {
             if (!ready(s->fd, POLLOUT, timeout_ms)) return WS_SOCKET_ERROR_E;
         } else if (e == WS_WINDOW_FULL || e == WS_REKEYING || e == WS_WANT_READ) {
-            // The client's window adjust, or the key exchange, is still to read
+            // A window adjust or key exchange is still to read
             if (!ready(s->fd, POLLIN, timeout_ms)) return WS_SOCKET_ERROR_E;
             if (!transient(e = code(s, wolfSSH_worker(s->ssh, NULL)))) return e;
         } else {
@@ -203,7 +203,7 @@ int sshd_write(sshd_session* s, const void* buffer, size_t length, int timeout_m
     return WS_SUCCESS;
 }
 
-// EOF, the exit status and the channel's close, then the client's close, so it never sees the connection drop first; at most 2 s
+// EOF, exit status, channel close, then the client's close, so it never sees the connection drop first
 void sshd_close(sshd_session* s, int exit_status) {
     if (s->ssh != NULL) {
         wolfSSH_SetExitStatus(s->ssh, (word32)exit_status);

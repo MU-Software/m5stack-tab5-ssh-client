@@ -3,7 +3,7 @@ services:
   idf:
     image: m5stack-tab5-ssh-client/idf:6.1.1
     build:
-      # esp-clang brings clang-tidy for the firmware sources
+      # esp-clang: clang-tidy for the firmware
       dockerfile_inline: |
         FROM espressif/idf:v6.1.1
         RUN /opt/esp/python_env/idf6.1_py3.12_env/bin/python /opt/esp/idf/tools/idf_tools.py install esp-clang
@@ -16,7 +16,7 @@ services:
       IDF_GIT_SAFE_DIR: /workspace
       IDF_TARGET: esp32p4
 
-  # Test server for tests/run.sh: ed25519 host key only, so the pinned fingerprint is the one negotiated
+  # ed25519 host key only: the pinned fingerprint is the one negotiated
   sshd:
     build:
       dockerfile_inline: |

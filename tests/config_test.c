@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Expected values come from OpenSSH: ssh-keygen -H for the hashed entry, ssh-keygen -l for the fingerprint
+// Expected values from OpenSSH: ssh-keygen -H (the hashed entry), ssh-keygen -l (the fingerprint)
 #include "config.h"
 
 #include <stdio.h>
@@ -11,7 +11,6 @@
 #define KEY_A "AAAAC3NzaC1lZDI1NTE5AAAAICbE1A0PJ7viNG9J0Nzl0LQlsLg2rPaKlcBX3JMMIsVz"
 #define KEY_B "AAAAC3NzaC1lZDI1NTE5AAAAIPUdXA3sKedRzejH2g/944l1NqLPjLvpkL2p+s3Eu4t5"
 
-// A configuration with this Wi-Fi list
 #define APS(list) "{\"network\": {\"wifi\": {\"access_points\": " list "}}}"
 
 static int failures;
@@ -35,7 +34,7 @@ static int count(const wifi_network* w) {
     return n;
 }
 
-// The SSIDs of the list after config_set_wifi, "!" when it failed; a network's password shows as =PASSWORD
+// SSIDs after config_set_wifi, "!" when it failed; a password shows as =PASSWORD
 static const char* set_wifi(const char* json, const char* ssid, const char* new_ssid, const char* password, int move) {
     static char out[160];
     cJSON* config = cJSON_Parse(json);
@@ -62,7 +61,6 @@ static int valid(const char* ssid, const char* password) {
     return config_wifi_valid(&network);
 }
 
-// sessions.json read into records, then written back: the text, "" when none was read
 static const char* sessions(const char* json, size_t capacity) {
     static char out[512];
     session_record records[4];

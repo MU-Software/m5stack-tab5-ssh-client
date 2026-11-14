@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# The UI in an SDL3 window (make sim): Shiroko as the firmware builds it, from the host build's generated sources
+# Shiroko as the firmware builds it, from the host build's generated sources
 cmake_minimum_required(VERSION 3.21)
 get_filename_component(top ${CMAKE_CURRENT_LIST_DIR}/.. ABSOLUTE)
 set(host ${top}/build/shiroko-host)

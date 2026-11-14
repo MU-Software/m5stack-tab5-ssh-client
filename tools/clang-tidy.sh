@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Host test and simulator sources use their host builds' compile databases; firmware sources run in the IDF container
-# against a clang-toolchain configure in build/clang (the GCC build's flags are not clang's).
+# Firmware sources in the IDF container on a clang configure in build/clang: the GCC build's flags are not clang's
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tests=() sim=() fw=()

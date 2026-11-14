@@ -6,7 +6,7 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 
-// The PI4IOE5V6408 at 0x44: the BSP's driver resets it whenever it is created, which also cuts the C6's power
+// PI4IOE5V6408: the BSP's driver resets it whenever it is created, which also cuts the C6's power
 #define EXPANDER   0x44
 #define DIRECTION  0x03
 #define OUTPUT     0x05
@@ -29,7 +29,7 @@ static esp_err_t update(uint8_t reg, uint8_t mask, uint8_t bits) {
 }
 
 esp_err_t power_start(void) {
-    // From power-on every pin is a high-impedance input pulled down: charging off, the C6 and USB-A off. A restart keeps them.
+    // From power-on every pin is a high-Z input pulled down: no charging, C6 and USB-A off. A restart keeps them.
     static const uint8_t pins = C6_POWER | USB_A_5V | NCHG_QC_EN | CHG_EN;
     ESP_RETURN_ON_ERROR(bsp_i2c_init(), TAG, "I2C");
     ESP_RETURN_ON_ERROR(
@@ -39,7 +39,7 @@ esp_err_t power_start(void) {
         ESP_LOGW(TAG, "no INA226");
     // NCHG_QC_EN high adds a resistor on the IP2326's NTC pin that reads as a warm battery, which halves the charge current
     ESP_RETURN_ON_ERROR(update(OUTPUT, pins, C6_POWER | USB_A_5V | CHG_EN), TAG, "levels");
-    // CHG_LED back to an input, which the BSP's driver made an output that reads 0
+    // CHG_LED an input again: the BSP's driver made it an output that reads 0
     ESP_RETURN_ON_ERROR(update(DIRECTION, pins | CHG_LED, pins), TAG, "directions");
     return update(HIGH_Z, pins, 0);
 }
@@ -61,8 +61,8 @@ static esp_err_t read16(uint8_t reg, int16_t* value) {
     return ESP_OK;
 }
 
-// Shunt 2.5 uV per bit across 5 mOhm. Charging is current into the pack past the monitor's noise of a few mA, as USB-C or the DC
-// input powers the board instead of the pack; CHG_LED, the IP2326's LED line, reads 1 on battery too.
+// Shunt 2.5 uV per bit across 5 mOhm. Charging: current into the pack past a few mA of noise, as USB-C or DC then powers the
+// board; CHG_LED, the IP2326's LED line, reads 1 on battery too
 static bool charging_at(int16_t shunt) {
     return shunt / 2 < -10;
 }
@@ -86,8 +86,8 @@ void power_pack(pack_reading* out) {
     int64_t now = esp_timer_get_time();
     out->millivolts = bus * 5 / 4;
     out->flow = charging_at(shunt) ? PACK_CHARGING : shunt / 2 >= 30 ? PACK_DISCHARGING : PACK_IDLE;
-    // No pack: the charger's output alone, which falls to ~4.4 V for ~5 s every ~16 s while CHG_LED blinks; a full pack keeps CHG_LED
-    // off (measured 10-19). Held 25 s, as it is read every 5 s.
+    // No pack: the charger's output alone, which falls to ~4.4 V for ~5 s every ~16 s while CHG_LED blinks; a full pack keeps
+    // CHG_LED off (measured 10-19). Held, as it is read every 5 s
     if (out->flow != PACK_IDLE)
         missing_at = 0;
     else if (out->millivolts < 6000 || (stat & CHG_LED) != 0)

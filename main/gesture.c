@@ -13,7 +13,7 @@ gesture_event gesture_touch(gesture* g, bool down, int32_t x, int32_t y) {
     }
     g->dragging |= abs(x - g->start_x) >= g->slop || abs(y - g->start_y) >= g->slop;
     if (!g->dragging) return e;
-    // The text follows the finger: down shows earlier lines
+    // The text follows the finger
     int32_t lines = -(y - g->start_y) / g->step;
     e.lines = lines - g->lines;
     g->lines = lines;

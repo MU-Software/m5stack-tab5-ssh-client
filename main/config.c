@@ -19,7 +19,6 @@ static int copy(char* out, size_t size, const cJSON* item) {
     return 0;
 }
 
-// network.wifi.access_points; NULL when absent, *wrong when something on the way is not an object
 static cJSON* access_points(const cJSON* config, bool* wrong) {
     const cJSON* network = cJSON_GetObjectItemCaseSensitive(config, "network");
     const cJSON* wifi = cJSON_GetObjectItemCaseSensitive(network, "wifi");
@@ -49,7 +48,6 @@ done:
     return err;
 }
 
-// parent's object `key`, made in place of anything else
 static cJSON* object_in(cJSON* parent, const char* key) {
     cJSON* child = cJSON_GetObjectItemCaseSensitive(parent, key);
     if (cJSON_IsObject(child)) return child;

@@ -6,7 +6,6 @@
 
 static int failures;
 
-// Keys typed one by one ('<' is Backspace), then the composition flushed
 static void check(const char* keys, const char* expected) {
     hangul h = HANGUL_EMPTY;
     char text[256] = "";

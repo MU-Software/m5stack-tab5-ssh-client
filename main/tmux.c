@@ -6,19 +6,18 @@
 
 // The listing TMUX_ORPHANS reads
 #define TMUX_LIST "tmux ls -F \"#{session_attached} #{session_created} #{session_name}\""
-// Kills each session listed on stdin named $p... that is not in $k, has no client and was made $g s or more before $t
+// Kills stdin's sessions named $p... not in $k, with no client, made $g s or more before $t
 #define TMUX_ORPHANS                                                                                                          \
     "while read -r a c n; do case $n in $p*) case $k in *\" $n \"*) ;; *) [ \"$a\" = 0 ] && [ $((t - ${c:-$t})) -ge $g ] && " \
     "tmux kill-session -t \"=$n\" </dev/null >/dev/null 2>&1;; esac;; esac; done; "
 
 bool tmux_command(char* out, size_t size, const char* name, const char* prefix, const char* keep, int age_s, bool arrows) {
-    // -T (tmux 3.2) declares what the screen draws beyond xterm-256color's terminfo. The while loop runs in a pipeline's
-    // subshell: an error there (an old tmux without a format) leaves the rest. allow-passthrough (tmux 3.3) lets kitty
-    // images reach the screen, for this session's windows only; mouse (tmux 2.1) lets touches click and scroll in it.
-    // '=': an exact name, not a prefix (set-hook takes none; set takes a pane, hence '=name:'). The wheel bindings are the
-    // server's, tmux 3.2's but for @tab5_arrows: sessions with it send arrow keys to programs on the alternate screen that
-    // take no mouse, as Ghostty does. Not exec'd: a session ended (exit, killed, renamed) is told from a detach. Only the
-    // attach has the terminal: a client on it reads the host's terminfo, which may lack xterm-256color.
+    // -T (tmux 3.2) declares what the screen draws beyond xterm-256color's terminfo. The while loop is a pipeline's subshell: an
+    // error there (an old tmux without a format) leaves the rest. allow-passthrough (3.3): kitty images, this session's windows
+    // only; mouse (2.1): touches click and scroll. '=': exact name, not prefix (set-hook takes none; set takes a pane, hence
+    // '=name:'). Wheel bindings are the server's, 3.2's but for @tab5_arrows: sessions with it send arrow keys to
+    // alternate-screen programs that take no mouse, as Ghostty does. Not exec'd, to tell a session ended (exit, killed, renamed)
+    // from a detach. Only the attach has the terminal: a client on it reads the host's terminfo, which may lack xterm-256color.
     int n = snprintf(out, size,
                      "sh -c 'exec 3<&0 </dev/null; f=-TRGB,strikethrough,overline,usstyle,kittygraphics; tmux $f -V >/dev/null 2>&1 || f=; "
                      "s=%s; p=%s; k=\"%s\"; g=%d; t=$(date +%%s); %s"
@@ -36,9 +35,8 @@ bool tmux_command(char* out, size_t size, const char* name, const char* prefix, 
 }
 
 bool tmux_sync_command(char* out, size_t size, const char* prefix, const char* keep, int age_s) {
-    // tmux 3.5a says one of these two when no server runs; a server whose socket a cleaner removed still runs. Names are
-    // printed in a loop of their own, as a bad creation time ends the killing loop's subshell. printf, as some echo
-    // commands take a backslash in a name for an escape.
+    // tmux 3.5a says one of these two with no server; a server whose socket a cleaner removed still runs. Names print in their
+    // own loop, as a bad creation time ends the killing loop's subshell. printf: some echo take a backslash for an escape.
     int n = snprintf(out, size,
                      "sh -c 'p=%s; k=\"%s\"; g=%d; t=$(date +%%s); l=$(" TMUX_LIST " 2>&1 </dev/null); r=$?; [ $r = 127 ] && exit 127; "
                      "[ $r = 0 ] || case $l in \"no server running on \"*|\"error connecting to \"*\" (No such file or directory)\") "
@@ -49,7 +47,6 @@ bool tmux_sync_command(char* out, size_t size, const char* prefix, const char* k
     return n > 0 && (size_t)n < size;
 }
 
-// The next line of *text without its \r\n, false after the last
 static bool next_line(const char** text, const char** line, size_t* length) {
     if (**text == 0) return false;
     size_t n = strcspn(*text, "\r\n");

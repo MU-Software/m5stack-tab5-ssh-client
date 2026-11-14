@@ -37,7 +37,7 @@
 
 #define PORT            22
 #define AUTHORIZED_KEYS SD "/.ssh/authorized_keys"
-// The device's own, as /etc/ssh keeps it, beside its configuration; .ssh/ is the client's, as ~/.ssh
+// As /etc/ssh keeps it; .ssh/ is the client's
 #define HOST_KEY   SD "/.config/tab5-ssh/ssh_host_ed25519_key"
 #define WAIT_MS    10000
 #define CONFIG_MAX (16 * 1024)
@@ -47,7 +47,7 @@ static const global_state* state;
 static WOLFSSH_CTX* ctx;
 static int (*app_command)(const char* line);
 static atomic_bool busy;
-// The client config set answers, and whether a value was refused
+// For refused(), which takes no context
 static sshd_session* checking;
 static bool refusals;
 
@@ -58,7 +58,7 @@ static int write_file(const char* path, const char* text) {
     return fclose(f) != 0 || err ? -1 : 0;
 }
 
-// Made when there is none, never over one that does not load; its .pub too, for known_hosts before the first connection
+// Made when missing, never over one that fails to load; .pub for known_hosts
 static WOLFSSH_CTX* load_host_key(void) {
     char pem[256], line[128], fingerprint[64];
     uint8_t public_key[SSHD_PUBLIC_KEY_SIZE];
@@ -95,7 +95,6 @@ static void write_reply(void* context, const char* text, size_t length) {
     sshd_write(context, text, length, WAIT_MS);
 }
 
-// stdin up to its end, each wait at most WAIT_MS
 static int read_input(void* context, void* buffer, size_t length) {
     for (TickType_t last = xTaskGetTickCount(); xTaskGetTickCount() - last < pdMS_TO_TICKS(WAIT_MS);) {
         int r = sshd_read(context, buffer, length);
@@ -107,7 +106,7 @@ static int read_input(void* context, void* buffer, size_t length) {
     return -1;
 }
 
-// The log from position on, until the client leaves or, with quiet_ms, until that long passes without a line
+// quiet_ms 0: until the client leaves
 static void follow(sshd_session* s, size_t position, int quiet_ms) {
     char chunk[512];
     for (TickType_t last = xTaskGetTickCount(); quiet_ms == 0 || xTaskGetTickCount() - last < pdMS_TO_TICKS(quiet_ms);) {
@@ -117,14 +116,13 @@ static void follow(sshd_session* s, size_t position, int quiet_ms) {
             last = xTaskGetTickCount();
             continue;
         }
-        // What the client sends is dropped; reading notices it leave
+        // Reading notices the client leave
         int r = sshd_read(s, chunk, sizeof chunk);
         if (r < 0 && r != WS_EOF) return;
         if (r <= 0) sshd_wait(s, 100);
     }
 }
 
-// size bytes from stdin into PSRAM, checked against their CRC-32; NULL with err otherwise
 static uint8_t* receive(sshd_session* s, size_t size, uint32_t crc, esp_err_t* err) {
     uint8_t* image = size > 0 ? heap_caps_malloc(size, MALLOC_CAP_SPIRAM) : NULL;
     *err = ESP_ERR_INVALID_SIZE;
@@ -147,7 +145,7 @@ static uint8_t* receive(sshd_session* s, size_t size, uint32_t crc, esp_err_t* e
     return NULL;
 }
 
-// The text holds Wi-Fi passwords: never logged, cleared before it is freed
+// Wi-Fi passwords: never logged, zeroed before free
 static int print_config(sshd_session* s) {
     config_state read;
     cJSON* config = storage_get_device_config(&read);
@@ -169,7 +167,6 @@ static void refused(const char* name) {
     refusals = true;
 }
 
-// From stdin up to its end, checked as at boot; saved only when all of it is valid, for the next start
 static const char* check_config(sshd_session* s, cJSON** config) {
     char* text = heap_caps_calloc(1, CONFIG_MAX + 1, MALLOC_CAP_SPIRAM);
     size_t got = 0;
@@ -217,7 +214,7 @@ static int set_config(sshd_session* s) {
 
 typedef enum { STAY, RESTART, RESTART_UPDATED } after;
 
-// Its exit status. The app's commands answer in the log, which follows them for as long as it has lines
+// The exit status. App commands answer in the log, followed until it is quiet
 static int run(sshd_session* s, after* then) {
     const char* line = s->command;
     unsigned long size, crc;
@@ -234,7 +231,7 @@ static int run(sshd_session* s, after* then) {
     }
     if (strcmp(line, "config") == 0) return print_config(s);
     if (strcmp(line, "config set") == 0) return set_config(s);
-    // Values go to stdout alone, never to the log
+    // Values to stdout only, never the log
     if (control_nvs(line) > 0) {
         bool c6 = line[0] == 'c';
         c6_nvs_io io = {.name = c6 ? "c6 nvs" : "nvs",
@@ -274,7 +271,7 @@ static int run(sshd_session* s, after* then) {
     return status;
 }
 
-// Wi-Fi, and LTE once remote.lte is on: behind CGNAT nobody reaches it there, and whatever does costs data
+// LTE only with remote.lte: behind CGNAT, and it costs data
 static bool allowed(uint32_t local) {
     esp_netif_ip_info_t ip;
     return (esp_netif_get_ip_info(wifi_netif(), &ip) == ESP_OK && ip.ip.addr == local) ||
@@ -292,7 +289,7 @@ static void serve(void* arg) {
         ESP_LOGW(TAG, "%s: not over Wi-Fi%s", from, state->remote.lte ? " or LTE" : "");
         close(fd);
     } else {
-        // Read for each client: a key taken off the list is refused from then on
+        // Read per client: a removed key is refused at once
         sshd_session s = {.authorized_keys = storage_read_file_text(AUTHORIZED_KEYS), .user = state->remote.user};
         int rc = sshd_accept(ctx, &s, fd, WAIT_MS);
         free((char*)s.authorized_keys);
@@ -332,13 +329,13 @@ static int open_port(void) {
     return fd;
 }
 
-// One client at a time, another closed at once, served on an internal stack (writing flash needs one) only while it is there
+// One client at a time, on an internal stack (writing flash needs one) only while connected
 static void listen_for_clients(void* arg) {
     (void)arg;
     int listener = -1, fd;
     bool tried = false;
     for (;;) {
-        // remote.enabled opens and closes the port, looked at each second; turning it on again tries again
+        // Polled each second; turning it on again retries a failed open
         if (!state->remote.enabled) {
             tried = false;
             if (listener >= 0) {
@@ -370,7 +367,7 @@ static void listen_for_clients(void* arg) {
 esp_err_t remote_start(const global_state* global, int (*command)(const char* line)) {
     state = global;
     app_command = command;
-    // A PSRAM stack: it writes the SD card, never flash
+    // PSRAM stack: it writes the SD card, never flash
     return xTaskCreatePinnedToCoreWithCaps(listen_for_clients, "remote listen", 8192, NULL, 5, NULL, 1, MALLOC_CAP_SPIRAM) == pdPASS ? ESP_OK
                                                                                                                                      : ESP_ERR_NO_MEM;
 }

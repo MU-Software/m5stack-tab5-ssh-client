@@ -91,7 +91,6 @@ static int open_with(const char* known_hosts, const char* private_key, const cha
     return ssh_open(&state, &session);
 }
 
-// Closes again when the login works
 static int login(const char* known_hosts, const char* private_key, const char* password) {
     int rc = open_with(known_hosts, private_key, password);
     if (rc == WS_SUCCESS) ssh_close(&session, NULL);
@@ -101,8 +100,7 @@ static int login(const char* known_hosts, const char* private_key, const char* p
 static const char *known_hosts, *private_key;
 static ssh_session other, probe;
 
-// On connection s of its own, a pty as `terminal` says: the exit status, -1 when it did not end within 5 s, -2 without a
-// connection; its output in got
+// The exit status, -1 when it did not end, -2 without a connection; its output in got
 static int exec_as(const global_state* terminal, ssh_session* s, const char* command, char* got, size_t size) {
     *s = (ssh_session){.host = &host, .known_hosts = known_hosts, .private_key = private_key, .command = command};
     if (ssh_open(terminal, s) != WS_SUCCESS) return -2;
@@ -126,8 +124,7 @@ static int exec_status(const char* command) {
     return exec_on(&other, command);
 }
 
-// Attached to tmux session `name` as the device is for 1.5 s, with the mouse on and the wheel's arrow keys, then `ending` run
-// elsewhere: the exit status the channel closed with, -1 for none
+// Attached to `name` as the device is, then `ending` run elsewhere: the exit status the channel closed with, -1 for none
 static int attach_until(const char* name, const char* keep, int age_s, const char* ending) {
     char command[1400], buf[2048], probe_command[256];
     if (!tmux_command(command, sizeof command, name, "tab5-test01-", keep, age_s, true)) return -1;
@@ -158,7 +155,6 @@ static int kill_session(const char* name) {
     return tmux_kill_command(command, sizeof command, name) ? exec_status(command) : -3;
 }
 
-// The device's tmux sessions against a real tmux: names tab5-test01-...
 static void tmux_sessions(void) {
     char command[1400];
     if (exec_status("tmux -V") != 0) {
@@ -202,7 +198,6 @@ static void tmux_sessions(void) {
 
 static const global_state no_terminfo = {.terminal_type = "nosuchterm", .terminal_size = {.columns = 80, .rows = 24}};
 
-// tmux_sync_command run for prefix tab5-test01-: its status, its output in got and whether it is whole
 static int sync_on(const global_state* terminal, const char* keep, int age_s, char* got, size_t size, bool* whole) {
     char command[900];
     if (!tmux_sync_command(command, sizeof command, "tab5-test01-", keep, age_s)) return -3;
@@ -211,7 +206,6 @@ static int sync_on(const global_state* terminal, const char* keep, int age_s, ch
     return status;
 }
 
-// The sync's listing and orphans against a real tmux
 static void tmux_syncs(void) {
     char got[1024], command[1400];
     bool whole;

@@ -37,18 +37,18 @@ static void (*changed)(void);
 static TaskHandle_t task;
 static EventGroupHandle_t events;
 static esp_netif_t* netif;
-// The C6's last lease, and whether the interface holds its address (default event loop only)
+// Default event loop only; held: the interface has the lease's address
 static c6_lease lease;
 static bool held;
-// Written by the default event loop (the C6's states and answers, leases, drops), wifi_turn and the task
+// Written by the default event loop, wifi_turn and the task
 static wifi_view view;
 static portMUX_TYPE view_lock = portMUX_INITIALIZER_UNLOCKED;
-// The ask the C6 has not answered yet, and the address and network of the last link (view_lock)
+// Under view_lock: the unanswered ask; the last link's address and network
 static uint8_t asked_sequence;
 static bool waiting;
 static uint32_t linked_address;
 static char linked_ssid[33];
-// Started: the station runs as on says; unusable: no Wi-Fi this boot. Neither yet: Wi-Fi is starting, a first try under way
+// started: the station follows on; unusable: no Wi-Fi this boot; neither yet: starting
 static atomic_bool on, started, unusable, suspected, list_changed, dropping, scan_wanted;
 // One join at a time, run by the task
 static SemaphoreHandle_t join_lock, join_done;
@@ -67,7 +67,6 @@ static void wake(void) {
     if (task != NULL) xTaskNotifyGive(task);
 }
 
-// The link: the C6 joined, and the interface holds its lease
 static void refresh(void) {
     c6_wifi_status c6 = {0};
     unsigned reports = c6_wifi_state(&c6);
@@ -98,12 +97,12 @@ static void refresh(void) {
     wake();
 }
 
-// The C6's own checks (sequence 0) and its answers; one begun before the link came is the network before
+// sequence 0: the C6's own check
 static void on_internet(uint8_t sequence, const c6_reach_answer* a) {
     int64_t now = esp_timer_get_time();
     bool counted = false, answered = false;
     taskENTER_CRITICAL(&view_lock);
-    // Begun after the last drop: on this link, as a new link follows a drop, or the first
+    // Begun since the last drop, so of this link
     if ((sequence == 0 || sequence == asked_sequence) && view.link && now - a->milliseconds * 1000LL >= view.lost_at && a->error != ENETUNREACH) {
         if (view.internet == NETWORK_GOOD && a->error != 0) view.failed_before = view.failed_at, view.failed_at = now;
         if (view.internet != NETWORK_GOOD && a->error == 0) view.good_since = now;
@@ -171,8 +170,7 @@ static esp_err_t link_down(void* ctx) {
     return ESP_OK;
 }
 
-// With Network Split the interface keeps its address through a drop, and with it the TCP connections that a rejoin with the
-// same lease carries on; esp_netif's own action would take the address
+// Keeps the address through a drop, and with it TCP connections a rejoin on the same lease carries on; esp_netif's own action would take it
 // NOLINTBEGIN(bugprone-reserved-identifier): --wrap names it
 void __real_esp_netif_action_disconnected(void* esp_netif, esp_event_base_t base, int32_t id, void* data);
 
@@ -185,7 +183,7 @@ void __wrap_esp_netif_action_disconnected(void* esp_netif, esp_event_base_t base
 }
 // NOLINTEND(bugprone-reserved-identifier)
 
-// The C6 keeps its own copy of the known networks, with on for this boot
+// The C6 keeps its own copy
 static void send_list(void) {
     uint8_t message[3 + C6_NETWORKS * (2 + sizeof state->wifi->ssid + sizeof state->wifi->password)];
     size_t size = 3;
@@ -202,7 +200,7 @@ static void send_list(void) {
     memset(message, 0, sizeof message);
 }
 
-// running: the station started; a start that failed is tried again by the task
+// running: the station started; the task retries a failed start
 static esp_err_t begin(bool* running) {
     events = xEventGroupCreate();
     join_lock = xSemaphoreCreateMutex();
@@ -225,8 +223,7 @@ static esp_err_t begin(bool* running) {
     name[0] = P4_HOSTNAME;
     int length = snprintf((char*)name + 1, sizeof name - 1, "tab5-%02x%02x%02x", mac[3], mac[4], mac[5]);
     if (c6_send(name, 1 + (size_t)length) != ESP_OK) ESP_LOGW(TAG, "hostname not sent to the C6");
-    // Network Split makes the interface in esp_hosted's own task, registering esp_wifi_stop last, which would stop the C6's Wi-Fi
-    // at each restart of this chip
+    // esp_hosted's task makes the interface (Network Split), registering esp_wifi_stop last: it would stop the C6's Wi-Fi at this chip's restarts
     bool unregistered = false;
     for (int tries = 0; tries < 300 && !unregistered; tries++) {
         unregistered =
@@ -243,8 +240,7 @@ static esp_err_t begin(bool* running) {
     ESP_RETURN_ON_ERROR(err, TAG, "init");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, on_event, NULL), TAG, "events");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL), TAG, "events");
-    // The default flash storage would keep the password in the C6's NVS; esp_hosted's host drops it, so the C6 firmware sets
-    // it itself
+    // Flash storage would keep the password in the C6's NVS; esp_hosted's host drops it, so the C6 firmware sets it itself
     ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "storage");
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "mode");
     if (atomic_load(&on) && !(*running = esp_wifi_start() == ESP_OK)) ESP_LOGW(TAG, "station not started");
@@ -255,7 +251,7 @@ static esp_err_t begin(bool* running) {
     return ESP_OK;
 }
 
-// Waits for the C6 to answer, once it stopped its own scan or join
+// hold waits until the C6 stopped its own scan or join
 static void hold_c6(bool hold) {
     unsigned before = c6_wifi_state(NULL);
     if (c6_send((const uint8_t[]){P4_WIFI_HOLD, hold}, 2) != ESP_OK) return;
@@ -267,7 +263,7 @@ static int stronger(const void* a, const void* b) {
     return ((const wifi_visible_network*)b)->rssi - ((const wifi_visible_network*)a)->rssi;
 }
 
-// Each SSID once, at its strongest; hidden ones left out. Not while the C6 rejoins after a drop, which the hold would stop
+// Not while the C6 rejoins after a drop: the hold would stop it
 static void scan(void) {
     wifi_ap_record_t* aps = NULL;
     uint16_t n = 0;
@@ -332,7 +328,6 @@ static bool is_waiting(void) {
     return was;
 }
 
-// The ask waited for, if any, ends; so does its hold
 static bool stop_waiting(void) {
     taskENTER_CRITICAL(&view_lock);
     bool was = waiting;
@@ -363,7 +358,7 @@ static void ask(void) {
     taskEXIT_CRITICAL(&view_lock);
 }
 
-// The asked check never came: the C6 restarted alone or hangs, and its network serves nothing
+// No answer: the C6 restarted alone or hangs, and its network serves nothing
 static void silent(void) {
     if (!stop_waiting()) return;
     taskENTER_CRITICAL(&view_lock);
@@ -388,7 +383,7 @@ static void run(void* arg) {
         int64_t now = esp_timer_get_time(), at = NETWORK_NEVER;
         bool want = atomic_load(&on);
         if (started && want != running) {
-            // The list says on before a start, off after a stop, for the C6 never to see itself started and off
+            // on before a start, off after a stop: the C6 must never see itself started and off
             if (want) send_list();
             if ((want ? esp_wifi_start() : esp_wifi_stop()) == ESP_OK) running = want;
             if (!want) send_list();
@@ -424,7 +419,7 @@ esp_err_t wifi_start(const global_state* global, void (*listener)(void)) {
     state = global;
     changed = listener;
     on = global->wifi_enabled;
-    // Stack in PSRAM: a task there must never write flash
+    // PSRAM stack: it must never write flash
     return xTaskCreatePinnedToCoreWithCaps(run, "wifi", 6144, NULL, 5, &task, 1, MALLOC_CAP_SPIRAM) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 

@@ -41,14 +41,14 @@
 #define RING 4096
 
 static const char* TAG = "tab5";
-// What this chip logged, sent on to the P4 once it reached us; the oldest goes when full
+// This chip's log, sent on once the P4 reached it
 static char ring[RING];
 static size_t head, used;
 static portMUX_TYPE ring_lock = portMUX_INITIALIZER_UNLOCKED;
 static vprintf_like_t uart;
 static TaskHandle_t sender;
 static volatile bool p4_reached;
-// The logs, the answers to the P4 and the joining task all send
+// The logs, the answers and the joining task all send
 static SemaphoreHandle_t send_lock;
 
 static esp_err_t send_to_p4(const uint8_t* message, size_t size) {
@@ -63,7 +63,7 @@ static int capture(const char* format, va_list args) {
     va_list copy;
     va_copy(copy, args);
     int n = uart(format, args);
-    // Not what sending logs, which would send again
+    // Not the sender's own: it would send them again
     int length = xTaskGetCurrentTaskHandle() != sender ? vsnprintf(line, sizeof line, format, copy) : 0;
     va_end(copy);
     if (length > (int)sizeof line - 1) length = sizeof line - 1;
@@ -77,7 +77,6 @@ static int capture(const char* format, va_list args) {
     return n;
 }
 
-// Whole lines, unless one fills a message
 static void send_logs(void* arg) {
     static uint8_t message[1 + 1000];
     (void)arg;
@@ -117,14 +116,13 @@ static void IRAM_ATTR from_host(uint8_t event) {
     portYIELD_FROM_ISR(woken);
 }
 
-// The driver's credits for its send queue. Its reset hands a send in flight back to its sender but not the credit (in
-// send_flush_data the step that ends the flush returns the descriptors without counting them): one lost for each restart of
-// the P4 in the middle of a transfer, and once all are gone the next send waits for good
+// The driver's send-queue credits. Its reset hands a send in flight back to its sender but not the credit (send_flush_data's
+// last step returns the descriptors uncounted): one lost per P4 restart mid-transfer, and once all are gone the next send waits for good
 static SemaphoreHandle_t send_credits;
 static UBaseType_t send_queue_size;
 
-// After each card init (components/c6/c6.c). esp_hosted restarts the counters within the interrupt, where it takes back the
-// send that its sdio_send task waits for, which then holds the transmit lock for good
+// After each card init (components/c6/c6.c). esp_hosted restarts the counters in the interrupt, taking back the send its sdio_send
+// task waits for, which then holds the transmit lock for good
 static void reset_sdio(void* arg) {
     (void)arg;
     for (;;) {
@@ -168,15 +166,14 @@ esp_err_t __wrap_sdio_slave_initialize(sdio_slave_config_t* config) {
 }
 // NOLINTEND(bugprone-reserved-identifier)
 
+// Only the back-cover pads reflash the C6 without esp_hosted: an image is kept once the P4 reached it through esp_hosted
 static bool unchecked(void) {
     esp_ota_img_states_t state;
     return esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK && state != ESP_OTA_IMG_VALID &&
            state != ESP_OTA_IMG_UNDEFINED;
 }
 
-// The C6 can only be reflashed through the back-cover pads: an image is kept once the P4 reached it through esp_hosted, which
-// any later update needs
-// Count of networks in a P4_WIFI_LIST body, or -1 when it does not parse
+// In a P4_WIFI_LIST body
 static int networks(const uint8_t* list, size_t size) {
     size_t at = 2;
     if (size < 2 || list[1] > C6_NETWORKS) return -1;
@@ -197,7 +194,7 @@ static int networks(const uint8_t* list, size_t size) {
 #define NEW_LIST     BIT5
 #define HOLD         BIT6
 #define ASKED        BIT7
-// Two checks in a row did not reach the internet
+// Two failed checks in a row
 #define UNREACHABLE BIT8
 // Ends a scan or a join early
 #define INTERRUPT (STOPPED | NEW_LIST | HOLD | ASKED)
@@ -213,7 +210,6 @@ static int networks(const uint8_t* list, size_t size) {
 #define ASKED_NOW BIT1
 
 typedef enum { JOINED, FAILED, INTERRUPTED } join_result;
-// A known network's strongest access point in a scan
 typedef struct {
     int8_t rssi;
     uint8_t channel, bssid[6];
@@ -223,7 +219,7 @@ static StaticSemaphore_t send_lock_memory, list_lock_memory;
 static StaticEventGroup_t radio_memory;
 static SemaphoreHandle_t list_lock;
 static EventGroupHandle_t radio;
-// The known networks as the P4 last sent them (P4_WIFI_LIST), and kept in NVS
+// The last P4_WIFI_LIST, also in NVS
 static uint8_t known[2 + C6_NETWORKS * 98];
 static size_t known_size;
 static volatile unsigned list_version, planned_version;
@@ -237,7 +233,7 @@ static volatile bool asked_due;
 static volatile uint8_t internet_asked;
 static TaskHandle_t prober;
 static const char* const state_names[] = {"stopped", "scanning", "joining", "connected", "none in range", "join failed", "held"};
-// What C6_WIFI_STATE last said, for P4_READY; until the task planned for a new list, its next report answers instead
+// The last C6_WIFI_STATE, for P4_READY; until the task planned for a new list, its next report answers instead
 static uint8_t state_message[5 + 32];
 static size_t state_size;
 static volatile bool state_due;
@@ -302,7 +298,7 @@ static void load_list(void) {
     nvs_close(nvs);
 }
 
-// Network index of the known ones, at its SSID length; the caller holds list_lock
+// At its SSID length; the caller holds list_lock
 static const uint8_t* known_network(int index) {
     const uint8_t* at = known + 2;
     if (known_size < 2 || index >= known[1]) return NULL;
@@ -355,8 +351,6 @@ static void on_lease(void* arg, esp_event_base_t base, int32_t id, void* data) {
     xTaskNotify(prober, NEW_LEASE, eSetBits);
 }
 
-// Each known network's strongest access point, at INT8_MIN when out of reach; ESP_ERR_INVALID_STATE when a stop, a new list or a
-// hold ended it
 static esp_err_t scan(sighting seen[C6_NETWORKS]) {
     const uint8_t* n;
     wifi_ap_record_t ap;
@@ -392,8 +386,8 @@ static esp_err_t scan(sighting seen[C6_NETWORKS]) {
     return ESP_OK;
 }
 
-// Known network index, or network ([SSID length][SSID][password length][password]) when not NULL, at the access point a scan
-// just saw, which spares the scan of every channel a join makes; the strongest when at is NULL
+// network ([SSID length][SSID][password length][password]) over index unless NULL; at, a scan's sighting, spares the join's scan
+// of every channel
 static join_result join(int index, const uint8_t* network, const sighting* at, char ssid[33]) {
     wifi_config_t cfg = {.sta = {.scan_method = at != NULL ? WIFI_FAST_SCAN : WIFI_ALL_CHANNEL_SCAN,
                                  .sort_method = WIFI_CONNECT_AP_BY_SIGNAL,
@@ -450,7 +444,6 @@ static int next_known(const sighting seen[C6_NETWORKS], const int64_t backoff_un
     return c6_next_network(rssi, backoff_until, demoted_until, C6_NETWORKS, skip, esp_timer_get_time());
 }
 
-// P4_WIFI_JOIN: this network now, the one joined before left only once Wi-Fi is up for it
 static void join_asked(char ssid[33]) {
     static const char* const results[] = {"joined", "not found", "failed", "Wi-Fi stopped", "interrupted"};
     uint8_t network[sizeof asked];
@@ -485,7 +478,6 @@ static void join_asked(char ssid[33]) {
     send_to_p4((const uint8_t[]){C6_WIFI_JOINED, network[0], result, last_reason}, 4);
 }
 
-// After two checks that did not reach the internet: another known network in reach, this one tried after the others for a while
 static void leave_unreachable(const char* ssid, sighting seen[C6_NETWORKS], const int64_t backoff_until[C6_NETWORKS],
                               int64_t demoted_until[C6_NETWORKS]) {
     int current = known_index(ssid), next = -1;
@@ -501,9 +493,7 @@ static void leave_unreachable(const char* ssid, sighting seen[C6_NETWORKS], cons
     await(DISCONNECTED, SECOND);
 }
 
-// The first known network in list order a scan sees above C6_RSSI_FLOOR, the next when it fails; none rescans after 5 s doubling
-// to 60 s. No scans while joined (they would stall SSH), and a drop retries the network once first. Joins whenever Wi-Fi was
-// started, by itself or by the P4's wifi on, while the list says on
+// No scans while joined: they would stall SSH
 static void join_known(void* arg) {
     static const int rescans[] = {5, 10, 20, 40, 60};
     int64_t backoff_until[C6_NETWORKS] = {0}, demoted_until[C6_NETWORKS] = {0};
@@ -514,7 +504,7 @@ static void join_known(void* arg) {
     char ssid[33] = "";
     bool retry = false;
     (void)arg;
-    // esp_hosted's event handlers, which forward the joins to the P4, register in its own init task
+    // esp_hosted's handlers, which forward joins to the P4, register in its init task
     while (g_auto_feat_init_done_eg == NULL)
         vTaskDelay(pdMS_TO_TICKS(10));
     xEventGroupWaitBits(g_auto_feat_init_done_eg, EH_CP_FEAT_INIT_DONE_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
@@ -525,7 +515,7 @@ static void join_known(void* arg) {
     use_hostname();
     // The P4's esp_wifi_init then finds the same parameters (CONFIG_WIFI_RMT_* equal to these)
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
-    // The P4's own over RPC may be under way, which refuses this one until it is done
+    // The P4's own over RPC may be under way, refusing this one until done
     esp_err_t err;
     for (int tries = 0; (err = esp_wifi_init(&init)) != ESP_OK && tries < 20; tries++)
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -612,7 +602,6 @@ static void join_known(void* arg) {
     }
 }
 
-// A TCP connection to address port 443: 0 or an errno
 static int reach(const char* address) {
     struct sockaddr_in to = {.sin_family = AF_INET, .sin_port = htons(443), .sin_addr.s_addr = inet_addr(address)};
     int rc = 0, fd;
@@ -629,8 +618,6 @@ static int reach(const char* address) {
     return rc;
 }
 
-// The internet at each lease, when the P4 asks, and every RECHECK while it fails; two failures in a row on one network tell
-// the joining task
 static void probe(void* arg) {
     static const char* const addresses[] = C6_INTERNET_ADDRESSES;
     const size_t count = sizeof addresses / sizeof *addresses;
@@ -730,8 +717,7 @@ static void from_p4(uint32_t id, const uint8_t* data, size_t size, void* context
     p4_reached = true;
 }
 
-// The C6's bootloader has no rollback (a new image stays NEW): an image the P4 has not reached within a minute boots the other
-// one, unless that one is not a valid image
+// The C6's bootloader has no rollback (a new image stays NEW): one the P4 never reached boots the other, if that one is valid
 static void await_p4(void* arg) {
     (void)arg;
     vTaskDelay(pdMS_TO_TICKS(60000));
