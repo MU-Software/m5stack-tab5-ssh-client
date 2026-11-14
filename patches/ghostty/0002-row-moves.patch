@@ -1,6 +1,68 @@
+--- a/include/ghostty/vt/render.h
++++ b/include/ghostty/vt/render.h
+@@ -97,6 +97,36 @@ typedef struct {
+   uint64_t bits[2];
+ } GhosttyRenderStateRowId;
+ 
++/**
++ * A full-width move of viewport rows [top, bottom): the row at y + n moves
++ * to y (n > 0 moves content up, n < 0 down; |n| <= bottom - top). Rows a
++ * move vacates are dirty.
++ *
++ * @ingroup render
++ */
++typedef struct {
++  uint16_t top;
++  uint16_t bottom;
++  int32_t n;
++} GhosttyRenderStateRowMove;
++
++/**
++ * The row moves since the last ghostty_render_state_clean(), in order.
++ * Replay them on your copy of the rows, then rebuild the dirty rows (all
++ * rows when dirty is GHOSTTY_RENDER_STATE_DIRTY_FULL). With count -1 the
++ * moves are unknown: rebuild every dirty row without replaying.
++ *
++ * Without GHOSTTY_RENDER_STATE_OPT_ROW_MOVES every moved row is also
++ * dirty, so replaying is optional. With it, rows that only moved are not
++ * dirty and replaying is required.
++ *
++ * @ingroup render
++ */
++typedef struct {
++  int32_t count;
++  GhosttyRenderStateRowMove moves[16];
++} GhosttyRenderStateRowMoves;
++
+ /**
+  * Queryable data kinds for ghostty_render_state_get().
+  *
+@@ -211,6 +241,9 @@ typedef enum GHOSTTY_ENUM_TYPED {
+    *  Only compare the value for equality. It is always 0 when Kitty
+    *  graphics are disabled. */
+   GHOSTTY_RENDER_STATE_DATA_IMAGE_PLACEMENTS_GENERATION = 23,
++
++  /** The row moves since the last clean (GhosttyRenderStateRowMoves). */
++  GHOSTTY_RENDER_STATE_DATA_ROW_MOVES = 24,
+   GHOSTTY_RENDER_STATE_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
+ } GhosttyRenderStateData;
+ 
+@@ -240,6 +273,12 @@ typedef enum GHOSTTY_ENUM_TYPED {
+    *  changing the request. Expect a full redraw on the update after a
+    *  change. See @ref guide-rendering-overscan. */
+   GHOSTTY_RENDER_STATE_OPT_OVERSCAN = 2,
++
++  /** Leave rows that only moved clean (bool). The caller must replay
++   *  GHOSTTY_RENDER_STATE_DATA_ROW_MOVES before rebuilding dirty rows.
++   *  Off by default. Takes effect for terminal changes after the next
++   *  update. */
++  GHOSTTY_RENDER_STATE_OPT_ROW_MOVES = 3,
+   GHOSTTY_RENDER_STATE_OPT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
+ } GhosttyRenderStateOption;
+ 
 --- a/src/terminal/Screen.zig
 +++ b/src/terminal/Screen.zig
-@@ -86,6 +86,76 @@
+@@ -86,6 +86,76 @@ semantic_prompt: SemanticPrompt = .disabled,
  /// Dirty flags for the renderer.
  dirty: Dirty = .{},
  
@@ -77,7 +139,7 @@
  /// See Terminal.Dirty. This behaves the same way.
  pub const Dirty = packed struct {
      /// Set when the selection is set or unset, regardless of if the
-@@ -980,6 +1050,7 @@
+@@ -1016,6 +1086,7 @@ pub fn cursorDownScroll(self: *Screen) !void {
  
              // eraseRow will shift everything below it up.
              try self.pages.eraseRow(.{ .active = .{} });
@@ -85,15 +147,15 @@
  
              // Note we don't need to mark anything dirty in this branch
              // because eraseRow will mark all the rotated rows as dirty
-@@ -1001,6 +1072,7 @@
+@@ -1037,6 +1108,7 @@ pub fn cursorDownScroll(self: *Screen) !void {
          // Grow our pages by one row. The PageList will handle if we need to
          // allocate, prune scrollback, whatever.
          _ = try self.pages.grow();
 +        self.row_moves.record(0, self.pages.rows, 1);
  
-         const new_pin = new_pin: {
-             // Calculate this before cursorChangePin because that function may
-@@ -1097,6 +1169,7 @@
+         // If our pin page changed, then grow() pruned the page our cursor
+         // was on. This can only happen with a single row active area. With
+@@ -1153,6 +1225,7 @@ pub fn cursorScrollAbove(self: *Screen) !void {
  
      // Logic below assumes we always have at least one row that isn't moving
      assert(self.cursor.y < self.pages.rows - 1);
@@ -101,7 +163,7 @@
  
      // Explanation:
      //  We don't actually move everything that's at or above the cursor row,
-@@ -1289,6 +1362,7 @@
+@@ -1346,6 +1419,7 @@ pub fn cursorScrollRegionUp(self: *Screen, limit: usize) !void {
      assert(limit >= 1);
      assert(self.cursor.y >= limit);
      defer self.assertIntegrity();
@@ -109,21 +171,21 @@
  
      const pin: *Pin = self.cursor.page_pin;
  
-@@ -1344,8 +1418,9 @@
+@@ -1409,8 +1483,9 @@ pub fn cursorScrollRegionUp(self: *Screen, limit: usize) !void {
      // Mark the whole page as dirty.
      //
      // Technically we only need to mark the rotated rows but this is
 -    // a hot function, so we want to minimize work.
 -    page.dirty = true;
 +    // a hot function, so we want to minimize work. A consumer replaying
-+    // row moves only needs the cleared row, which reset() marked.
++    // row moves only needs the cleared row, whose reset header is dirty.
 +    if (!self.row_moves.leaveClean()) page.dirty = true;
  
      // If our viewport is a pin and it's within the rotated region
      // then we need to shift its cached row offset up. See
 --- a/src/terminal/Terminal.zig
 +++ b/src/terminal/Terminal.zig
-@@ -2950,6 +2950,7 @@
+@@ -3626,6 +3626,7 @@ fn rowWillBeShifted(
          const end_cell: *Cell = &cells[page.size.cols - 1];
          if (end_cell.wide == .spacer_head) {
              end_cell.wide = .narrow;
@@ -131,7 +193,7 @@
          }
      }
  
-@@ -2968,6 +2969,7 @@
+@@ -3644,6 +3645,7 @@ fn rowWillBeShifted(
          wide_cell.content.codepoint = .{ .data = 0 };
          wide_cell.wide = .narrow;
          left_cell.wide = .narrow;
@@ -139,7 +201,7 @@
      }
  
      if (right_cell.wide == .wide) {
-@@ -2979,6 +2981,7 @@
+@@ -3655,6 +3657,7 @@ fn rowWillBeShifted(
          right_cell.content.codepoint.data = 0;
          right_cell.wide = .narrow;
          tail_cell.wide = .narrow;
@@ -147,7 +209,7 @@
      }
  }
  
-@@ -3077,6 +3080,9 @@
+@@ -3753,6 +3756,9 @@ pub fn insertLines(self: *Terminal, count: usize) void {
          self.screens.active.cursor.page_pin.node,
          cur_p.node,
      );
@@ -157,7 +219,7 @@
  
      // Our current y position relative to the cursor
      var y: usize = rem;
-@@ -3085,6 +3091,7 @@
+@@ -3761,6 +3767,7 @@ pub fn insertLines(self: *Terminal, count: usize) void {
      while (y > 0) {
          const cur_rac = cur_p.rowAndCell();
          const cur_row: *Row = cur_rac.row;
@@ -165,7 +227,7 @@
  
          // If this is one of the lines we need to shift, do so
          if (y > adjusted_count) {
-@@ -3132,6 +3139,7 @@
+@@ -3808,6 +3815,7 @@ pub fn insertLines(self: *Terminal, count: usize) void {
                      const dst = dst_row.*;
                      dst_row.* = src_row.*;
                      src_row.* = dst;
@@ -173,7 +235,7 @@
  
                      // Ensure what we did didn't corrupt the page
                      cur_p.node.page().assertIntegrity();
-@@ -3168,8 +3176,9 @@
+@@ -3844,8 +3852,9 @@ pub fn insertLines(self: *Terminal, count: usize) void {
              if (!left_right) cur_row.reset();
          }
  
@@ -185,7 +247,7 @@
  
          // We have successfully processed a line.
          y -= 1;
-@@ -3245,6 +3254,9 @@
+@@ -3921,6 +3930,9 @@ pub fn deleteLines(self: *Terminal, count: usize) void {
          cur_p.node,
          cur_p.down(rem - 1).?.node,
      );
@@ -195,7 +257,7 @@
  
      // Our current y position relative to the cursor
      var y: usize = 0;
-@@ -3253,6 +3265,7 @@
+@@ -3929,6 +3941,7 @@ pub fn deleteLines(self: *Terminal, count: usize) void {
      while (y < rem) {
          const cur_rac = cur_p.rowAndCell();
          const cur_row: *Row = cur_rac.row;
@@ -203,7 +265,7 @@
  
          // If this is one of the lines we need to shift, do so
          if (y < rem - adjusted_count) {
-@@ -3300,6 +3313,7 @@
+@@ -3976,6 +3989,7 @@ pub fn deleteLines(self: *Terminal, count: usize) void {
                      const dst = dst_row.*;
                      dst_row.* = src_row.*;
                      src_row.* = dst;
@@ -211,7 +273,7 @@
  
                      // Ensure what we did didn't corrupt the page
                      cur_p.node.page().assertIntegrity();
-@@ -3336,8 +3350,9 @@
+@@ -4012,8 +4026,9 @@ pub fn deleteLines(self: *Terminal, count: usize) void {
              if (!left_right) cur_row.reset();
          }
  
@@ -223,11 +285,99 @@
  
          // We have successfully processed a line.
          y += 1;
+--- a/src/terminal/c/render.zig
++++ b/src/terminal/c/render.zig
+@@ -206,6 +206,7 @@ pub const Data = enum(c_int) {
+     overscan_request = 21,
+     image_iterator = 22,
+     image_placements_generation = 23,
++    row_moves = 24,
+ 
+     _,
+ 
+@@ -228,6 +229,7 @@ pub const Data = enum(c_int) {
+             .overscan, .overscan_request => Overscan,
+             .image_iterator => ImageIterator,
+             .image_placements_generation => u64,
++            .row_moves => RowMoves,
+             _ => void,
+         };
+     }
+@@ -238,6 +240,7 @@ pub const SetOption = enum(c_int) {
+     invalid = 0,
+     dirty = 1,
+     overscan = 2,
++    row_moves = 3,
+ 
+     _,
+ 
+@@ -246,11 +249,26 @@ pub const SetOption = enum(c_int) {
+         return switch (self) {
+             .dirty => Dirty,
+             .overscan => Overscan,
++            .row_moves => bool,
+             .invalid, _ => void,
+         };
+     }
+ };
+ 
++/// C: GhosttyRenderStateRowMove
++pub const RowMove = extern struct {
++    top: u16 = 0,
++    bottom: u16 = 0,
++    n: i32 = 0,
++};
++
++/// C: GhosttyRenderStateRowMoves
++pub const RowMoves = extern struct {
++    /// Number of moves, or -1 when they are unknown.
++    count: i32 = 0,
++    moves: [@import("../Screen.zig").RowMoves.capacity]RowMove = @splat(.{}),
++};
++
+ /// C: GhosttyRenderStateColors
+ pub const Colors = extern struct {
+     size: usize = @sizeOf(Colors),
+@@ -468,6 +486,15 @@ fn getTyped(
+             };
+         },
+         .image_placements_generation => out.* = state.state.imagePlacementsGeneration(),
++        .row_moves => {
++            const m = &state.state.row_moves;
++            if (state.state.row_moves_unknown or m.overflow) {
++                out.count = -1;
++            } else {
++                out.count = m.len;
++                for (m.slice(), 0..) |v, i| out.moves[i] = .{ .top = v.top, .bottom = v.bottom, .n = v.n };
++            }
++        },
+         _ => comptime unreachable,
+     }
+ 
+@@ -511,6 +538,7 @@ fn setTyped(
+             .above = value.above,
+             .below = value.below,
+         } else .{},
++        .row_moves => state.state.track_row_moves = (value_ orelse return .invalid_value).*,
+         .invalid, _ => comptime unreachable,
+     }
+ 
+--- a/src/terminal/c/types.zig
++++ b/src/terminal/c/types.zig
+@@ -413,6 +413,8 @@ pub const type_decls = [_]TypeDecl{
+     .initStruct("GhosttyRenderStateCursor", render.Cursor),
+     .initStruct("GhosttyRenderStateOverscan", render.Overscan),
+     .initStruct("GhosttyRenderStateRowId", render.RowId),
++    .initStruct("GhosttyRenderStateRowMove", render.RowMove),
++    .initStruct("GhosttyRenderStateRowMoves", render.RowMoves),
+     .initStruct("GhosttyRenderStateRowSelection", render.RowSelection),
+     .initStruct("GhosttySelection", selection.CSelection),
+     .initStruct("GhosttySelectionBuffer", selection.CSelectionBuffer),
 --- a/src/terminal/render.zig
 +++ b/src/terminal/render.zig
-@@ -198,6 +198,26 @@
-     /// beginUpdate.
-     pending_styles: std.ArrayList(StyleRun) = .empty,
+@@ -373,6 +373,30 @@ pub const RenderState = struct {
+     /// with `imagePlacementIterator` instead.
+     kitty: Kitty.Data = .{},
  
 +    /// Opt in to replayed row moves (Screen.RowMoves). When set, scroll fast
 +    /// paths leave rows that only moved clean and the update rotates
@@ -249,18 +399,22 @@
 +    /// Entries of row_data that a rotation left stale; rebuilt by the update.
 +    rebuild: std.DynamicBitSetUnmanaged = .{},
 +
++    /// A failed update leaves rows, pins and terminal dirty state it already
++    /// consumed: the next update is a full redraw.
++    retry_full: bool = false,
++
      /// Initial state.
      pub const empty: RenderState = .{
          .rows = 0,
-@@ -466,6 +486,7 @@
-         }
+@@ -896,6 +920,7 @@ pub const RenderState = struct {
          self.row_data.deinit(alloc);
          self.pending_styles.deinit(alloc);
+         self.kitty.deinit(alloc);
 +        self.rebuild.deinit(alloc);
      }
  
      /// Update the render state to the latest terminal state.
-@@ -516,6 +537,12 @@
+@@ -946,6 +971,12 @@ pub const RenderState = struct {
          const s: *Screen = t.screens.active;
          const viewport_pin = s.pages.getTopLeft(.viewport);
  
@@ -273,17 +427,19 @@
          // The overscan rows to capture beyond the viewport. The request
          // decides the layout of row_data, and the actual counts are
          // limited to the rows that exist. With no request, everything
-@@ -550,7 +577,8 @@
+@@ -980,7 +1011,10 @@ pub const RenderState = struct {
          // The index of top.pin in row_data.
          const first: usize = above_req - top.above;
  
 -        const redraw = redraw: {
 +        const pin_moved = if (self.viewport_pin) |old| !old.eql(viewport_pin) else false;
 +        const hard_redraw = redraw: {
++            if (self.retry_full) break :redraw true;
++
              // If our screen key changed, we need to do a full rebuild
              // because our render state is viewport-specific.
              if (t.screens.active_key != self.screen) break :redraw true;
-@@ -588,14 +616,41 @@
+@@ -1018,14 +1052,44 @@ pub const RenderState = struct {
              if (self.overscan.above != top.above or
                  self.overscan.below != below) break :redraw true;
  
@@ -293,8 +449,8 @@
 -            }
 -
              break :redraw false;
-+        };
-+
+         };
+ 
 +        // The moves can be replayed on the last update's rows: same screen,
 +        // size and layout, and the viewport is the active area at both.
 +        const moves_ok = !hard_redraw and !moves.overflow and
@@ -321,16 +477,19 @@
 +            const pin = old.items(.pin)[k];
 +            break :rotate pin.node == viewport_pin.node and pin.y == viewport_pin.y and
 +                old.items(.serial)[k] == viewport_pin.node.serial;
-         };
- 
++        };
++
 +        // A moved viewport is a full rebuild, and so are rows the terminal
 +        // left clean for moves we can't replay.
 +        const redraw = hard_redraw or (pin_moved and !rotate) or (moves.cleaned and !rotate);
 +
++        // The moves, the new pin or a rotation are already taken
++        errdefer self.retry_full = true;
++
          // Always set our cheap fields, its more expensive to compare
          self.rows = s.pages.rows;
          self.cols = s.pages.cols;
-@@ -695,6 +750,28 @@
+@@ -1127,6 +1191,28 @@ pub const RenderState = struct {
          const row_dirties = row_data.items(.dirty);
          const row_applied = row_data.items(.applied_styles);
  
@@ -359,7 +518,7 @@
          // If we're redrawing then every row will be rebuilt, superseding
          // any pending style runs from prior updates. Clearing also
          // guarantees pending runs always match the current dimensions
-@@ -786,7 +863,7 @@
+@@ -1220,7 +1306,7 @@ pub const RenderState = struct {
              // node appears at most once and its stored pins have consecutive
              // y values, so if the first and last entries of this chunk's range
              // already match then every entry in between matches too.
@@ -368,7 +527,7 @@
                  row_pins[y].node != node or
                  row_pins[y].y != chunk.start or
                  row_serials[y] != node_serial or
-@@ -804,7 +881,14 @@
+@@ -1238,7 +1324,14 @@ pub const RenderState = struct {
                  }
              }
  
@@ -376,15 +535,15 @@
 +            if (rotate and !redraw and !page_dirty) {
 +                for (page_rows, 0..) |*page_row, i| {
 +                    if (!page_row.dirty and !self.rebuild.isSet(y + i)) continue;
-+                    page_row.dirty = false;
 +                    any_dirty = true;
 +                    try builder.row(p, page_row, y + i);
++                    page_row.dirty = false;
 +                }
 +            } else if (!redraw and !page_dirty) {
                  // Only dirty rows (usually none) need a rebuild. Scan the
                  // dirty flags a group at a time; the dirty bit is directly
                  // testable on the packed row representation.
-@@ -923,6 +1007,9 @@
+@@ -1396,10 +1489,14 @@ pub const RenderState = struct {
              }
          }
  
@@ -394,7 +553,12 @@
          // Handle dirty state.
          if (redraw) {
              // Fully redraw resets some other state.
-@@ -1014,6 +1101,21 @@
+             self.screen = t.screens.active_key;
++            self.retry_full = false;
+             self.dirty = .full;
+ 
+             // Note: we don't clear any row_data here because our rebuild
+@@ -1491,6 +1588,21 @@ pub const RenderState = struct {
      pub fn clean(self: *RenderState) void {
          self.dirty = .false;
          @memset(self.row_data.items(.dirty), false);
@@ -416,7 +580,20 @@
      }
  
      /// Returns the `row_data` index of the top row of the viewport.
-@@ -1799,14 +1901,22 @@
+@@ -2128,8 +2240,10 @@ const Kitty = struct {
+         // nothing changed) must stay a few comparisons. A redraw alone,
+         // such as a viewport scroll, must not build `roots` again. A
+         // change in rows or columns always causes a redraw, so those are
+-        // only compared on redraws.
+-        const roots_stale = state.kitty.generation != storage.generation or
++        // only compared on redraws. A failed update may have left `roots`
++        // half built.
++        const roots_stale = state.retry_full or
++            state.kitty.generation != storage.generation or
+             state.kitty.width_px != t.width_px or
+             state.kitty.height_px != t.height_px or
+             (redraw and (state.kitty.rows != state.rows or
+@@ -3105,14 +3219,22 @@ fn testCompareStates(
  }
  
  test "incremental updates match full rebuild" {
@@ -442,7 +619,7 @@
      const testing = std.testing;
      const alloc = testing.allocator;
      const io = testing.io;
-@@ -1828,6 +1938,7 @@
+@@ -3134,6 +3256,7 @@ fn testIncrementalMatchesFresh(request: RenderState.Overscan) !void {
      var inc: RenderState = .empty;
      defer inc.deinit(alloc);
      inc.overscan_request = request;
@@ -450,7 +627,7 @@
  
      var buf: [64]u8 = undefined;
      for (0..300) |_| {
-@@ -1945,6 +2056,168 @@
+@@ -3251,6 +3374,207 @@ fn testIncrementalMatchesFresh(request: RenderState.Overscan) !void {
      }
  }
  
@@ -616,152 +793,45 @@
 +    try testing.expectEqual('2', state.row_data.items(.cells)[1].get(0).raw.codepoint());
 +}
 +
++test "row moves: an update that fails anywhere is retried in full" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++    const io = testing.io;
++
++    var fail_index: usize = 0;
++    while (true) : (fail_index += 1) {
++        var t = try Terminal.init(io, alloc, .{ .cols = 10, .rows = 5, .max_scrollback_bytes = 0 });
++        defer t.deinit(alloc);
++        var s = t.vtStream();
++        defer s.deinit();
++        s.nextSlice("\x1b[?1049h1\r\n2\r\n3\r\n4\r\n5");
++
++        var state: RenderState = .empty;
++        defer state.deinit(alloc);
++        state.track_row_moves = true;
++        try state.update(alloc, &t);
++        state.clean();
++        try state.update(alloc, &t);
++        state.clean();
++
++        // Rows that only moved are left clean, and the new row needs a
++        // grapheme copy.
++        s.nextSlice("\ne\xcc\x81");
++        var failing = testing.FailingAllocator.init(alloc, .{ .fail_index = fail_index });
++        state.update(failing.allocator(), &t) catch {
++            state.clean();
++            try state.update(alloc, &t);
++            var fresh: RenderState = .empty;
++            defer fresh.deinit(alloc);
++            try fresh.update(alloc, &t);
++            try testCompareStates(&state, &fresh);
++            continue;
++        };
++        break;
++    }
++    try testing.expect(fail_index > 1);
++}
++
  test "begin and end update" {
      const testing = std.testing;
      const alloc = testing.allocator;
---- a/src/terminal/c/render.zig
-+++ b/src/terminal/c/render.zig
-@@ -200,6 +200,7 @@
-     colors = 19,
-     overscan = 20,
-     overscan_request = 21,
-+    row_moves = 22,
- 
-     /// Output type expected for querying the data of the given kind.
-     pub fn OutType(comptime self: Data) type {
-@@ -218,6 +219,7 @@
-             .cursor => Cursor,
-             .colors => Colors,
-             .overscan, .overscan_request => Overscan,
-+            .row_moves => RowMoves,
-         };
-     }
- };
-@@ -226,14 +228,30 @@
- pub const SetOption = enum(c_int) {
-     dirty = 0,
-     overscan = 1,
-+    row_moves = 2,
- 
-     /// Input type expected for setting the option.
-     pub fn InType(comptime self: SetOption) type {
-         return switch (self) {
-             .dirty => Dirty,
-             .overscan => Overscan,
-+            .row_moves => bool,
-         };
-     }
-+};
-+
-+/// C: GhosttyRenderStateRowMove
-+pub const RowMove = extern struct {
-+    top: u16 = 0,
-+    bottom: u16 = 0,
-+    n: i32 = 0,
-+};
-+
-+/// C: GhosttyRenderStateRowMoves
-+pub const RowMoves = extern struct {
-+    /// Number of moves, or -1 when they are unknown.
-+    count: i32 = 0,
-+    moves: [@import("../Screen.zig").RowMoves.capacity]RowMove = @splat(.{}),
- };
- 
- /// C: GhosttyRenderStateColors
-@@ -436,6 +454,15 @@
-         .colors => return writeColors(state, out),
-         .overscan => out.* = .init(state.state.overscan),
-         .overscan_request => out.* = .init(state.overscan_request),
-+        .row_moves => {
-+            const m = &state.state.row_moves;
-+            if (state.state.row_moves_unknown or m.overflow) {
-+                out.count = -1;
-+            } else {
-+                out.count = m.len;
-+                for (m.slice(), 0..) |v, i| out.moves[i] = .{ .top = v.top, .bottom = v.bottom, .n = v.n };
-+            }
-+        },
-     }
- 
-     return .success;
-@@ -476,6 +503,7 @@
-             .above = value.above,
-             .below = value.below,
-         },
-+        .row_moves => state.state.track_row_moves = value.*,
-     }
- 
-     return .success;
---- a/src/terminal/c/types.zig
-+++ b/src/terminal/c/types.zig
-@@ -205,6 +205,8 @@
-     .initStruct("GhosttyRenderStateCursor", render.Cursor),
-     .initStruct("GhosttyRenderStateOverscan", render.Overscan),
-     .initStruct("GhosttyRenderStateRowId", render.RowId),
-+    .initStruct("GhosttyRenderStateRowMove", render.RowMove),
-+    .initStruct("GhosttyRenderStateRowMoves", render.RowMoves),
-     .initStruct("GhosttyRenderStateRowSelection", render.RowSelection),
-     .initStruct("GhosttySelection", selection.CSelection),
-     .initStruct("GhosttySelectionBuffer", selection.CSelectionBuffer),
---- a/include/ghostty/vt/render.h
-+++ b/include/ghostty/vt/render.h
-@@ -302,6 +302,36 @@
- } GhosttyRenderStateRowId;
- 
- /**
-+ * A full-width move of viewport rows [top, bottom): the row at y + n moves
-+ * to y (n > 0 moves content up, n < 0 down; |n| <= bottom - top). Rows a
-+ * move vacates are dirty.
-+ *
-+ * @ingroup render
-+ */
-+typedef struct {
-+  uint16_t top;
-+  uint16_t bottom;
-+  int32_t n;
-+} GhosttyRenderStateRowMove;
-+
-+/**
-+ * The row moves since the last ghostty_render_state_clean(), in order.
-+ * Replay them on your copy of the rows, then rebuild the dirty rows (all
-+ * rows when dirty is GHOSTTY_RENDER_STATE_DIRTY_FULL). With count -1 the
-+ * moves are unknown: rebuild every dirty row without replaying.
-+ *
-+ * Without GHOSTTY_RENDER_STATE_OPTION_ROW_MOVES every moved row is also
-+ * dirty, so replaying is optional. With it, rows that only moved are not
-+ * dirty and replaying is required.
-+ *
-+ * @ingroup render
-+ */
-+typedef struct {
-+  int32_t count;
-+  GhosttyRenderStateRowMove moves[16];
-+} GhosttyRenderStateRowMoves;
-+
-+/**
-  * Queryable data kinds for ghostty_render_state_get().
-  *
-  * @ingroup render
-@@ -396,6 +426,9 @@
-    *  The next update uses this request. Both sides are zero if it was
-    *  never set. */
-   GHOSTTY_RENDER_STATE_DATA_OVERSCAN_REQUEST = 21,
-+
-+  /** The row moves since the last clean (GhosttyRenderStateRowMoves). */
-+  GHOSTTY_RENDER_STATE_DATA_ROW_MOVES = 22,
-   GHOSTTY_RENDER_STATE_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
- } GhosttyRenderStateData;
- 
-@@ -416,6 +449,12 @@
-    *  redraw on the update after a change. See "Overscan" in the render
-    *  state overview. */
-   GHOSTTY_RENDER_STATE_OPTION_OVERSCAN = 1,
-+
-+  /** Leave rows that only moved clean (bool). The caller must replay
-+   *  GHOSTTY_RENDER_STATE_DATA_ROW_MOVES before rebuilding dirty rows.
-+   *  Off by default. Takes effect for terminal changes after the next
-+   *  update. */
-+  GHOSTTY_RENDER_STATE_OPTION_ROW_MOVES = 2,
-   GHOSTTY_RENDER_STATE_OPTION_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
- } GhosttyRenderStateOption;
- 

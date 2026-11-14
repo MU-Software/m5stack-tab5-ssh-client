@@ -32,5 +32,6 @@ void terminal_scroll_to_bottom(terminal* t);
 // The mouse reports and the wheel's keys, for the SSH channel
 size_t terminal_read_mouse(terminal* t, void* buffer, size_t size);
 // From the render task: the terminal's state, safe to read until the next call; rows that only moved are not dirty,
-// so its row moves must be replayed first. `images` gets the kitty images, valid only during the call.
-GhosttyRenderState terminal_update(terminal* t, void (*images)(GhosttyTerminal terminal, GhosttyKittyGraphics graphics));
+// so its row moves must be replayed first. `images` gets the state and the kitty images' pixels, valid only during the call.
+// NULL when the update ran out of memory: its state is half made, and the next update redraws in full.
+GhosttyRenderState terminal_update(terminal* t, void (*images)(GhosttyRenderState render, GhosttyKittyGraphics graphics));

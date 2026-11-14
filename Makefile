@@ -25,9 +25,9 @@ $(SHIROKO)/generated:
 	$(MAKE) shiroko-host
 
 ghostty:             ## libghostty-vt for the ESP32-P4, from a copy of third_party/ghostty with patches/ghostty applied
-	@test "$$(zig version)" = 0.16.0 || { echo "needs zig 0.16.0 (brew install zig)"; exit 1; }
+	@test "$$(zig version)" = 0.17.1 || { echo "needs zig 0.17.1 (brew install zig)"; exit 1; }
 	mkdir -p $(GHOSTTY)
-	rsync -a --delete --exclude .git --exclude .zig-cache third_party/ghostty/ $(GHOSTTY)/src/
+	rsync -a --delete --exclude .git --exclude .zig-cache --exclude zig-pkg third_party/ghostty/ $(GHOSTTY)/src/
 	for p in patches/ghostty/*.patch; do patch -s -p1 -d $(GHOSTTY)/src < $$p || exit 1; done
 	cd $(GHOSTTY)/src && zig build -Demit-lib-vt -Dtarget=riscv32-freestanding-none -Dcpu=baseline-d -Doptimize=ReleaseSmall \
 	    -Dsimd=false -Dvt-features=-all,+render-state,+grid_introspection,+kitty-graphics,+png,+input-encode --prefix ../out

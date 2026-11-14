@@ -1,8 +1,8 @@
 diff --git a/src/build/Config.zig b/src/build/Config.zig
-index 71fa4d2..026642a 100644
+index 8c2dbb8..48bf922 100644
 --- a/src/build/Config.zig
 +++ b/src/build/Config.zig
-@@ -431,7 +431,7 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
+@@ -508,7 +508,7 @@ pub fn init(b: *std.Build, versions: Versions) !Config {
              []const u8,
              "vt-features",
              "Comma-separated libghostty-vt feature modifications applied " ++
@@ -12,7 +12,7 @@ index 71fa4d2..026642a 100644
                  "means every feature (e.g. `-all,+render-state` for a " ++
                  "render-only build). Only applies to lib artifacts.",
 diff --git a/src/terminal/build_options.zig b/src/terminal/build_options.zig
-index f16cbf4..e0c57dc 100644
+index ea32129..78cb832 100644
 --- a/src/terminal/build_options.zig
 +++ b/src/terminal/build_options.zig
 @@ -36,7 +36,8 @@ pub const Options = struct {
@@ -25,7 +25,7 @@ index f16cbf4..e0c57dc 100644
      features: Features = .{},
  
      /// The version of the application.
-@@ -50,11 +51,12 @@ pub const Options = struct {
+@@ -51,11 +52,12 @@ pub const Options = struct {
      ///
      /// Field names are the accepted tokens for `-Dvt-features`, which
      /// acts like `-Dcpu`: comma-separated modifications applied on top
@@ -105,15 +105,15 @@ index f16cbf4..e0c57dc 100644
  
 +            // The PNG decoder is only used, and wuffs only built, with
 +            // Kitty graphics.
-+            if (comptime std.mem.eql(u8, field.name, "png")) {
++            if (comptime std.mem.eql(u8, field, "png")) {
 +                value = value and self.kittyGraphics(target);
 +            }
 +
-             opts.addOption(bool, field.name, value);
+             opts.addOption(bool, field, value);
          }
  
 diff --git a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_image.zig
-index 76abb9a..ef2ab07 100644
+index 281bb02..32ee55e 100644
 --- a/src/terminal/kitty/graphics_image.zig
 +++ b/src/terminal/kitty/graphics_image.zig
 @@ -182,6 +182,9 @@ pub const LoadingImage = struct {

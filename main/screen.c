@@ -69,7 +69,7 @@ static atomic_bool open_asked, panel_open, input_seen;
 static _Atomic int64_t touched_at;
 static TickType_t fonts_again;
 static bool see_through; // the grid lets z < 0 images show under its default background
-static GhosttyKittyGraphicsPlacementIterator placements;
+static GhosttyRenderStateImageIterator placements;
 // The terminal drawn, and how many times another was shown: the first draw after drawing the cells of the one before
 // draws all of them
 static terminal* shown_terminal;
@@ -85,15 +85,15 @@ typedef struct {
     bool used;
 } picture;
 
-// Its part from `from`, width x height, drawn at `at`
 typedef struct {
     shr_pl_res_image* image;
-    shr_point at, from;
+    shr_point at;
     int32_t width, height, z;
 } placed;
 
-static picture made[16];
-static placed shown[64], wanted[64];
+// Twice `wanted`: a frame that changes every picture keeps the old ones until it is drawn
+EXT_RAM_BSS_ATTR static picture made[128];
+EXT_RAM_BSS_ATTR static placed shown[64], wanted[64];
 static int shown_count, wanted_count;
 static GhosttyRenderStateRowIterator rows;
 static GhosttyRenderStateRowCells cells;
@@ -399,7 +399,7 @@ esp_err_t screen_start(const global_state* global) {
         check(ui_start(context, font, 6, COLUMNS, ROWS, BSP_LCD_V_RES, ui_values(state)), "ui") != SHR_OK ||
         ghostty_render_state_row_iterator_new(&terminal_allocator, &rows) != GHOSTTY_SUCCESS ||
         ghostty_render_state_row_cells_new(&terminal_allocator, &cells) != GHOSTTY_SUCCESS ||
-        ghostty_kitty_graphics_placement_iterator_new(&terminal_allocator, &placements) != GHOSTTY_SUCCESS)
+        ghostty_render_state_image_iterator_new(&terminal_allocator, &placements) != GHOSTTY_SUCCESS)
         return ESP_FAIL;
     if (bsp_touch_new(NULL, &touch) != ESP_OK) ESP_LOGE(TAG, "no touch");
     // Read by polling: an edge interrupt nothing clears would stay pending and refuse every light sleep
@@ -410,7 +410,7 @@ esp_err_t screen_start(const global_state* global) {
     return ESP_OK;
 }
 
-static picture* make_picture(GhosttyKittyGraphicsImage image, uint32_t id, const GhosttyKittyGraphicsPlacementRenderInfo* r) {
+static picture* make_picture(GhosttyKittyGraphicsImage image, picture key) {
     static const int sizes[] = {[GHOSTTY_KITTY_IMAGE_FORMAT_RGB] = 3,
                                 [GHOSTTY_KITTY_IMAGE_FORMAT_RGBA] = 4,
                                 [GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA] = 2,
@@ -419,16 +419,14 @@ static picture* make_picture(GhosttyKittyGraphicsImage image, uint32_t id, const
                                                       [GHOSTTY_KITTY_IMAGE_FORMAT_RGBA] = SHR_IMAGE_SRC_RGBA8888,
                                                       [GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA] = SHR_IMAGE_SRC_GRAY_ALPHA88,
                                                       [GHOSTTY_KITTY_IMAGE_FORMAT_GRAY] = SHR_IMAGE_SRC_GRAY8};
-    uint64_t generation = 0;
     uint32_t width = 0, height = 0;
     GhosttyKittyImageFormat format = GHOSTTY_KITTY_IMAGE_FORMAT_PNG;
-    const uint8_t* pixels = NULL;
-    ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_GENERATION, &generation);
-    picture key = {id, r->source_x, r->source_y, r->source_width, r->source_height, r->pixel_width, r->pixel_height, shows, generation, NULL, true};
+    GhosttyString data = {0};
+    key.show = shows, key.image = NULL, key.used = true;
     picture* free_slot = NULL;
     for (size_t i = 0; i < sizeof made / sizeof made[0]; i++) {
         picture* p = &made[i];
-        if (p->image != NULL && p->id == id && p->generation == generation && p->source_x == key.source_x && p->source_y == key.source_y &&
+        if (p->image != NULL && p->id == key.id && p->generation == key.generation && p->source_x == key.source_x && p->source_y == key.source_y &&
             p->source_width == key.source_width && p->source_height == key.source_height && p->width == key.width && p->height == key.height &&
             p->show == shows) {
             p->used = true;
@@ -436,22 +434,27 @@ static picture* make_picture(GhosttyKittyGraphicsImage image, uint32_t id, const
         }
         if (p->image == NULL && free_slot == NULL) free_slot = p;
     }
-    ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_WIDTH, &width);
-    ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_HEIGHT, &height);
-    ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_FORMAT, &format);
+    ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_WIDTH, &width);
+    ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_HEIGHT, &height);
+    ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_FORMAT, &format);
     if (free_slot == NULL || format == GHOSTTY_KITTY_IMAGE_FORMAT_PNG || format > GHOSTTY_KITTY_IMAGE_FORMAT_GRAY ||
-        ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR, (void*)&pixels) != GHOSTTY_SUCCESS)
+        ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_PIXELS, &data) != GHOSTTY_SUCCESS ||
+        data.len < (size_t)width * height * sizes[format] || key.source_x >= width || key.source_y >= height || key.source_width == 0 ||
+        key.source_height == 0 || key.width == 0 || key.height == 0)
         return NULL;
+    // A placeholder run rounds its source origin and size apart: the rect can end 1 px past the image
+    uint32_t source_width = key.source_width < width - key.source_x ? key.source_width : width - key.source_x;
+    uint32_t source_height = key.source_height < height - key.source_y ? key.source_height : height - key.source_y;
+    const uint8_t* pixels = data.ptr;
     shr_image_source source = {(int32_t)width, (int32_t)height, formats[format], pixels, (size_t)width * sizes[format]};
-    shr_rect area = {(int32_t)key.source_x, (int32_t)key.source_y, (int32_t)(key.source_x + key.source_width),
-                     (int32_t)(key.source_y + key.source_height)};
+    shr_rect area = {(int32_t)key.source_x, (int32_t)key.source_y, (int32_t)(key.source_x + source_width), (int32_t)(key.source_y + source_height)};
     shr_status status;
-    if (key.width == key.source_width && key.height == key.source_height) {
+    if (key.width == source_width && key.height == source_height) {
         source.pixels = pixels + key.source_y * source.stride + key.source_x * sizes[format];
         source.width = (int32_t)key.width, source.height = (int32_t)key.height;
         status = shr_pl_res_image_create_from(context, &source, &key.image);
     } else {
-        uint32_t filter = key.width < key.source_width || key.height < key.source_height ? SHR_SCALE_BOX : SHR_SCALE_BILINEAR;
+        uint32_t filter = key.width < source_width || key.height < source_height ? SHR_SCALE_BOX : SHR_SCALE_BILINEAR;
         status = shr_pl_res_image_create_scaled(context, &source, area, (int32_t)key.width, (int32_t)key.height, filter, &key.image);
     }
     if (status != SHR_OK) return NULL;
@@ -467,67 +470,49 @@ static void want(placed e) {
     wanted[i] = e;
 }
 
-// A run of Unicode placeholders: its part of the image fitted into the placement's cells, centred
-static void want_run(void* user, const GhosttyKittyGraphicsVirtualRun* run) {
-    GhosttyKittyGraphicsImage image = ghostty_kitty_graphics_image(user, run->image_id);
-    uint32_t width = 0, height = 0;
-    if (image == NULL || ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_WIDTH, &width) != GHOSTTY_SUCCESS ||
-        ghostty_kitty_graphics_image_get(image, GHOSTTY_KITTY_IMAGE_DATA_HEIGHT, &height) != GHOSTTY_SUCCESS || width == 0 || height == 0)
-        return;
-    int64_t box_width = (int64_t)run->grid_cols * SHR_CELL_WIDTH, box_height = (int64_t)run->grid_rows * SHR_CELL_HEIGHT;
-    int64_t fit_width = box_width, fit_height = box_height;
-    if (width * box_height > height * box_width)
-        fit_height = height * box_width / width;
-    else
-        fit_width = width * box_height / height;
-    if (fit_width < 1 || fit_height < 1 || fit_width > 4096 || fit_height > 4096) return;
-    int64_t left = (box_width - fit_width) / 2, top = (box_height - fit_height) / 2;
-    int64_t x0 = (int64_t)run->col * SHR_CELL_WIDTH, y0 = (int64_t)run->row * SHR_CELL_HEIGHT;
-    int64_t x1 = x0 + (int64_t)run->width * SHR_CELL_WIDTH, y1 = y0 + SHR_CELL_HEIGHT;
-    int64_t from_x = x0 > left ? x0 : left, from_y = y0 > top ? y0 : top;
-    int64_t to_x = x1 < left + fit_width ? x1 : left + fit_width, to_y = y1 < top + fit_height ? y1 : top + fit_height;
-    GhosttyKittyGraphicsPlacementRenderInfo r = {
-        .source_width = width, .source_height = height, .pixel_width = (uint32_t)fit_width, .pixel_height = (uint32_t)fit_height};
-    picture* p;
-    if (from_x >= to_x || from_y >= to_y || (p = make_picture(image, run->image_id, &r)) == NULL) return;
-    want((placed){p->image,
-                  {(int32_t)(run->viewport_col * SHR_CELL_WIDTH + from_x - x0), (int32_t)(run->viewport_row * SHR_CELL_HEIGHT + from_y - y0)},
-                  {(int32_t)(from_x - left), (int32_t)(from_y - top)},
-                  (int32_t)(to_x - from_x),
-                  (int32_t)(to_y - from_y),
-                  run->z});
-}
-
-// Under the terminal's lock: its kitty images and their places in this frame
-static void find_pictures(GhosttyTerminal terminal, GhosttyKittyGraphics graphics) {
-    uint64_t generation = 0;
+// Under the terminal's lock, after the update: its kitty images and their places in this frame
+static void find_pictures(GhosttyRenderState render, GhosttyKittyGraphics graphics) {
+    static const GhosttyRenderStateImageData keys[] = {GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL,
+                                                       GHOSTTY_RENDER_STATE_IMAGE_DATA_KITTY_KIND,
+                                                       GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID,
+                                                       GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION,
+                                                       GHOSTTY_RENDER_STATE_IMAGE_DATA_Z,
+                                                       GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL,
+                                                       GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW,
+                                                       GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X,
+                                                       GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y,
+                                                       GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X,
+                                                       GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y,
+                                                       GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH,
+                                                       GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT,
+                                                       GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_WIDTH,
+                                                       GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_HEIGHT};
     wanted_count = 0;
     for (size_t i = 0; i < sizeof made / sizeof made[0]; i++)
         made[i].used = false;
-    if (ghostty_kitty_graphics_get(graphics, GHOSTTY_KITTY_GRAPHICS_DATA_GENERATION, &generation) != GHOSTTY_SUCCESS || generation == 0 ||
-        ghostty_kitty_graphics_get(graphics, GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR, (void*)&placements) != GHOSTTY_SUCCESS)
-        return;
-    while (ghostty_kitty_graphics_placement_next(placements)) {
-        uint32_t id = 0, x = 0, y = 0;
-        int32_t z = 0;
-        GhosttyKittyGraphicsPlacementRenderInfo r = GHOSTTY_INIT_SIZED(GhosttyKittyGraphicsPlacementRenderInfo);
-        ghostty_kitty_graphics_placement_get(placements, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID, &id);
-        ghostty_kitty_graphics_placement_get(placements, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z, &z);
-        ghostty_kitty_graphics_placement_get(placements, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_X_OFFSET, &x);
-        ghostty_kitty_graphics_placement_get(placements, GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Y_OFFSET, &y);
-        GhosttyKittyGraphicsImage image = ghostty_kitty_graphics_image(graphics, id);
+    if (ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR, (void*)&placements) != GHOSTTY_SUCCESS) return;
+    while (ghostty_render_state_image_iterator_next(placements)) {
+        GhosttyImageProtocol protocol = GHOSTTY_IMAGE_PROTOCOL_MAX_VALUE;
+        GhosttyRenderStateKittyPlacementKind kind = GHOSTTY_RENDER_STATE_KITTY_PLACEMENT_KIND_FIXED;
+        picture key = {0};
+        int32_t z = 0, column = 0, row = 0;
+        uint32_t x = 0, y = 0;
+        void* values[] = {&protocol,     &kind,         &key.id,           &key.generation,    &z,         &column,    &row, &x, &y,
+                          &key.source_x, &key.source_y, &key.source_width, &key.source_height, &key.width, &key.height};
+        GhosttyKittyGraphicsImage image;
         picture* p;
-        if (image == NULL || ghostty_kitty_graphics_placement_render_info(placements, image, terminal, &r) != GHOSTTY_SUCCESS ||
-            !r.viewport_visible || r.pixel_width == 0 || r.pixel_height == 0 || (p = make_picture(image, id, &r)) == NULL)
+        if (ghostty_render_state_image_get_multi(placements, sizeof keys / sizeof keys[0], keys, values, NULL) != GHOSTTY_SUCCESS ||
+            protocol != GHOSTTY_IMAGE_PROTOCOL_KITTY)
             continue;
-        want((placed){p->image,
-                      {r.viewport_col * SHR_CELL_WIDTH + (int32_t)x, r.viewport_row * SHR_CELL_HEIGHT + (int32_t)y},
-                      {0, 0},
-                      (int32_t)p->width,
-                      (int32_t)p->height,
-                      z});
+        // A relative placement can lie far off the screen
+        int64_t at_x = (int64_t)column * SHR_CELL_WIDTH + x, at_y = (int64_t)row * SHR_CELL_HEIGHT + y;
+        if (at_x + key.width <= 0 || at_y + key.height <= 0 || at_x >= columns * SHR_CELL_WIDTH || at_y >= rows_count * SHR_CELL_HEIGHT ||
+            (image = ghostty_kitty_graphics_image(graphics, key.id)) == NULL || (p = make_picture(image, key)) == NULL)
+            continue;
+        // Unicode placeholders (z -1) show no text, so over the grid is still under their text
+        if (kind == GHOSTTY_RENDER_STATE_KITTY_PLACEMENT_KIND_VIRTUAL) z = 0;
+        want((placed){p->image, {(int32_t)at_x, (int32_t)at_y}, (int32_t)p->width, (int32_t)p->height, z});
     }
-    ghostty_kitty_graphics_virtual_runs(terminal, want_run, graphics);
 }
 
 // z < 0 under the text: the grid's default background turns transparent over the screen's own (the same black)
@@ -543,8 +528,7 @@ static void draw_pictures(void) {
     shr_lyr_cmd_begin(pictures);
     for (int i = 0; i < wanted_count; i++) {
         const placed* e = &wanted[i];
-        shr_rect src = {e->from.x + (e->at.x < 0 ? -e->at.x : 0), e->from.y + (e->at.y < 0 ? -e->at.y : 0), e->from.x + e->width,
-                        e->from.y + e->height};
+        shr_rect src = {e->at.x < 0 ? -e->at.x : 0, e->at.y < 0 ? -e->at.y : 0, e->width, e->height};
         shr_lyr_cmd_image(e->z < 0 ? beneath : pictures, e->image, src, (shr_point){e->at.x < 0 ? 0 : e->at.x, e->at.y < 0 ? 0 : e->at.y});
     }
     shr_lyr_cmd_commit(beneath);
@@ -564,14 +548,16 @@ static shr_color rgb(GhosttyColorRgb c) {
 
 // fg alpha: 255 full, 128 dim, 0 none
 static shr_color drawn(GhosttyColorRgb c, const GhosttyStyle* style) {
-    return (rgb(c) & 0xffffffu) | (style->invisible ? 0 : style->faint ? 0x80000000u : 0xff000000u);
+    return (rgb(c) & 0xffffffu) | ((style->flags & GHOSTTY_STYLE_FLAG_INVISIBLE) ? 0
+                                   : (style->flags & GHOSTTY_STYLE_FLAG_FAINT)   ? 0x80000000u
+                                                                                 : 0xff000000u);
 }
 
 // False for the tail of a wide cell
 static bool read_cell(const GhosttyRenderStateColors* colors, look* out) {
     GhosttyCell raw;
     GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
-    GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
+    GhosttyStyle style = {0};
     GhosttyColorRgb fg = colors->foreground, bg = colors->background;
     char text[sizeof out->text];
     GhosttyBuffer utf8 = {(uint8_t*)text, sizeof text, 0};
@@ -584,8 +570,9 @@ static bool read_cell(const GhosttyRenderStateColors* colors, look* out) {
     if (ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8, &utf8) != GHOSTTY_SUCCESS) utf8.len = 0;
     // A kitty image's Unicode placeholder, U+10EEEE: the image is drawn there instead
     if (utf8.len >= 4 && memcmp(text, "\xf4\x8e\xbb\xae", 4) == 0)
-        utf8.len = 0, style.underline = GHOSTTY_SGR_UNDERLINE_NONE, style.strikethrough = style.overline = false;
-    if (style.inverse) {
+        utf8.len = 0,
+        style.flags &= (GhosttyStyleFlags) ~(GHOSTTY_STYLE_UNDERLINE_MASK | GHOSTTY_STYLE_FLAG_STRIKETHROUGH | GHOSTTY_STYLE_FLAG_OVERLINE);
+    if (style.flags & GHOSTTY_STYLE_FLAG_INVERSE) {
         GhosttyColorRgb swap = fg;
         fg = bg, bg = swap, painted = true;
     }
@@ -595,11 +582,13 @@ static bool read_cell(const GhosttyRenderStateColors* colors, look* out) {
     // bg alpha 0 leaves the tilemap's background
     *out = (look){.length = utf8.len,
                   .span = wide == GHOSTTY_CELL_WIDE_WIDE ? 2 : 1,
-                  .style = {drawn(fg, &style), painted ? rgb(bg) : 0, (style.bold ? SHR_STYLE_BOLD : 0) | (style.italic ? SHR_STYLE_ITALIC : 0)},
-                  .underline = style.underline,
+                  .style = {drawn(fg, &style), painted ? rgb(bg) : 0,
+                            ((style.flags & GHOSTTY_STYLE_FLAG_BOLD) ? SHR_STYLE_BOLD : 0) |
+                                ((style.flags & GHOSTTY_STYLE_FLAG_ITALIC) ? SHR_STYLE_ITALIC : 0)},
+                  .underline = GHOSTTY_STYLE_UNDERLINE(style),
                   .underline_color = drawn(under, &style),
-                  .strikethrough = style.strikethrough,
-                  .overline = style.overline};
+                  .strikethrough = style.flags & GHOSTTY_STYLE_FLAG_STRIKETHROUGH,
+                  .overline = style.flags & GHOSTTY_STYLE_FLAG_OVERLINE};
     memcpy(out->text, text, utf8.len);
     return true;
 }
@@ -755,7 +744,7 @@ void screen_waiting(const char* what, TickType_t since) {
 // A block shows the cell under it in the cell's background colour
 static void draw_cursor(GhosttyRenderState render, const GhosttyRenderStateCursor* c, const GhosttyRenderStateColors* colors) {
     look l = {.span = 1};
-    bool on = c->visible && c->viewport_has_value, block = c->visual_style == GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK;
+    bool on = c->visible && c->viewport_has_value, block = c->visual_style == GHOSTTY_CURSOR_STYLE_BLOCK;
     int32_t x = 0, y = 0;
     if (on) {
         x = c->viewport_x - c->wide_tail, y = c->viewport_y;
@@ -765,10 +754,10 @@ static void draw_cursor(GhosttyRenderState render, const GhosttyRenderStateCurso
     shr_lyr_cmd_begin(cursor);
     if (on) {
         shr_rect r = {x * SHR_CELL_WIDTH, y * SHR_CELL_HEIGHT, (x + (int32_t)l.span) * SHR_CELL_WIDTH, (y + 1) * SHR_CELL_HEIGHT};
-        if (c->visual_style == GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR) r.x1 = r.x0 + 2;
-        if (c->visual_style == GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE) r.y0 = r.y1 - 2;
+        if (c->visual_style == GHOSTTY_CURSOR_STYLE_BAR) r.x1 = r.x0 + 2;
+        if (c->visual_style == GHOSTTY_CURSOR_STYLE_UNDERLINE) r.y0 = r.y1 - 2;
         shr_color color = rgb(colors->cursor_has_value ? colors->cursor : colors->foreground);
-        if (c->visual_style == GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW) {
+        if (c->visual_style == GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW) {
             shr_lyr_cmd_fill(cursor, (shr_rect){r.x0, r.y0, r.x1, r.y0 + 2}, color);
             shr_lyr_cmd_fill(cursor, (shr_rect){r.x0, r.y1 - 2, r.x1, r.y1}, color);
             shr_lyr_cmd_fill(cursor, (shr_rect){r.x0, r.y0, r.x0 + 2, r.y1}, color);
@@ -987,6 +976,7 @@ void screen_draw(void) {
         xStreamBufferReset(typed);
     }
     GhosttyRenderState render = terminal_update(shown_terminal, find_pictures);
+    if (render == NULL) goto submit;
     GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
     GhosttyRenderStateCursor now = GHOSTTY_INIT_SIZED(GhosttyRenderStateCursor);
     ghostty_render_state_get(render, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors);
@@ -1018,6 +1008,7 @@ void screen_draw(void) {
 
     shr_deadline next;
     shr_event event;
+submit:
     for (shr_submit(context);;) {
         shr_pump(context);
         while (shr_poll_event(context, &event) == SHR_OK)

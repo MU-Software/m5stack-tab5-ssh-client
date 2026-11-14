@@ -29,7 +29,8 @@ static void release(void* context, void* memory, size_t size, uint8_t alignment,
     heap_caps_free(memory);
 }
 
-const GhosttyAllocator terminal_allocator = {.vtable = &(const GhosttyAllocatorVtable){allocate, resize, remap, release}};
+const GhosttyAllocator terminal_allocator = {
+    .vtable = &(const GhosttyAllocatorVtable){.alloc = allocate, .resize = resize, .remap = remap, .free = release}};
 
 struct terminal {
     GhosttyTerminal vt;
@@ -78,7 +79,7 @@ terminal* terminal_new(const terminal_size* size) {
     ghostty_terminal_set(t->vt, GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY, &command_bytes);
     ghostty_terminal_set(t->vt, GHOSTTY_TERMINAL_OPT_USERDATA, t);
     ghostty_terminal_set(t->vt, GHOSTTY_TERMINAL_OPT_WRITE_PTY, (const void*)reply);
-    ghostty_render_state_set(t->render, GHOSTTY_RENDER_STATE_OPTION_ROW_MOVES, &(bool){true});
+    ghostty_render_state_set(t->render, GHOSTTY_RENDER_STATE_OPT_ROW_MOVES, &(bool){true});
     return t;
 }
 
@@ -99,7 +100,7 @@ void terminal_resize(terminal* t, const terminal_size* size) {
     pixels.cell_width = size->width_pixels / size->columns, pixels.cell_height = size->height_pixels / size->rows;
     xSemaphoreTake(t->lock, portMAX_DELAY);
     ghostty_terminal_resize(t->vt, (uint16_t)size->columns, (uint16_t)size->rows, pixels.cell_width, pixels.cell_height);
-    ghostty_mouse_encoder_setopt(t->mouse, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &pixels);
+    ghostty_mouse_encoder_set(t->mouse, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &pixels);
     xSemaphoreGive(t->lock);
 }
 
@@ -118,8 +119,8 @@ size_t terminal_encode_key(GhosttyKeyEvent event, char* out, size_t size) {
     size_t n = 0;
     if (t == NULL) return 0;
     xSemaphoreTake(t->lock, portMAX_DELAY);
-    ghostty_key_encoder_setopt_from_terminal(t->encoder, t->vt);
-    if (ghostty_key_encoder_encode(t->encoder, event, out, size, &n) != GHOSTTY_SUCCESS) n = 0;
+    ghostty_key_encoder_set_from_terminal(t->encoder, t->vt);
+    if (ghostty_key_encoder_encode(t->encoder, event, (uint8_t*)out, size, &n) != GHOSTTY_SUCCESS) n = 0;
     xSemaphoreGive(t->lock);
     return n;
 }
@@ -133,19 +134,19 @@ static void set_position(GhosttyMouseEvent event, float x, float y) {
 }
 
 // Under the lock
-static void add_report(terminal* t, const char* bytes, size_t size) {
+static void add_report(terminal* t, const uint8_t* bytes, size_t size) {
     if (size <= sizeof t->reports - t->report_size) memcpy(t->reports + t->report_size, bytes, size), t->report_size += size;
 }
 
-// Under the lock, after ghostty_mouse_encoder_setopt_from_terminal: false when the program asked for no such report
+// Under the lock, after ghostty_mouse_encoder_set_from_terminal: false when the program asked for no such report
 static bool report(terminal* t, GhosttyMouseAction action, GhosttyMouseButton button, int32_t x, int32_t y) {
-    char out[32];
+    uint8_t out[32];
     size_t n = 0;
     ghostty_mouse_event_set_action(t->mouse_event, action);
     ghostty_mouse_event_set_button(t->mouse_event, button);
     set_position(t->mouse_event, (float)x, (float)y);
-    ghostty_mouse_encoder_setopt(t->mouse, GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED,
-                                 &(bool){action == GHOSTTY_MOUSE_ACTION_PRESS && button == GHOSTTY_MOUSE_BUTTON_LEFT});
+    ghostty_mouse_encoder_set(t->mouse, GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED,
+                              &(bool){action == GHOSTTY_MOUSE_ACTION_PRESS && button == GHOSTTY_MOUSE_BUTTON_LEFT});
     if (ghostty_mouse_encoder_encode(t->mouse, t->mouse_event, out, sizeof out, &n) != GHOSTTY_SUCCESS || n == 0) return false;
     add_report(t, out, n);
     return true;
@@ -154,9 +155,9 @@ static bool report(terminal* t, GhosttyMouseAction action, GhosttyMouseButton bu
 // Under the lock: as Ghostty does for mode 1007 (alternate scroll) on the alternate screen; false elsewhere
 static bool arrow_keys(terminal* t, int32_t lines) {
     GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
-    GhosttyTerminalModeConfig alternate_scroll = {GHOSTTY_MODE_ALT_SCROLL, false};
+    GhosttyTerminalModeConfig alternate_scroll = {GHOSTTY_MODE_MOUSE_ALTERNATE_SCROLL, false};
     GhosttyKeyEvent event;
-    char out[16];
+    uint8_t out[16];
     size_t n = 0;
     ghostty_terminal_get(t->vt, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen);
     ghostty_terminal_get(t->vt, GHOSTTY_TERMINAL_DATA_MODE, &alternate_scroll);
@@ -165,7 +166,7 @@ static bool arrow_keys(terminal* t, int32_t lines) {
         return false;
     ghostty_key_event_set_action(event, GHOSTTY_KEY_ACTION_PRESS);
     ghostty_key_event_set_key(event, lines < 0 ? GHOSTTY_KEY_ARROW_UP : GHOSTTY_KEY_ARROW_DOWN);
-    ghostty_key_encoder_setopt_from_terminal(t->encoder, t->vt);
+    ghostty_key_encoder_set_from_terminal(t->encoder, t->vt);
     if (ghostty_key_encoder_encode(t->encoder, event, out, sizeof out, &n) == GHOSTTY_SUCCESS)
         for (int32_t i = 0; i < abs(lines); i++)
             add_report(t, out, n);
@@ -175,7 +176,7 @@ static bool arrow_keys(terminal* t, int32_t lines) {
 
 void terminal_click(terminal* t, int32_t x, int32_t y) {
     xSemaphoreTake(t->lock, portMAX_DELAY);
-    ghostty_mouse_encoder_setopt_from_terminal(t->mouse, t->vt);
+    ghostty_mouse_encoder_set_from_terminal(t->mouse, t->vt);
     if (report(t, GHOSTTY_MOUSE_ACTION_PRESS, GHOSTTY_MOUSE_BUTTON_LEFT, x, y))
         report(t, GHOSTTY_MOUSE_ACTION_RELEASE, GHOSTTY_MOUSE_BUTTON_LEFT, x, y);
     xSemaphoreGive(t->lock);
@@ -185,12 +186,12 @@ void terminal_click(terminal* t, int32_t x, int32_t y) {
 void terminal_wheel(terminal* t, int32_t lines, int32_t x, int32_t y, bool arrows) {
     GhosttyMouseButton button = lines < 0 ? GHOSTTY_MOUSE_BUTTON_FOUR : GHOSTTY_MOUSE_BUTTON_FIVE;
     xSemaphoreTake(t->lock, portMAX_DELAY);
-    ghostty_mouse_encoder_setopt_from_terminal(t->mouse, t->vt);
+    ghostty_mouse_encoder_set_from_terminal(t->mouse, t->vt);
     if (report(t, GHOSTTY_MOUSE_ACTION_PRESS, button, x, y))
         for (int32_t i = 1; i < abs(lines); i++)
             report(t, GHOSTTY_MOUSE_ACTION_PRESS, button, x, y);
     else if (!arrows || !arrow_keys(t, lines))
-        ghostty_terminal_scroll_viewport(t->vt, (GhosttyTerminalScrollViewport){.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA, .value.delta = lines});
+        ghostty_terminal_scroll_viewport(t->vt, (GhosttyTerminalScrollViewport){.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA, .value.delta = lines});
     xSemaphoreGive(t->lock);
 }
 
@@ -198,7 +199,7 @@ void terminal_scroll_to_bottom(terminal* t) {
     bool bottom = true;
     xSemaphoreTake(t->lock, portMAX_DELAY);
     ghostty_terminal_get(t->vt, GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE, &bottom);
-    if (!bottom) ghostty_terminal_scroll_viewport(t->vt, (GhosttyTerminalScrollViewport){.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM});
+    if (!bottom) ghostty_terminal_scroll_viewport(t->vt, (GhosttyTerminalScrollViewport){.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM});
     xSemaphoreGive(t->lock);
 }
 
@@ -220,11 +221,12 @@ size_t terminal_reply(terminal* t, void* buffer, size_t size) {
     return n;
 }
 
-GhosttyRenderState terminal_update(terminal* t, void (*images)(GhosttyTerminal terminal, GhosttyKittyGraphics graphics)) {
+GhosttyRenderState terminal_update(terminal* t, void (*images)(GhosttyRenderState render, GhosttyKittyGraphics graphics)) {
     GhosttyKittyGraphics graphics;
     xSemaphoreTake(t->lock, portMAX_DELAY);
-    ghostty_render_state_update(t->render, t->vt);
-    if (ghostty_terminal_get(t->vt, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, (void*)&graphics) == GHOSTTY_SUCCESS) images(t->vt, graphics);
+    bool updated = ghostty_render_state_update(t->render, t->vt) == GHOSTTY_SUCCESS;
+    if (updated && ghostty_terminal_get(t->vt, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, (void*)&graphics) == GHOSTTY_SUCCESS)
+        images(t->render, graphics);
     xSemaphoreGive(t->lock);
-    return t->render;
+    return updated ? t->render : NULL;
 }

@@ -142,7 +142,7 @@ static size_t encode(const key_event* e, char* out, size_t size) {
     ghostty_key_event_set_key(event, k.key);
     ghostty_key_event_set_mods(event, mods);
     ghostty_key_event_set_consumed_mods(event, text != k.text ? GHOSTTY_MODS_SHIFT : 0);
-    ghostty_key_event_set_utf8(event, text ? &text : NULL, text ? 1 : 0);
+    ghostty_key_event_set_utf8(event, (GhosttyString){(const uint8_t*)&text, text ? 1 : 0});
     ghostty_key_event_set_unshifted_codepoint(event, (uint32_t)(unsigned char)k.text);
     size_t n = terminal_encode_key(event, out, size);
     ghostty_key_event_free(event);
