@@ -22,8 +22,9 @@ host sim build/sim "${sim[@]+"${sim[@]}"}"
 [ ${#fw[@]} -gt 0 ] || exit 0
 docker compose --progress quiet run --rm -T --entrypoint bash idf -c '
     . "$IDF_PATH/export.sh" > /dev/null 2>&1
-    if [ ! -f build/clang/compile_commands.json ] || [ sdkconfig.defaults -nt build/clang/sdkconfig ] ||
-        [ main/CMakeLists.txt -nt build/clang/compile_commands.json ]; then
+    if [ ! -f build/clang/compile_commands.json ] || [ -n "$(find sdkconfig.defaults CMakeLists.txt cmake main components \
+        "$IDF_PATH/tools/cmake/version.cmake" -maxdepth 2 -newer build/clang/compile_commands.json \( -name sdkconfig.defaults \
+        -o -name CMakeLists.txt -o -name "*.cmake" -o -name idf_component.yml \))" ]; then
         rm -f build/clang/sdkconfig
         idf.py -B build/clang -D SDKCONFIG="$PWD/build/clang/sdkconfig" -D IDF_TOOLCHAIN=clang reconfigure > /dev/null 2>&1
     fi
